@@ -134,7 +134,24 @@ const float TwoDoorsResourceY = 0.55f;
 // Which gap is a dead end this trial. Alternating by trial means a genome is
 // scored on both, so it cannot win by always turning the same way -- and the
 // trial index is not among the network's inputs, so it cannot be read off.
-VKEXP_KERNEL_FN uint twoDoorsBlockedDoor(uint trial) { return trial & 1u; }
+// Which gap is a dead end, and on what clock. The two settings are a real
+// trade, not a preference:
+//
+// By trial (the default), one genome meets both layouts inside a generation and
+// is scored on the average of them. It cannot win by always turning the same
+// way -- that caps at half the trials -- so selection asks for a policy that
+// handles both from the start. The cost is that early on, when nothing works,
+// a genome that happens to suit one layout is averaged back down by the other.
+//
+// By generation, the whole population meets one layout and its successors meet
+// the other. Selection inside a generation is then clean and the gradient is
+// undiluted, which should be faster. The risk it takes on is oscillation:
+// generation N can select for "go right" and generation N+1 punish exactly that,
+// and a population can thrash between the two without ever building the memory
+// that would settle it. Which effect wins is measured, not argued.
+VKEXP_KERNEL_FN uint twoDoorsBlockedDoor(uint trial, uint generation, bool perGeneration) {
+    return (perGeneration ? generation : trial) & 1u;
+}
 
 // Signed x of a door centre: door 0 left, door 1 right.
 VKEXP_KERNEL_FN float twoDoorsDoorCentre(uint door, float worldRadius) {

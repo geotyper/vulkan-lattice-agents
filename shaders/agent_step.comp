@@ -123,7 +123,7 @@ void main() {
         // receptor: a beacon is a point, so either the line to it is clear or
         // the beacon is not there at all.
         if (scenarioSightBlocked(params.beaconScenario, agent, agent.pose.xy, beaconPosition,
-                                 params.worldRadius, params.obstacleCount)) {
+                                 params.worldRadius, params.obstacleCount, params.scenario)) {
             continue;
         }
         const vec2 toBeacon = beaconPosition - agent.pose.xy;
@@ -184,7 +184,7 @@ void main() {
                         // beacon seen through one.
                         !scenarioSightBlocked(params.beaconScenario, agent, agent.pose.xy,
                                               other.pose.xy, params.worldRadius,
-                                              params.obstacleCount)) {
+                                              params.obstacleCount, params.scenario)) {
                         const float relativeDistance = distanceToOther / params.lightSensorRange;
                         const float attenuation =
                             rangeFalloff(distanceToOther) /
@@ -352,7 +352,8 @@ void main() {
     for (uint index = 0u; index < params.obstacleCount; ++index) {
         const vec2 push = boxPushOut(
             agent.pose.xy, agent.pose.w,
-            scenarioObstacleCentre(params.beaconScenario, agent, index, params.worldRadius),
+            scenarioObstacleCentre(params.beaconScenario, agent, index, params.worldRadius,
+                                   params.scenario),
             scenarioObstacleHalfExtent(params.beaconScenario, index, params.worldRadius));
         const float pushLength = length(push);
         if (pushLength <= 0.0) {

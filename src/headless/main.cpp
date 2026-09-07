@@ -40,6 +40,7 @@ struct Options {
     bool agentLight{true};
     bool swapDeliveryEnds{false};
     bool uniformBeaconColor{false};
+    bool blockedDoorPerGeneration{false};
     vkexp::FitnessWeights fitness{};
     // Optional physics overrides. Absent means "keep the default", which lets a
     // sweep change one term without restating the rest of SimulationStep.
@@ -97,6 +98,8 @@ void printHelp(const char* executable) {
                  "  --no-agent-light         disable perception of other agents' signals\n"
                  "  --swap-ends              two gaps: trade the ends every other generation\n"
                  "  --uniform-beacon-color   ablate hue: both ends emit the average colour\n"
+                 "  --doors-by-generation    two doors: the dead end changes per generation,\n"
+                 "                           not per trial\n"
                  "  --no-trail               disable the ground trail field entirely\n"
                  "  --neuron-model <name>    reactive|time|gated: where a hidden neuron's "
                  "time\n"
@@ -263,6 +266,8 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.swapDeliveryEnds = true;
         } else if (argument == "--uniform-beacon-color") {
             options.uniformBeaconColor = true;
+        } else if (argument == "--doors-by-generation") {
+            options.blockedDoorPerGeneration = true;
         } else if (argument == "--quiet") {
             options.quiet = true;
         } else if (argument == "--save-population") {
@@ -315,6 +320,7 @@ int run(const Options& options) {
     state.physics.agentLightEnabled = options.agentLight;
     state.physics.swapDeliveryEnds = options.swapDeliveryEnds;
     state.physics.uniformBeaconColor = options.uniformBeaconColor;
+    state.physics.blockedDoorPerGeneration = options.blockedDoorPerGeneration;
     state.physics.fitness = options.fitness;
     if (options.beaconAngularSpeed) {
         state.physics.beaconAngularSpeed = *options.beaconAngularSpeed;
@@ -426,6 +432,11 @@ int run(const Options& options) {
         if (state.physics.swapDeliveryEnds &&
             vkexp::scenarioDefinition(state.physics.beaconScenario).tunables.swapDeliveryEnds) {
             std::cout << "World:      the two ends trade places on odd generations\n";
+        }
+        if (state.physics.blockedDoorPerGeneration &&
+            vkexp::scenarioDefinition(state.physics.beaconScenario)
+                .tunables.blockedDoorPerGeneration) {
+            std::cout << "World:      the dead end changes by generation, not by trial\n";
         }
         // Only when it is on, so a default run's output stays byte-identical to
         // every run recorded before the option existed.

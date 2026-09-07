@@ -336,6 +336,11 @@ struct SimulationStep {
     // read the colour" -- a policy that does not read it scores the same with
     // this on, and a policy that does collapses.
     bool uniformBeaconColor{false};
+    // Two doors only: run the dead end off the generation instead of the trial,
+    // so a whole population trains on one door and its successors on the other.
+    // Cleaner selection inside a generation, at the risk of the population
+    // thrashing between the two; see twoDoorsBlockedDoor for the trade.
+    bool blockedDoorPerGeneration{false};
     // Where a hidden neuron's time constant comes from. Reactive pins it to
     // deltaTime, which makes the update y = activation and reproduces the
     // memoryless network exactly, so every model is the same code path with one

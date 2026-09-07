@@ -82,7 +82,7 @@ only work from one spawn position or heading.
 | Beacon scenario | Random movement | Each trial follows a smooth bounded wandering path with adjustable speed and a configurable teleport chance checked every three seconds. |
 | Beacon scenario | Forage + home | Agents collect an orange orbiting resource, then carry its decaying value to a blue home that relocates every eight seconds before seeking the resource again. |
 | Beacon scenario | Scent relay | The same collect-and-deliver cycle, but home emits no light and lays no trail: it can only be found by dead reckoning or by a path the agents themselves marked. |
-| Beacon scenario | Two doors | The same cycle across a wall with two gaps, one of which is a dead end. Which one swaps every trial, and from the home side they are identical. Retuned after it went unsolved for 450 generations; see Two gaps for the measurement. |
+| Beacon scenario | Two doors | The same cycle across a wall with two gaps, one of which is a dead end. Which one swaps every trial -- or every generation, as an option -- and from the home side they are identical. Retuned after it went unsolved for 450 generations; see Two gaps for the measurement. |
 | Beacon scenario | Shuttle | Fetch and carry back, over and over until the trial ends, around a short wall that closes the straight line between the two beacons. |
 | Beacon scenario | Two gaps | The same repeated cycle across a wall with two ways through, neither a dead end, with an option to make the two ends trade places every other generation. |
 
@@ -221,10 +221,37 @@ The scenario also places its own spawn: the driver's default spiral covers the
 whole arena, which here would start half the population already past the wall
 with nothing left to solve.
 
+### Which clock the dead end runs on
+
+Off by default, the dead end swaps **every trial**: with four trials per genome
+each one meets both layouts twice, so a policy that always turns the same way
+caps at half the trials and selection asks for something that handles both from
+the start. The cost is dilution -- early on, a genome that suits one layout is
+averaged back down by the other.
+
+**Dead end changes by generation** (`--doors-by-generation`) keys it to the
+generation instead: a whole population trains on one door and its successors on
+the other. Selection inside a generation is then undiluted, which should be
+faster. The risk it takes on is oscillation -- generation N selecting for "go
+right" and N+1 punishing exactly that, with the population thrashing between the
+two and never building the memory that would settle it. That shows up as a
+one-generation sawtooth rather than as a lower average, so read neighbouring
+generations, not the mean.
+
+Both settings put the ceiling for a door-blind policy at 50%, and they get there
+differently: per trial it is half the trials every generation, per generation it
+is every trial in half the generations. Above 50% is where memory has to be
+doing work, because from the home side the two openings are identical -- the
+only way to know is to enter one, meet the pocket, and come back out to the
+other.
+
 ```sh
-vkneuro_headless --scenario doors --generations 200 --seed 5 --csv runs/doors.csv
-# and the same run with a memoryless brain, to see what the time constants bought
-vkneuro_headless --scenario doors --generations 200 --seed 5 --neuron-model reactive \
+vkneuro_headless --scenario doors --generations 400 --seed 5 --csv runs/doors.csv
+# the same run with the layout keyed to the generation
+vkneuro_headless --scenario doors --generations 400 --seed 5 --doors-by-generation \
+                 --csv runs/doors-by-generation.csv
+# and with a memoryless brain, to see what the time constants bought
+vkneuro_headless --scenario doors --generations 400 --seed 5 --neuron-model reactive \
                  --csv runs/doors-reactive.csv
 ```
 
@@ -448,13 +475,53 @@ for model in reactive time gated; do
 done
 ```
 
-The genome carries the gate block whatever model is selected, so it is the same
-genome under all three: 2668 weights, up from 1408 before time constants
-existed. The agent record grew by one float per hidden neuron (176 to 256
-bytes). Both file formats notice: world snapshots are at version 4 and reject
-earlier ones, and a genome archive from an older brain is rejected by the weight
-count it already records -- with a message naming the counts, which is more use
-than a version number would be.
+### The structure, and where each model lives in it
+
+One preset, `include/vkexp/neuro/BrainKernel.inl`, declares the whole network,
+and both languages compile it. Every offset, the genome size and the packed GPU
+layout are derived from the counts below, so raising one number moves the CPU
+evaluator, the sensor sampler, the compute shader and the tests together.
+
+```
+inputs 61                            hidden 20            outputs 8
+  7 receptors x 4 (RGB + luminance) = 28    each with        2 motors
+  8 tactile sectors x 2 (wall, agent) = 16   its own state    3 signal colour
+  3 antennae x 3 (trail RGB)          =  9   and its own      1 signal intensity
+  speed, turn rate, energy, own signal =  4  time constant    2 recurrent cells
+  cargo level, seeking-home flag       =  2                     (fed back as inputs)
+  2 recurrent cells fed back           =  2
+```
+
+The genome is one flat vector of 2668 floats in seven blocks:
+
+| Block | Size | Read by |
+| --- | --- | --- |
+| input -> hidden | 61 x 20 = 1220 | every model |
+| hidden bias | 20 | every model |
+| hidden -> output | 20 x 8 = 160 | every model |
+| output bias | 8 | every model |
+| time constants | 20 | `time` |
+| gate weights | 20 x 61 = 1220 | `gated` |
+| gate biases | 20 | `gated` |
+
+Every model carries every block, whichever one is selected. That is deliberate:
+it makes switching a parameter change rather than a reinterpretation of the
+population, so a saved run stays meaningful across a switch, and it is why the
+three are comparable at all. It was 1408 weights before time constants existed
+and 1428 with them; the gate block roughly doubles it, and the packing limit
+(`BrainStrideMask`, 4095 per stride) is still not near.
+
+State is one float per hidden neuron, on the agent record beside everything
+else a step carries -- 176 to 256 bytes -- so the CPU path and the GPU path
+store it the same way and multi-step parity covers it without a separate
+harness. It is zero at the start of a generation, which is the whole of the
+reset semantics. The gate needs no state of its own: what it needs is the state
+the neuron already has.
+
+Both file formats notice a brain that changed shape. A genome archive from an
+older brain is rejected by the weight count it already records, with a message
+naming both counts, which is more use than a version number would be; world
+snapshots carry a version of their own, currently 7.
 
 ## Replay
 

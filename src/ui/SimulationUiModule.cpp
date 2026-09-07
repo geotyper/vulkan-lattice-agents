@@ -224,6 +224,17 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                               "a solution reads the colour at all -- one that does not will score "
                               "the same with this on.");
     }
+    if (scenario.tunables.blockedDoorPerGeneration) {
+        if (ImGui::Checkbox("Dead end changes by generation",
+                            &state_.physics.blockedDoorPerGeneration)) {
+            state_.controls.resetRequested = true;
+        }
+        ImGui::SetItemTooltip("Off, the dead end swaps every trial, so one genome meets both "
+                              "layouts and always turning the same way caps at half the trials. "
+                              "On, the whole population trains on one door and its successors on "
+                              "the other: selection inside a generation is undiluted, at the risk "
+                              "of the population thrashing between the two.");
+    }
     if (scenario.tunables.swapDeliveryEnds) {
         if (ImGui::Checkbox("Swap ends each generation", &state_.physics.swapDeliveryEnds)) {
             state_.controls.resetRequested = true;

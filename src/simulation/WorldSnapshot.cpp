@@ -108,9 +108,10 @@ struct PhysicsIntegers {
     std::uint32_t neuronModel{};
     std::uint32_t swapDeliveryEnds{};
     std::uint32_t uniformBeaconColor{};
+    std::uint32_t blockedDoorPerGeneration{};
 };
 
-static_assert(sizeof(PhysicsIntegers) == 48);
+static_assert(sizeof(PhysicsIntegers) == 52);
 
 void readExactly(std::ifstream& stream, void* destination, const std::size_t bytes,
                  const std::filesystem::path& path) {
@@ -172,7 +173,8 @@ void saveWorldSnapshot(const std::filesystem::path& path, const WorldSnapshot& s
                                    physics.trailEnabled ? 1U : 0U,
                                    static_cast<std::uint32_t>(physics.neuronModel),
                                    physics.swapDeliveryEnds ? 1U : 0U,
-                                   physics.uniformBeaconColor ? 1U : 0U};
+                                   physics.uniformBeaconColor ? 1U : 0U,
+                                   physics.blockedDoorPerGeneration ? 1U : 0U};
     stream.write(reinterpret_cast<const char*>(&integers), sizeof(integers));
 
     for (const Genome& genome : snapshot.genomes) {
@@ -246,6 +248,7 @@ WorldSnapshot loadWorldSnapshot(const std::filesystem::path& path) {
     snapshot.physics.trailEnabled = integers.trailEnabled != 0;
     snapshot.physics.swapDeliveryEnds = integers.swapDeliveryEnds != 0;
     snapshot.physics.uniformBeaconColor = integers.uniformBeaconColor != 0;
+    snapshot.physics.blockedDoorPerGeneration = integers.blockedDoorPerGeneration != 0;
     if (integers.neuronModel >= neuronModelCount) {
         throw WorldSnapshotError("World snapshot names neuron model " +
                                  std::to_string(integers.neuronModel) + ", which this build has "

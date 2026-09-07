@@ -69,6 +69,8 @@ struct ScenarioTunables {
     // Whether this scenario does anything with SimulationStep::swapDeliveryEnds,
     // so the control appears where it has an effect instead of everywhere.
     bool swapDeliveryEnds{};
+    // Whether this scenario reads SimulationStep::blockedDoorPerGeneration.
+    bool blockedDoorPerGeneration{};
 };
 
 // The complete contract of one experiment. Everything the simulation, the

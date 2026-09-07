@@ -137,7 +137,8 @@ void main() {
         // One quad per obstacle box, placed by the same kernel the step uses, so
         // what is drawn is what an agent will actually walk into.
         const vec2 centre = scenarioObstacleCentre(params.beaconScenario, agent,
-                                                   uint(gl_InstanceIndex), params.worldRadius);
+                                                   uint(gl_InstanceIndex), params.worldRadius,
+                                                   params.scenario);
         const vec2 halfExtent = scenarioObstacleHalfExtent(params.beaconScenario,
                                                            uint(gl_InstanceIndex),
                                                            params.worldRadius);

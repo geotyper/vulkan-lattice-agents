@@ -13,6 +13,7 @@
 #include "vkexp/simulation/Units.hpp"
 #include "vkexp/simulation/WorldSnapshot.hpp"
 #include "vkexp/worlds/ScenarioKernel.hpp"
+#include "vkexp/worlds/ScenarioMath.hpp"
 #include "vkexp/worlds/WorldScenario.hpp"
 
 #include <algorithm>
@@ -788,6 +789,12 @@ void testWorldSnapshotRoundTrip() {
     // still round-trips its own default, so only a value nothing defaults to
     // proves the field made the journey.
     snapshot.physics.neuronModel = vkexp::NeuronModel::Gated;
+    // The three world options are bools that default to false and landed in
+    // padding, so the size assertion beside the saver's field lists did not move
+    // when they were added. This test is their only guard.
+    snapshot.physics.swapDeliveryEnds = true;
+    snapshot.physics.uniformBeaconColor = true;
+    snapshot.physics.blockedDoorPerGeneration = true;
 
     snapshot.genomes.resize(4);
     for (std::size_t index = 0; index < snapshot.genomes.size(); ++index) {
@@ -837,6 +844,9 @@ void testWorldSnapshotRoundTrip() {
           "Snapshot ablation flags round-trip");
     check(loaded.physics.neuronModel == vkexp::NeuronModel::Gated,
           "Snapshot keeps the neuron model");
+    check(loaded.physics.swapDeliveryEnds && loaded.physics.uniformBeaconColor &&
+              loaded.physics.blockedDoorPerGeneration,
+          "Snapshot keeps the world options");
 
     // Once more with every flag inverted, because one polarity proves nothing
     // about a bool. All four default to true, so a flag the loader forgets to
@@ -853,12 +863,17 @@ void testWorldSnapshotRoundTrip() {
         inverted.physics.agentCollisionsEnabled = false;
         inverted.physics.beaconPhaseChanged = true;
         inverted.physics.neuronModel = vkexp::NeuronModel::Reactive;
+        inverted.physics.swapDeliveryEnds = false;
+        inverted.physics.uniformBeaconColor = false;
+        inverted.physics.blockedDoorPerGeneration = false;
         const std::filesystem::path invertedPath = path.parent_path() / "inverted.vknw";
         vkexp::saveWorldSnapshot(invertedPath, inverted);
         const vkexp::WorldSnapshot back = vkexp::loadWorldSnapshot(invertedPath);
         check(back.physics.trailEnabled && back.physics.agentLightEnabled &&
                   !back.physics.agentCollisionsEnabled && back.physics.beaconPhaseChanged &&
-                  back.physics.neuronModel == vkexp::NeuronModel::Reactive,
+                  back.physics.neuronModel == vkexp::NeuronModel::Reactive &&
+                  !back.physics.swapDeliveryEnds && !back.physics.uniformBeaconColor &&
+                  !back.physics.blockedDoorPerGeneration,
               "Snapshot ablation flags round-trip in both directions");
     }
 
@@ -1386,9 +1401,29 @@ void testTwoDoorsGeometry() {
               "Nothing occludes a line that never reaches the wall");
     }
 
-    check(kernel::twoDoorsBlockedDoor(0U) != kernel::twoDoorsBlockedDoor(1U) &&
-              kernel::twoDoorsBlockedDoor(0U) == kernel::twoDoorsBlockedDoor(2U),
-          "The dead end swaps every trial");
+    // Both clocks the dead end can run on, and each has to ignore the other's
+    // input entirely -- a version that mixed them would still alternate and
+    // would still pass a check that only looked at one argument.
+    for (const kernel::uint generation : {0U, 1U, 2U, 7U}) {
+        check(kernel::twoDoorsBlockedDoor(0U, generation, false) !=
+                      kernel::twoDoorsBlockedDoor(1U, generation, false) &&
+                  kernel::twoDoorsBlockedDoor(0U, generation, false) ==
+                      kernel::twoDoorsBlockedDoor(2U, generation, false),
+              "By trial, the dead end swaps every trial whatever the generation");
+    }
+    for (const kernel::uint trial : {0U, 1U, 2U, 3U}) {
+        check(kernel::twoDoorsBlockedDoor(trial, 0U, true) !=
+                      kernel::twoDoorsBlockedDoor(trial, 1U, true) &&
+                  kernel::twoDoorsBlockedDoor(trial, 0U, true) ==
+                      kernel::twoDoorsBlockedDoor(trial, 2U, true),
+              "By generation, the dead end swaps every generation whatever the trial");
+    }
+    // The whole point of the option: by generation, every trial in a generation
+    // meets the same layout, so a population is scored on one door at a time.
+    check(kernel::twoDoorsBlockedDoor(0U, 3U, true) == kernel::twoDoorsBlockedDoor(1U, 3U, true) &&
+              kernel::twoDoorsBlockedDoor(1U, 3U, true) ==
+                  kernel::twoDoorsBlockedDoor(2U, 3U, true),
+          "By generation, one generation is one layout for every trial");
 
     // Push-out separates and does not teleport: an agent overlapping a wall ends
     // up outside it, on the side it came from.
@@ -1630,6 +1665,72 @@ void testBeaconColorAblation() {
     check(anyChannelMoved, "The ablation reaches the receptors, not only the beacon record");
 }
 
+// The rule a delivery world lives or dies by: a beacon may not be scored again
+// until the opposite one has been reached. Without it the cheapest policy is to
+// sit on the resource and collect the pickup reward every step, and no amount of
+// world design would matter.
+//
+// It is worth a test rather than a reading of the code, because the guard is not
+// where it looks like it is. Nothing counts arrivals or remembers which beacon
+// was last touched: the early return compares against the distance to the
+// *current* target, and picking up switches that target to the far end, so the
+// second visit is not inside any arrival radius to begin with. That is a subtle
+// thing to preserve by accident.
+void testDeliveryCannotBeScoredTwice() {
+    vkexp::SimulationStep settings;
+    settings.beaconScenario = vkexp::BeaconScenario::TwoGaps;
+
+    vkexp::AgentState agent{};
+    agent.pose.w = vkexp::agentBodyRadius;
+    const vkexp::ActiveBeacons ends = vkexp::activeBeacons(agent, settings);
+    const vkexp::Float4 resource = ends.values[0].position;
+    const vkexp::Float4 home = ends.values[1].position;
+
+    const auto standAt = [&](const vkexp::Float4 place, const int steps) {
+        agent.pose.x = place.x;
+        agent.pose.y = place.y;
+        for (int step = 0; step < steps; ++step) {
+            vkexp::worlds::deliveryCycleAfterStep(agent, settings,
+                                                  vkexp::nearestBeaconDistance(agent, settings));
+        }
+    };
+
+    agent.metrics.x = vkexp::nearestBeaconDistance(agent, settings);
+    agent.metrics.y = agent.metrics.x;
+
+    // Loitering on the resource: one pickup, and then nothing however long it
+    // stays. The second step is the one that matters -- it is already carrying,
+    // so the target has moved to the far end and the arrival test cannot fire.
+    standAt(resource, 1);
+    const float afterFirstPickup = agent.metrics.w;
+    check(agent.internal.y >= 0.5F, "Reaching the resource picks up");
+    check(vkexp::completedForageCycles(agent) == 0, "A pickup is not a completed cycle");
+    standAt(resource, 200);
+    check(closeTo(agent.metrics.w, afterFirstPickup),
+          "Sitting on the resource scores exactly once, not once per step");
+
+    // Leaving and coming back is no different: still carrying, still nothing.
+    standAt({resource.x, resource.y * 0.4F, 0.0F, 0.0F}, 1);
+    standAt(resource, 1);
+    check(closeTo(agent.metrics.w, afterFirstPickup),
+          "Returning to the resource while carrying scores nothing");
+
+    // Only the opposite end releases the cycle, and it too counts once.
+    standAt(home, 1);
+    check(vkexp::completedForageCycles(agent) == 1, "Reaching home completes one cycle");
+    check(agent.internal.y < 0.5F, "Delivering drops the cargo");
+    const float afterFirstDelivery = agent.metrics.w;
+    standAt(home, 200);
+    check(closeTo(agent.metrics.w, afterFirstDelivery) &&
+              vkexp::completedForageCycles(agent) == 1,
+          "Sitting on home delivers exactly once, not once per step");
+
+    // And the next cycle is allowed, or the world would be one trip long.
+    standAt(resource, 1);
+    check(agent.internal.y >= 0.5F && agent.metrics.w > afterFirstDelivery,
+          "The resource is available again after a delivery");
+}
+
 void testExperimentSweep() {
     vkexp::SweepState sweep;
     sweep.values = {0.0F, 0.5F, 1.0F};
@@ -1727,6 +1828,7 @@ int main() {
     testShuttleGeometry();
     testTwoGapsGeometry();
     testBeaconColorAblation();
+    testDeliveryCannotBeScoredTwice();
     testScenarioRegistryContract();
     testFitnessWeightsAreParameters();
     testSharedScenarioKernel();

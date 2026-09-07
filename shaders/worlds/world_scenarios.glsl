@@ -102,9 +102,10 @@ float scenarioTargetDistance(uint scenario, Agent agent, vec2 position, uint pha
 // Static geometry, dispatched like everything else here. Only one scenario has
 // any, and the count comes from the scenario definition through the step
 // parameters, so this returns a degenerate box rather than enumerating who does.
-vec2 scenarioObstacleCentre(uint scenario, Agent agent, uint index, float worldRadius) {
+vec2 scenarioObstacleCentre(uint scenario, Agent agent, uint index, float worldRadius,
+                            ScenarioParameters sp) {
     if (scenario == 6u) {
-        return twoDoorsBoxCentre(index, worldRadius, twoDoorsScenarioBlockedDoor(agent));
+        return twoDoorsBoxCentre(index, worldRadius, twoDoorsScenarioBlockedDoor(agent, sp));
     }
     if (scenario == 7u) {
         return shuttleBoxCentre();
@@ -132,10 +133,10 @@ vec2 scenarioObstacleHalfExtent(uint scenario, uint index, float worldRadius) {
 // `obstacleCount` comes from the step parameters, so a scenario with no
 // obstacles costs one comparison and this file never enumerates who has any.
 bool scenarioSightBlocked(uint scenario, Agent agent, vec2 start, vec2 finish, float worldRadius,
-                          uint obstacleCount) {
+                          uint obstacleCount, ScenarioParameters sp) {
     for (uint index = 0u; index < obstacleCount; ++index) {
         if (segmentHitsBox(start, finish,
-                           scenarioObstacleCentre(scenario, agent, index, worldRadius),
+                           scenarioObstacleCentre(scenario, agent, index, worldRadius, sp),
                            scenarioObstacleHalfExtent(scenario, index, worldRadius))) {
             return true;
         }

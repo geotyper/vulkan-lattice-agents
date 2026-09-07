@@ -82,6 +82,8 @@ and CPU/GPU parity fails loudly after a contract-breaking shader change.
 - [x] static axis-aligned obstacles reported through the tactile channel;
 - [x] a divided arena whose two ends optionally trade places by generation, so a
       fixed heading cannot stand in for reading the target;
+- [x] the dead end keyed to the trial or to the generation, as a runtime option,
+      so undiluted selection and forced generalisation can be compared;
 - [x] scenario-owned spawn placement;
 - [x] light occlusion by static obstacles, covered by parity;
 - [ ] wall-ray and occlusion parity tests for a general segment world;

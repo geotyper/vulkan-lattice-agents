@@ -1,16 +1,17 @@
-// A wall with two gaps, one of them a dead end. Nothing is packed: the geometry
-// comes from the arena radius through the shared kernel, and which gap is
-// blocked comes from the trial the agent already carries, so this file only
-// says which numbers mean what.
+// A wall with two gaps, one of them a dead end. The geometry comes from the
+// arena radius through the shared kernel; what is packed is only the clock the
+// dead end runs on.
 //
 // floats0 = {unused, unused, unused, cargo decay rate},
-// floats1 = {pickup reward, delivery reward, unused, unused}.
+// floats1 = {pickup reward, delivery reward, unused, unused},
+// integers = {generation, layout keyed to the generation, unused, unused}.
 // Packed by gpuParameters in src/worlds/scenarios/TwoDoorsScenario.cpp; the
-// slots are the ones scenarioDeliveryCycleAfterStep reads for every scenario
-// running the collect-and-deliver cycle.
+// float slots are the ones scenarioDeliveryCycleAfterStep reads for every
+// scenario running the collect-and-deliver cycle.
 
-uint twoDoorsScenarioBlockedDoor(Agent agent) {
-    return twoDoorsBlockedDoor(uint(max(agent.target.z, 0.0)));
+uint twoDoorsScenarioBlockedDoor(Agent agent, ScenarioParameters sp) {
+    return twoDoorsBlockedDoor(uint(max(agent.target.z, 0.0)), sp.integers.x,
+                               sp.integers.y != 0u);
 }
 
 vec2 twoDoorsScenarioPosition(uint beaconIndex, float worldRadius) {

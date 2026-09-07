@@ -10,6 +10,6 @@ ActiveBeacons beacons(const AgentState& agent, const SimulationStep& settings);
 float targetDistance(const AgentState& agent, const SimulationStep& settings);
 
 // Which gap is a dead end for the trial this agent is running.
-[[nodiscard]] std::uint32_t blockedDoor(const AgentState& agent);
+[[nodiscard]] std::uint32_t blockedDoor(const AgentState& agent, const SimulationStep& settings);
 
 } // namespace vkexp::worlds::two_doors

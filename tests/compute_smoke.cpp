@@ -400,7 +400,8 @@ const char* scenarioName(const vkexp::BeaconScenario scenario) {
 void runTrajectoryParity(vkexp::HeadlessComputeContext& context,
                          const vkexp::BeaconScenario scenario, const std::uint32_t steps,
                          const vkexp::NeuronModel neuronModel = vkexp::NeuronModel::TimeConstant,
-                         const bool swapEnds = false, const bool uniformBeaconColor = false) {
+                         const bool swapEnds = false, const bool uniformBeaconColor = false,
+                         const bool doorsByGeneration = false) {
     const vkexp::neuro::Weights weights = makeTestWeights();
     vkexp::SimulationStep base{};
     base.beaconScenario = scenario;
@@ -408,10 +409,12 @@ void runTrajectoryParity(vkexp::HeadlessComputeContext& context,
     base.beaconMotionSeed = 0x5eed1234U;
     base.swapDeliveryEnds = swapEnds;
     base.uniformBeaconColor = uniformBeaconColor;
-    // The seed is the generation number, and the swap fires on odd ones. The
-    // default seed is even, so asking for the swap without this would set a flag
-    // that changes nothing and call the result parity.
-    if (swapEnds) {
+    base.blockedDoorPerGeneration = doorsByGeneration;
+    // The seed is the generation number, and both generation-keyed options land
+    // on odd ones. The default seed is even and the probe agent runs trial 0, so
+    // asking for either without this would set a flag that changes nothing and
+    // call the result parity.
+    if (swapEnds || doorsByGeneration) {
         base.beaconMotionSeed |= 1U;
     }
 
@@ -478,7 +481,8 @@ void runTrajectoryParity(vkexp::HeadlessComputeContext& context,
                                                                             : "time constant";
     std::cout << "  drift[" << scenarioName(scenario) << ", " << modelName
               << (swapEnds ? ", swapped" : "") << (uniformBeaconColor ? ", hue ablated" : "")
-              << "] = " << worstDrift << '\n';
+              << (doorsByGeneration ? ", doors by generation" : "") << "] = " << worstDrift
+              << '\n';
     if (std::abs(worstDrift) > accumulatedDriftBudget) {
         throw std::runtime_error(std::string{"Trajectory parity ["} + scenarioName(scenario) +
                                  "] accumulated a systematic CPU/GPU drift of " +
@@ -903,6 +907,12 @@ int run() {
     // it is exactly the kind of rule that can be written differently twice.
     runTrajectoryParity(context, vkexp::BeaconScenario::TwoGaps, 540,
                         vkexp::NeuronModel::TimeConstant, false, true);
+    // Which door is the dead end moves the pocket, and the pocket occludes, so a
+    // side reading the layout off the wrong clock diverges in the light before it
+    // diverges in a collision. The probe agent runs trial 0 against an odd
+    // generation, which is exactly where the two clocks disagree.
+    runTrajectoryParity(context, vkexp::BeaconScenario::TwoDoors, 540,
+                        vkexp::NeuronModel::TimeConstant, false, false, true);
     runGenomeAddressingProbe(context);
     runTrailFieldProbe(context);
     runMultiAgentDeterminism(context);
