@@ -215,6 +215,16 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
         }
         ImGui::TextDisabled("Home relocates every %.0f seconds", forageHomeRelocationSeconds);
     }
+    if (scenario.tunables.swapDeliveryEnds) {
+        if (ImGui::Checkbox("Swap ends each generation", &state_.physics.swapDeliveryEnds)) {
+            state_.controls.resetRequested = true;
+        }
+        ImGui::SetItemTooltip("The resource and home trade places on odd generations. A heading is "
+                              "then worth nothing and the beacon colour is the only thing that "
+                              "says which end is which, so a genome cannot win by always carrying "
+                              "the same way. Learn it with this off first: a run that has not "
+                              "solved the fixed layout says nothing about the swapped one.");
+    }
     if (scenario.description != nullptr) {
         ImGui::TextDisabled("%s", scenario.description);
     }

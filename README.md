@@ -84,6 +84,7 @@ only work from one spawn position or heading.
 | Beacon scenario | Scent relay | The same collect-and-deliver cycle, but home emits no light and lays no trail: it can only be found by dead reckoning or by a path the agents themselves marked. |
 | Beacon scenario | Two doors | The same cycle across a wall with two gaps, one of which is a dead end. Which one swaps every trial, and from the home side they are identical. |
 | Beacon scenario | Shuttle | Fetch and carry back, over and over until the trial ends, around a short wall that closes the straight line between the two beacons. |
+| Beacon scenario | Two gaps | The same repeated cycle across a wall with two ways through, neither a dead end, with an option to make the two ends trade places every other generation. |
 
 Changing the world size, shape, or beacon scenario resets the evolution because
 fitness values gathered in different environments are not directly comparable.
@@ -225,6 +226,66 @@ vkneuro_headless --scenario doors --generations 200 --seed 5 --csv runs/doors.cs
 # and the same run with a memoryless brain, to see what the time constants bought
 vkneuro_headless --scenario doors --generations 200 --seed 5 --neuron-model reactive \
                  --csv runs/doors-reactive.csv
+```
+
+## Two gaps
+
+A wall right across the arena with two ways through, neither of them a dead end,
+and an option that makes the resource and home trade places from one generation
+to the next.
+
+```text
+        resource (or home)
+   +-------------------------+
+   |####       ####      ####|   two gaps, no dead end
+   |     home (or resource)  |
+   +-------------------------+
+```
+
+**Why the ends swap.** With a fixed layout a genome can win without ever reading
+the light: carry north, deliver south. Nothing in the fitness function
+distinguishes that from having understood the task, and the difference only
+shows up when the world changes. Swapping the ends makes a heading worth
+nothing, and since the two beacons differ only in colour, the colour becomes the
+only thing that says which end is which. It is off by default: it is the harder
+task, and a run that has not solved the fixed layout first says nothing about
+the swapped one.
+
+The swap follows the generation number rather than the trial, deliberately. Per
+trial, one genome would meet both layouts inside a generation and be scored on
+the average, which rewards a compromise; per generation, a whole population
+meets one layout and its successor meets the other, so what carries over is
+whatever generalised.
+
+**Why the geometry is what it is.** Fitness shapes on the *best straight-line
+approach* to the current target, and that makes any wall between the two ends a
+trap: the spot pressed against the middle of the wall is simultaneously the best
+score on offer and the one place with no line of sight to the target at all.
+Reaching a gap costs distance, so it earns nothing until the agent is well past
+it. Every world here has that plateau; what decides whether it is escapable is
+how much of the far side can see the target at all:
+
+| | plateau | target visible from | outcome |
+| --- | --- | --- | --- |
+| Two doors | 0.17 m | 5.7% of the far side | not solved in 450 generations |
+| Shuttle | 0.12 m | 36% | solved quickly |
+| Two gaps | 0.11 m | 19% | the geometry these numbers chose |
+
+Two doors is not hard because the arena is big. Its ends sit 1.10x the light
+range apart -- and that ratio is the same in every world size, because the range
+is a fraction of the arena radius rather than a fixed number of metres -- so an
+agent standing on one end perceives *nothing whatever* of the other, and the
+plateau has no gradient to climb out on at any world size. Two gaps puts them
+0.77x apart, so what hides the target is the wall, which the agent can do
+something about, and not the range, which it cannot. `testTwoGapsGeometry`
+asserts that separation against the light range in all three world sizes, so the
+constant cannot drift back.
+
+```sh
+# Learn the fixed layout first, then the swapped one from the same seed.
+vkneuro_headless --scenario gaps --generations 200 --seed 5 --csv runs/gaps.csv
+vkneuro_headless --scenario gaps --generations 200 --seed 5 --swap-ends \
+                 --csv runs/gaps-swapped.csv
 ```
 
 ## Group fitness sharing

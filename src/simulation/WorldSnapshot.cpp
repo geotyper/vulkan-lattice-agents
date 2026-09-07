@@ -86,7 +86,8 @@ constexpr std::uint32_t physicsFloatCount = 36;
 //
 // It catches every float and every integer, but not a bool: a bool can land in
 // padding the trailing bools already carry and move this number not at all, as
-// neuronMemoryEnabled did before it became an enum. A new bool is therefore
+// neuronMemoryEnabled did before it became an enum, and as swapDeliveryEnds did
+// after it. A new bool is therefore
 // covered by testWorldSnapshotRoundTrip naming it in both polarities, which is
 // the check that does not depend on the size changing.
 static_assert(sizeof(SimulationStep) == 176,
@@ -105,9 +106,10 @@ struct PhysicsIntegers {
     std::uint32_t agentLightEnabled{};
     std::uint32_t trailEnabled{};
     std::uint32_t neuronModel{};
+    std::uint32_t swapDeliveryEnds{};
 };
 
-static_assert(sizeof(PhysicsIntegers) == 40);
+static_assert(sizeof(PhysicsIntegers) == 44);
 
 void readExactly(std::ifstream& stream, void* destination, const std::size_t bytes,
                  const std::filesystem::path& path) {
@@ -167,7 +169,8 @@ void saveWorldSnapshot(const std::filesystem::path& path, const WorldSnapshot& s
                                    physics.agentCollisionsEnabled ? 1U : 0U,
                                    physics.agentLightEnabled ? 1U : 0U,
                                    physics.trailEnabled ? 1U : 0U,
-                                   static_cast<std::uint32_t>(physics.neuronModel)};
+                                   static_cast<std::uint32_t>(physics.neuronModel),
+                                   physics.swapDeliveryEnds ? 1U : 0U};
     stream.write(reinterpret_cast<const char*>(&integers), sizeof(integers));
 
     for (const Genome& genome : snapshot.genomes) {
@@ -239,6 +242,7 @@ WorldSnapshot loadWorldSnapshot(const std::filesystem::path& path) {
     snapshot.physics.agentCollisionsEnabled = integers.agentCollisionsEnabled != 0;
     snapshot.physics.agentLightEnabled = integers.agentLightEnabled != 0;
     snapshot.physics.trailEnabled = integers.trailEnabled != 0;
+    snapshot.physics.swapDeliveryEnds = integers.swapDeliveryEnds != 0;
     if (integers.neuronModel >= neuronModelCount) {
         throw WorldSnapshotError("World snapshot names neuron model " +
                                  std::to_string(integers.neuronModel) + ", which this build has "

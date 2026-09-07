@@ -46,9 +46,10 @@ enum class BeaconScenario : std::uint32_t {
     ScentRelay = 5,
     TwoDoors = 6,
     Shuttle = 7,
+    TwoGaps = 8,
 };
 
-inline constexpr std::size_t beaconScenarioCount = 8;
+inline constexpr std::size_t beaconScenarioCount = 9;
 
 // Body radius in metres: a 4.4 cm disc, roughly an e-puck-class table robot.
 // Stored per agent in `pose.w`, so a scenario may vary it; this is the spawn
@@ -325,6 +326,11 @@ struct SimulationStep {
     bool beaconPhaseChanged{};
     bool agentCollisionsEnabled{true};
     bool agentLightEnabled{true};
+    // Two gaps only: trade the resource and home ends every other generation, so
+    // a genome cannot bake in "carry north, deliver south" and must read which
+    // colour it is heading for. Off by default, because it is the harder task
+    // and a run that has not learned the easy one first says nothing.
+    bool swapDeliveryEnds{false};
     // Where a hidden neuron's time constant comes from. Reactive pins it to
     // deltaTime, which makes the update y = activation and reproduces the
     // memoryless network exactly, so every model is the same code path with one

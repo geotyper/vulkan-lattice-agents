@@ -399,12 +399,20 @@ const char* scenarioName(const vkexp::BeaconScenario scenario) {
 // accumulate through tanh feedback.
 void runTrajectoryParity(vkexp::HeadlessComputeContext& context,
                          const vkexp::BeaconScenario scenario, const std::uint32_t steps,
-                         const vkexp::NeuronModel neuronModel = vkexp::NeuronModel::TimeConstant) {
+                         const vkexp::NeuronModel neuronModel = vkexp::NeuronModel::TimeConstant,
+                         const bool swapEnds = false) {
     const vkexp::neuro::Weights weights = makeTestWeights();
     vkexp::SimulationStep base{};
     base.beaconScenario = scenario;
     base.neuronModel = neuronModel;
     base.beaconMotionSeed = 0x5eed1234U;
+    base.swapDeliveryEnds = swapEnds;
+    // The seed is the generation number, and the swap fires on odd ones. The
+    // default seed is even, so asking for the swap without this would set a flag
+    // that changes nothing and call the result parity.
+    if (swapEnds) {
+        base.beaconMotionSeed |= 1U;
+    }
 
     StepHarness harness{context, 1, 1, 1, 1, base.worldRadius};
     harness.genomes.write(weights.data(), sizeof(weights));
@@ -467,8 +475,8 @@ void runTrajectoryParity(vkexp::HeadlessComputeContext& context,
     const char* modelName = neuronModel == vkexp::NeuronModel::Reactive      ? "reactive"
                             : neuronModel == vkexp::NeuronModel::Gated       ? "gated"
                                                                             : "time constant";
-    std::cout << "  drift[" << scenarioName(scenario) << ", " << modelName << "] = " << worstDrift
-              << '\n';
+    std::cout << "  drift[" << scenarioName(scenario) << ", " << modelName
+              << (swapEnds ? ", swapped" : "") << "] = " << worstDrift << '\n';
     if (std::abs(worstDrift) > accumulatedDriftBudget) {
         throw std::runtime_error(std::string{"Trajectory parity ["} + scenarioName(scenario) +
                                  "] accumulated a systematic CPU/GPU drift of " +
@@ -882,6 +890,12 @@ int run() {
                         vkexp::NeuronModel::Reactive);
     runTrajectoryParity(context, vkexp::BeaconScenario::Shuttle, 540, vkexp::NeuronModel::Gated);
     runTrajectoryParity(context, vkexp::BeaconScenario::TwoDoors, 540, vkexp::NeuronModel::Gated);
+    // Both layouts of the swapping world. One polarity would prove nothing: the
+    // swap is a branch on each side, and a side that ignored the flag entirely
+    // would agree with the other in exactly the unswapped case.
+    runTrajectoryParity(context, vkexp::BeaconScenario::TwoGaps, 540);
+    runTrajectoryParity(context, vkexp::BeaconScenario::TwoGaps, 540,
+                        vkexp::NeuronModel::TimeConstant, true);
     runGenomeAddressingProbe(context);
     runTrailFieldProbe(context);
     runMultiAgentDeterminism(context);

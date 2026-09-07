@@ -1361,6 +1361,104 @@ void testShuttleGeometry() {
           "The default trial has room for at least two round trips");
 }
 
+void testTwoGapsGeometry() {
+    namespace kernel = vkexp::worlds::kernel;
+    constexpr float radius = 1.84F;
+    constexpr float maximumConfigurableSpeed = 1.50F;
+    const vkexp::SimulationStep defaults;
+
+    const kernel::vec2 resource = kernel::twoGapsResourcePosition(radius, false);
+    const kernel::vec2 home = kernel::twoGapsHomePosition(radius, false);
+
+    const auto crossesWall = [&](const kernel::vec2 from, const kernel::vec2 to) {
+        for (std::uint32_t index = 0; index < kernel::TwoGapsBoxCount; ++index) {
+            if (kernel::segmentHitsBox(from, to, kernel::twoGapsBoxCentre(index, radius),
+                                       kernel::twoGapsBoxHalfExtent(index, radius))) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // The wall divides the arena: the straight line between the ends is closed,
+    // and so is every line that does not pass through a gap. A point probe would
+    // pass a seam between two boxes, so this sweeps the whole span instead.
+    check(crossesWall(home, resource), "The wall closes the straight line between the ends");
+    const float gap = kernel::TwoGapsGapOffset * radius;
+    const float gapHalf = kernel::TwoGapsGapHalfWidth * radius;
+    constexpr int samples = 400;
+    int openColumns = 0;
+    for (int step = 0; step <= samples; ++step) {
+        const float x = -radius + 2.0F * radius * static_cast<float>(step) /
+                                      static_cast<float>(samples);
+        const bool open = !crossesWall({x, -radius}, {x, radius});
+        if (open) {
+            ++openColumns;
+            check(std::abs(std::abs(x) - gap) <= gapHalf,
+                  "The wall is open only inside one of the two gaps");
+        }
+    }
+    check(openColumns > 0, "Both gaps are actually open");
+
+    // Neither gap is a dead end -- that is what separates this world from Two
+    // doors. Through either one and on to the far end, in two legs.
+    for (const float side : {-1.0F, 1.0F}) {
+        const kernel::vec2 mouth{side * gap, 0.0F};
+        check(!crossesWall(home, mouth) && !crossesWall(mouth, resource),
+              "Either gap leads all the way through");
+    }
+
+    // Wide enough to steer through rather than to squeeze through, and thin
+    // enough not to be stepped over between two contact tests at the top of the
+    // speed slider.
+    check(gapHalf > vkexp::agentBodyRadius * 2.0F, "A gap is wider than the body that uses it");
+    const float fastestStep = maximumConfigurableSpeed * vkexp::units::fixedTimeStep;
+    check(2.0F * (kernel::TwoGapsWallHalfThickness + vkexp::agentBodyRadius) > fastestStep,
+          "The wall cannot be stepped over between two contact tests");
+    for (const float arena : {1.84F, 2.76F, 5.52F}) {
+        check(closeTo(kernel::twoGapsBoxHalfExtent(1u, arena).y, vkexp::agentBodyRadius),
+              "Wall thickness does not scale with the arena");
+    }
+
+    // The number the geometry was actually chosen for. Fitness shapes on the
+    // best straight-line approach, so the wall makes a plateau; the way out of
+    // it is seeing the far end, which is only possible if it is in range at all.
+    // Two doors puts the ends 1.10x the light range apart -- at every world size,
+    // since the range is a fraction of the arena radius -- so an agent standing
+    // on one end perceives nothing whatever of the other, and no amount of
+    // generations turns that into a gradient. This asserts the fix.
+    const float separation = std::hypot(resource.x - home.x, resource.y - home.y);
+    for (const vkexp::WorldSize size :
+         {vkexp::WorldSize::Small, vkexp::WorldSize::Medium, vkexp::WorldSize::Large}) {
+        vkexp::SimulationStep settings = defaults;
+        settings.worldRadius = vkexp::worldRadiusForSize(size);
+        const float range = vkexp::lightRangeForWorld(settings);
+        const kernel::vec2 far = kernel::twoGapsResourcePosition(settings.worldRadius, false);
+        const kernel::vec2 near = kernel::twoGapsHomePosition(settings.worldRadius, false);
+        check(std::hypot(far.x - near.x, far.y - near.y) < range,
+              "Each end is inside light range of the other, in every world size");
+    }
+    check(separation < vkexp::lightRangeForWorld(defaults), "The ends are mutually visible");
+
+    // The swap. Off, it never fires whatever the generation; on, it alternates,
+    // and it exchanges the two ends rather than moving either one somewhere new.
+    for (std::uint32_t generation = 0; generation < 4; ++generation) {
+        check(!kernel::twoGapsEndsSwapped(generation, false), "Off, the ends never trade places");
+        check(kernel::twoGapsEndsSwapped(generation, true) == (generation % 2 == 1),
+              "On, the ends trade places on odd generations");
+    }
+    const kernel::vec2 swappedResource = kernel::twoGapsResourcePosition(radius, true);
+    const kernel::vec2 swappedHome = kernel::twoGapsHomePosition(radius, true);
+    check(closeTo(swappedResource.y, home.y) && closeTo(swappedHome.y, resource.y),
+          "Swapping exchanges the two ends");
+    // The wall is the same wall either way, so a swapped generation is the same
+    // world seen the other way up and not a second geometry to get right.
+    for (std::uint32_t index = 0; index < kernel::TwoGapsBoxCount; ++index) {
+        const kernel::vec2 centre = kernel::twoGapsBoxCentre(index, radius);
+        check(closeTo(centre.y, 0.0F), "Every wall segment sits on the axis the ends swap across");
+    }
+}
+
 void testExperimentSweep() {
     vkexp::SweepState sweep;
     sweep.values = {0.0F, 0.5F, 1.0F};
@@ -1456,6 +1554,7 @@ int main() {
     testGatedNeurons();
     testTwoDoorsGeometry();
     testShuttleGeometry();
+    testTwoGapsGeometry();
     testScenarioRegistryContract();
     testFitnessWeightsAreParameters();
     testSharedScenarioKernel();

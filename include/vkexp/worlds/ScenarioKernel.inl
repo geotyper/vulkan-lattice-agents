@@ -183,6 +183,96 @@ VKEXP_KERNEL_FN vec2 twoDoorsBoxHalfExtent(uint index, float worldRadius) {
     return vec2(thickness, TwoDoorsPocketDepth * worldRadius * 0.5f);
 }
 
+// --- two gaps --------------------------------------------------------------
+//
+// A wall right across the arena with two ways through, neither of them a dead
+// end, and the two ends of the delivery cycle optionally trading places from
+// one generation to the next.
+//
+//        resource (or home)
+//   +-------------------------+
+//   |####       ####      ####|   wall, y = 0, two gaps
+//   |    home (or resource)   |
+//   +-------------------------+
+//
+// The measurement that set these numbers is worth writing down, because the
+// obvious geometry does not work. Fitness shapes on the *best straight-line
+// approach* to the target, so a wall between the two ends creates a place --
+// pressed against the middle segment, on the line between them -- that is
+// simultaneously the best score on offer and the one spot with no line of sight
+// to the target at all. Getting to a gap costs distance and therefore earns
+// nothing until the agent is well past it. Two doors has that plateau 0.17 m
+// deep with the target visible from 5.7% of the far side, and does not solve it.
+// Shuttle has it 0.12 m deep with 36% visible, and solves it quickly. These
+// constants put this world at 0.11 m and 19%: the same plateau as the world that
+// learns, and three times the sight line of the world that does not.
+//
+// Which is also why the ends sit at 0.50 rather than further apart. At 0.72, as
+// in Two doors, the separation is 1.10x the light range at *every* world size --
+// the ratio is scale-free, since the range is a fraction of the arena radius --
+// so an agent standing on one end sees nothing whatever of the other, and the
+// plateau has no perceptual gradient to climb out on. At 0.50 the separation is
+// 0.77x the range, so what hides the target is the wall, which the agent can do
+// something about, and not the range, which it cannot.
+const uint TwoGapsBoxCount = 3u;
+const float TwoGapsWallHalfThickness = ScenarioAgentBodyRadius;
+const float TwoGapsGapOffset = 0.30f;    // fraction of the world radius
+const float TwoGapsGapHalfWidth = 0.08f;
+const float TwoGapsArenaReach = 1.05f;   // past the arena edge, so no gap at the rim
+const float TwoGapsBeaconY = 0.50f;
+
+// Whether the two ends have traded places this generation. Off, the resource is
+// always north and home always south, and a genome can bake the direction in
+// without ever reading the light. On, the direction is worth nothing and the
+// colour is the only thing that says which end is which -- so the swap is what
+// makes this world a test of perception rather than of memorisation.
+//
+// The generation number is what varies, because a trial index would let one
+// genome be scored on both layouts within a generation and average them; the
+// point is that a whole population meets one layout, and the next one meets the
+// other. Both sides resolve it through this function rather than packing an
+// already-resolved flag, so the rule itself is the shared thing.
+VKEXP_KERNEL_FN bool twoGapsEndsSwapped(uint generation, bool swapEnabled) {
+    return swapEnabled && (generation & 1u) == 1u;
+}
+
+VKEXP_KERNEL_FN vec2 twoGapsResourcePosition(float worldRadius, bool swapped) {
+    const float side = swapped ? -TwoGapsBeaconY : TwoGapsBeaconY;
+    return vec2(0.0f, side * worldRadius);
+}
+
+VKEXP_KERNEL_FN vec2 twoGapsHomePosition(float worldRadius, bool swapped) {
+    const float side = swapped ? TwoGapsBeaconY : -TwoGapsBeaconY;
+    return vec2(0.0f, side * worldRadius);
+}
+
+// Box `index` as a centre; `twoGapsBoxHalfExtent` gives the matching extent.
+// Neither depends on the swap: the wall is the same wall whichever end is which.
+VKEXP_KERNEL_FN vec2 twoGapsBoxCentre(uint index, float worldRadius) {
+    const float gap = TwoGapsGapOffset * worldRadius;
+    const float gapHalf = TwoGapsGapHalfWidth * worldRadius;
+    const float reach = TwoGapsArenaReach * worldRadius;
+    if (index == 0u) { // outer left, from the rim to the left gap
+        return vec2((-reach + (-gap - gapHalf)) * 0.5f, 0.0f);
+    }
+    if (index == 1u) { // between the two gaps
+        return vec2(0.0f, 0.0f);
+    }
+    return vec2((reach + (gap + gapHalf)) * 0.5f, 0.0f); // outer right
+}
+
+// The two outer segments are mirror images, so they share an extent and differ
+// only in the centre above.
+VKEXP_KERNEL_FN vec2 twoGapsBoxHalfExtent(uint index, float worldRadius) {
+    const float gap = TwoGapsGapOffset * worldRadius;
+    const float gapHalf = TwoGapsGapHalfWidth * worldRadius;
+    const float reach = TwoGapsArenaReach * worldRadius;
+    if (index == 1u) {
+        return vec2(gap - gapHalf, TwoGapsWallHalfThickness);
+    }
+    return vec2((reach - (gap + gapHalf)) * 0.5f, TwoGapsWallHalfThickness);
+}
+
 // Does the segment from `start` to `finish` cross the box? The slab test, which
 // is the whole of light occlusion: a wall that stops a body but not its light is
 // a wall an agent can see through, and the light gradient then pulls it straight

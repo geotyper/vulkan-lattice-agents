@@ -146,6 +146,7 @@ add_library(vkneuro_domain STATIC
     src/worlds/scenarios/ShuttleScenario.cpp
     src/worlds/scenarios/StationaryScenario.cpp
     src/worlds/scenarios/TwoDoorsScenario.cpp
+    src/worlds/scenarios/TwoGapsScenario.cpp
     src/worlds/scenarios/AlternatingScenario.cpp
     src/worlds/scenarios/RotatingScenario.cpp
     src/worlds/scenarios/RandomMovementScenario.cpp

@@ -66,6 +66,9 @@ struct ScenarioTunables {
     bool beaconAngularSpeed{};
     bool beaconRandomMotion{};
     bool forageCargoDecay{};
+    // Whether this scenario does anything with SimulationStep::swapDeliveryEnds,
+    // so the control appears where it has an effect instead of everywhere.
+    bool swapDeliveryEnds{};
 };
 
 // The complete contract of one experiment. Everything the simulation, the

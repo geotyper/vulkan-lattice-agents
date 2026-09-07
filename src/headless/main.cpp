@@ -38,6 +38,7 @@ struct Options {
     std::uint32_t seed{0xC0FFEEU};
     bool agentCollisions{true};
     bool agentLight{true};
+    bool swapDeliveryEnds{false};
     vkexp::FitnessWeights fitness{};
     // Optional physics overrides. Absent means "keep the default", which lets a
     // sweep change one term without restating the rest of SimulationStep.
@@ -93,6 +94,7 @@ void printHelp(const char* executable) {
                  "Ablations:\n"
                  "  --no-agent-collisions    disable agent-agent collisions\n"
                  "  --no-agent-light         disable perception of other agents' signals\n"
+                 "  --swap-ends              two gaps: trade the ends every other generation\n"
                  "  --no-trail               disable the ground trail field entirely\n"
                  "  --neuron-model <name>    reactive|time|gated: where a hidden neuron's "
                  "time\n"
@@ -255,6 +257,8 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.neuronModel = parseNeuronModel(next(index, argument));
         } else if (argument == "--no-agent-light") {
             options.agentLight = false;
+        } else if (argument == "--swap-ends") {
+            options.swapDeliveryEnds = true;
         } else if (argument == "--quiet") {
             options.quiet = true;
         } else if (argument == "--save-population") {
@@ -305,6 +309,7 @@ int run(const Options& options) {
     state.physics.lightSensorRange = vkexp::lightRangeForWorld(state.physics);
     state.physics.agentCollisionsEnabled = options.agentCollisions;
     state.physics.agentLightEnabled = options.agentLight;
+    state.physics.swapDeliveryEnds = options.swapDeliveryEnds;
     state.physics.fitness = options.fitness;
     if (options.beaconAngularSpeed) {
         state.physics.beaconAngularSpeed = *options.beaconAngularSpeed;
@@ -410,6 +415,12 @@ int run(const Options& options) {
                   << (state.physics.agentLightEnabled ? "on" : "OFF") << ", trail "
                   << (state.physics.trailEnabled ? "on" : "OFF") << '\n'
                   << "Neurons:    " << neuronModelName(state.physics.neuronModel) << '\n';
+        // Only when it is on, and only where it does something, so a default
+        // run's output stays comparable with every run recorded before it.
+        if (state.physics.swapDeliveryEnds &&
+            vkexp::scenarioDefinition(state.physics.beaconScenario).tunables.swapDeliveryEnds) {
+            std::cout << "World:      the two ends trade places on odd generations\n";
+        }
         // Only when it is on, so a default run's output stays byte-identical to
         // every run recorded before the option existed.
         if (state.physics.fitness.groupSharing > 0.0F) {

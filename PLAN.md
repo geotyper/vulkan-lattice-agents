@@ -80,6 +80,8 @@ and CPU/GPU parity fails loudly after a contract-breaking shader change.
 - [x] circle-circle collision and tactile interaction tests;
 - [x] configurable fitness penalty for world-boundary contacts;
 - [x] static axis-aligned obstacles reported through the tactile channel;
+- [x] a divided arena whose two ends optionally trade places by generation, so a
+      fixed heading cannot stand in for reading the target;
 - [x] scenario-owned spawn placement;
 - [x] light occlusion by static obstacles, covered by parity;
 - [ ] wall-ray and occlusion parity tests for a general segment world;
@@ -270,6 +272,15 @@ later failure attributable to perception, control, fitness or evolution instead
 of only showing that population fitness stopped improving. The two-door world
 makes that worth building: there is now a specific thing to look for in a
 champion, which there was not on an orbiting beacon.
+
+Held deliberately, and now with a measurement behind it: fitness shapes on the
+best straight-line approach, which in a world with a wall between the two ends
+makes the blindest spot the highest-scoring one. Two gaps works around that by
+geometry -- the ends stay inside light range of each other, so the wall is what
+hides the target and the wall can be walked around. The general fix is a shaping
+term that measures progress along a route rather than in a straight line, and it
+should be written when a world needs geometry that cannot be arranged around the
+plateau, not before one does.
 
 Held deliberately: the obstacle interface is axis-aligned boxes, not the general
 segment-and-material world interface milestone 3 describes. Boxes are what a
