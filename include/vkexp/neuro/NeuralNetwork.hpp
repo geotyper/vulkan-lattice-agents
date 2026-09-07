@@ -100,18 +100,18 @@ using HiddenState = std::array<float, Topology::hiddenCount>;
 // the network from the same genome addressing the shader uses, so it is a way to
 // look inside one brain rather than a second implementation of the layout.
 //
-// Each hidden neuron is integrated toward its activation at its own evolved time
-// constant and the new state is left in `state`. With `neuronMemory` false every
-// time constant is pinned to `deltaTime`, which makes the update y = activation:
-// the memoryless network, reached by the same arithmetic rather than by a second
-// branch through it.
+// Each hidden neuron is integrated toward its activation at a time constant the
+// selected model decides, and the new state is left in `state`. The model only
+// chooses where the time constant comes from; the integrator is the same one in
+// every case, which is what makes switching models an ablation rather than a
+// swap between two networks. `model` is a kernel::NeuronModel* value.
 [[nodiscard]] Outputs evaluate(std::span<const float, Topology::weightCount> weights,
                                const Inputs& inputs, HiddenState& state, float deltaTime,
-                               bool neuronMemory, BrainShape shape = maximumBrainShape);
+                               kernel::uint model, BrainShape shape = maximumBrainShape);
 
 // Stateless convenience for the tests and inspections that ask what a brain does
 // to one input vector with no history. Defined in terms of the above with a
-// fresh state and memory off, so there is one evaluator and not two.
+// fresh state and the reactive model, so there is one evaluator and not two.
 [[nodiscard]] Outputs evaluate(std::span<const float, Topology::weightCount> weights,
                                const Inputs& inputs, BrainShape shape = maximumBrainShape);
 

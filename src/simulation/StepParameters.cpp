@@ -50,7 +50,7 @@ GpuStepParameters packStepParameters(const SimulationStep& resolved,
             layout.agentsPerWorld,
             packFitnessWeights(resolved.fitness),
             scenario.gpuParameters(resolved),
-            resolved.neuronMemoryEnabled ? 1U : 0U,
+            static_cast<std::uint32_t>(resolved.neuronModel),
             scenario.obstacleCount,
             0U,
             0U};

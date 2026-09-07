@@ -84,12 +84,12 @@ constexpr std::uint32_t physicsFloatCount = 36;
 // quietly not saved. If it fires: add the field to one of the two lists above,
 // bump worldSnapshotVersion, then update this number.
 //
-// It catches every float and every integer, but not a bool: `neuronMemoryEnabled`
-// was added to the settings without moving this number at all, having landed in
-// padding the trailing bools already carried. A new bool is therefore covered by
-// testWorldSnapshotRoundTrip naming it in both polarities, which is the check
-// that does not depend on the size changing.
-static_assert(sizeof(SimulationStep) == 172,
+// It catches every float and every integer, but not a bool: a bool can land in
+// padding the trailing bools already carry and move this number not at all, as
+// neuronMemoryEnabled did before it became an enum. A new bool is therefore
+// covered by testWorldSnapshotRoundTrip naming it in both polarities, which is
+// the check that does not depend on the size changing.
+static_assert(sizeof(SimulationStep) == 176,
               "SimulationStep changed shape -- update the world snapshot field lists");
 
 // The handful of fields that are not floats, kept apart so the float list above
@@ -104,7 +104,7 @@ struct PhysicsIntegers {
     std::uint32_t agentCollisionsEnabled{};
     std::uint32_t agentLightEnabled{};
     std::uint32_t trailEnabled{};
-    std::uint32_t neuronMemoryEnabled{};
+    std::uint32_t neuronModel{};
 };
 
 static_assert(sizeof(PhysicsIntegers) == 40);
@@ -167,7 +167,7 @@ void saveWorldSnapshot(const std::filesystem::path& path, const WorldSnapshot& s
                                    physics.agentCollisionsEnabled ? 1U : 0U,
                                    physics.agentLightEnabled ? 1U : 0U,
                                    physics.trailEnabled ? 1U : 0U,
-                                   physics.neuronMemoryEnabled ? 1U : 0U};
+                                   static_cast<std::uint32_t>(physics.neuronModel)};
     stream.write(reinterpret_cast<const char*>(&integers), sizeof(integers));
 
     for (const Genome& genome : snapshot.genomes) {
@@ -239,7 +239,12 @@ WorldSnapshot loadWorldSnapshot(const std::filesystem::path& path) {
     snapshot.physics.agentCollisionsEnabled = integers.agentCollisionsEnabled != 0;
     snapshot.physics.agentLightEnabled = integers.agentLightEnabled != 0;
     snapshot.physics.trailEnabled = integers.trailEnabled != 0;
-    snapshot.physics.neuronMemoryEnabled = integers.neuronMemoryEnabled != 0;
+    if (integers.neuronModel >= neuronModelCount) {
+        throw WorldSnapshotError("World snapshot names neuron model " +
+                                 std::to_string(integers.neuronModel) + ", which this build has "
+                                 "no rule for: " + path.string());
+    }
+    snapshot.physics.neuronModel = static_cast<NeuronModel>(integers.neuronModel);
 
     snapshot.genomes.resize(header.genomeCount);
     for (Genome& genome : snapshot.genomes) {

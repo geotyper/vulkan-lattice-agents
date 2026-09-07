@@ -399,18 +399,46 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::SliderFloat("Light exposure", &state_.physics.lightExposure, 0.1F, 4.0F);
     ImGui::Checkbox("Perceive agent light", &state_.physics.agentLightEnabled);
     ImGui::SeparatorText("Brain contract");
-    if (ImGui::Checkbox("Neuron memory", &state_.physics.neuronMemoryEnabled)) {
+    // One integrator, three sources for the rate it runs at, and the same genome
+    // under all of them -- so this is a live ablation rather than a choice
+    // between networks, and a population stays meaningful across a switch.
+    int neuronModel = static_cast<int>(state_.physics.neuronModel);
+    constexpr const char* neuronModels[] = {"Reactive", "Time constant", "Gated"};
+    static_assert(std::size(neuronModels) == neuronModelCount);
+    if (ImGui::Combo("Neuron model", &neuronModel, neuronModels,
+                     static_cast<int>(neuronModelCount))) {
+        state_.physics.neuronModel = static_cast<NeuronModel>(neuronModel);
         state_.controls.resetRequested = true;
     }
-    ImGui::SetItemTooltip("Each hidden neuron holds its own state and integrates toward its "
-                          "input at an evolved time constant, so fast neurons are reflexes and "
-                          "slow ones hold a fact across seconds. Off pins every time constant to "
-                          "one step, which is the memoryless network exactly.");
+    switch (state_.physics.neuronModel) {
+    case NeuronModel::Reactive:
+        ImGui::SetItemTooltip("No state at all: every time constant is pinned to one step, so a "
+                              "neuron is its input. This is the network from before time "
+                              "constants existed, reached by the same arithmetic.");
+        break;
+    case NeuronModel::TimeConstant:
+        ImGui::SetItemTooltip("Each neuron holds its own state and an evolved time constant, so "
+                              "fast neurons are reflexes and slow ones hold a fact across "
+                              "seconds. The rate is fixed for the neuron's life.");
+        break;
+    case NeuronModel::Gated:
+        ImGui::SetItemTooltip("The time constant is recomputed every step from the inputs, so a "
+                              "neuron can hold a value and then let go of it when something "
+                              "tells it to. The gate asks for a time constant, so driving it up "
+                              "holds and leaving it low follows. Feed it a constant and this is "
+                              "the row above, exactly.");
+        break;
+    }
     const neuro::BrainShape brain = scenarioDefinition(state_.physics.beaconScenario).brain;
     ImGui::Text("%zu inputs -> %zu tanh -> %zu outputs", brain.inputCount, brain.hiddenCount,
                 brain.outputCount);
     ImGui::TextDisabled("%zu active weights / %zu genome capacity", brain.weightCount(),
                         neuro::Topology::weightCount);
+    if (state_.physics.neuronModel != NeuronModel::Reactive) {
+        ImGui::TextDisabled("gate block %zu of %zu genes",
+                            brain.hiddenCount * (brain.inputCount + 1),
+                            neuro::Topology::weightCount);
+    }
     ImGui::TextDisabled("time constants %.0f ms .. %.1f s",
                         static_cast<double>(neuro::kernel::BrainTimeConstantMinimum * 1000.0F),
                         static_cast<double>(neuro::kernel::BrainTimeConstantMaximum));

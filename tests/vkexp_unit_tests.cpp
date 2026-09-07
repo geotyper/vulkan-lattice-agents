@@ -783,11 +783,10 @@ void testWorldSnapshotRoundTrip() {
     snapshot.physics.trailEnabled = false;
     snapshot.physics.agentLightEnabled = false;
     snapshot.physics.agentCollisionsEnabled = true;
-    // Named here because the size assertion beside the saver's field lists does
-    // not catch a bool: this one was added to the settings without changing
-    // sizeof(SimulationStep) at all, having landed in padding the trailing bools
-    // already carried.
-    snapshot.physics.neuronMemoryEnabled = false;
+    // Named here rather than left at its default: a setting the saver forgets
+    // still round-trips its own default, so only a value nothing defaults to
+    // proves the field made the journey.
+    snapshot.physics.neuronModel = vkexp::NeuronModel::Gated;
 
     snapshot.genomes.resize(4);
     for (std::size_t index = 0; index < snapshot.genomes.size(); ++index) {
@@ -833,8 +832,10 @@ void testWorldSnapshotRoundTrip() {
               loaded.physics.beaconMotionSeed == 987654U && loaded.physics.beaconPhase == 3U,
           "Snapshot world identity round-trip");
     check(!loaded.physics.trailEnabled && !loaded.physics.agentLightEnabled &&
-              !loaded.physics.neuronMemoryEnabled && loaded.physics.agentCollisionsEnabled,
+              loaded.physics.agentCollisionsEnabled,
           "Snapshot ablation flags round-trip");
+    check(loaded.physics.neuronModel == vkexp::NeuronModel::Gated,
+          "Snapshot keeps the neuron model");
 
     // Once more with every flag inverted, because one polarity proves nothing
     // about a bool. All four default to true, so a flag the loader forgets to
@@ -842,20 +843,21 @@ void testWorldSnapshotRoundTrip() {
     // while a flag the saver forgets to write reads back as false and passes a
     // test that only ever asks for false. Only both directions catch both, and
     // this is the check that has to: the size assertion beside the saver's field
-    // lists does not move when a bool is added, as neuronMemoryEnabled proved.
+    // lists does not move when a bool is added into padding the trailing bools
+    // already carry.
     {
         vkexp::WorldSnapshot inverted = snapshot;
         inverted.physics.trailEnabled = true;
         inverted.physics.agentLightEnabled = true;
-        inverted.physics.neuronMemoryEnabled = true;
         inverted.physics.agentCollisionsEnabled = false;
         inverted.physics.beaconPhaseChanged = true;
+        inverted.physics.neuronModel = vkexp::NeuronModel::Reactive;
         const std::filesystem::path invertedPath = path.parent_path() / "inverted.vknw";
         vkexp::saveWorldSnapshot(invertedPath, inverted);
         const vkexp::WorldSnapshot back = vkexp::loadWorldSnapshot(invertedPath);
         check(back.physics.trailEnabled && back.physics.agentLightEnabled &&
-                  back.physics.neuronMemoryEnabled && !back.physics.agentCollisionsEnabled &&
-                  back.physics.beaconPhaseChanged,
+                  !back.physics.agentCollisionsEnabled && back.physics.beaconPhaseChanged &&
+                  back.physics.neuronModel == vkexp::NeuronModel::Reactive,
               "Snapshot ablation flags round-trip in both directions");
     }
 
@@ -1034,17 +1036,17 @@ void testNeuronTimeConstants() {
 
     vkexp::neuro::HiddenState state{};
     const vkexp::neuro::Outputs memoryless =
-        vkexp::neuro::evaluate(weights, inputs, state, step, false);
+        vkexp::neuro::evaluate(weights, inputs, state, step, kernel::NeuronModelReactive);
     check(std::equal(memoryless.begin(), memoryless.end(),
                      vkexp::neuro::evaluate(weights, inputs).begin()),
-          "Memory off is exactly what the stateless evaluator computes");
+          "The reactive model is exactly what the stateless evaluator computes");
 
     // A gene of zero is a quarter-second neuron, so one step must move it a
     // fraction of the way and repeated steps must converge -- a neuron that
     // reached its input immediately would not be holding anything.
     vkexp::neuro::HiddenState remembering{};
     const vkexp::neuro::Outputs firstStep =
-        vkexp::neuro::evaluate(weights, inputs, remembering, step, true);
+        vkexp::neuro::evaluate(weights, inputs, remembering, step, kernel::NeuronModelTimeConstant);
     // Checked on the state and not on the output: two tanh layers compress the
     // difference until a genuinely sluggish neuron still drives the output most
     // of the way, so the output is the wrong place to read a time constant.
@@ -1053,10 +1055,79 @@ void testNeuronTimeConstants() {
     check(std::abs(firstStep[0]) < std::abs(memoryless[0]),
           "A remembering neuron drives its output less hard on the first step");
     for (int index = 0; index < 400; ++index) {
-        (void)vkexp::neuro::evaluate(weights, inputs, remembering, step, true);
+        (void)vkexp::neuro::evaluate(weights, inputs, remembering, step,
+                                     kernel::NeuronModelTimeConstant);
     }
     check(closeTo(remembering[0], 3.0F, 1.0e-3F),
           "Held on a constant input, the neuron converges on its activation");
+}
+
+void testGatedNeurons() {
+    namespace kernel = vkexp::neuro::kernel;
+    constexpr auto inputCount = static_cast<kernel::uint>(vkexp::neuro::Topology::inputCount);
+    constexpr auto hiddenCount = static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenCount);
+    constexpr auto outputCount = static_cast<kernel::uint>(vkexp::neuro::Topology::outputCount);
+    const float step = vkexp::units::fixedTimeStep;
+
+    vkexp::neuro::Weights weights{};
+    weights[kernel::brainHiddenWeightIndex(0u, inputCount, 0u, 0u)] = 3.0F;
+    weights[kernel::brainOutputWeightIndex(0u, inputCount, hiddenCount, 0u, 0u)] = 3.0F;
+    vkexp::neuro::Inputs inputs{};
+    inputs[0] = 1.0F;
+
+    // The claim that makes gated a generalisation rather than a third network:
+    // a gate that does not listen to anything is the fixed-time-constant neuron,
+    // exactly. Both genes go through the same mapping, so setting the gate bias
+    // and the time-constant gene to the same number has to give the same state.
+    for (const float gene : {-2.0F, 0.0F, 1.5F}) {
+        vkexp::neuro::Weights fixed = weights;
+        vkexp::neuro::Weights gated = weights;
+        fixed[kernel::brainTimeConstantGeneIndex(0u, inputCount, hiddenCount, outputCount, 0u)] =
+            gene;
+        gated[kernel::brainGateBiasIndex(0u, inputCount, hiddenCount, outputCount, 0u)] = gene;
+
+        vkexp::neuro::HiddenState fixedState{};
+        vkexp::neuro::HiddenState gatedState{};
+        for (int index = 0; index < 20; ++index) {
+            (void)vkexp::neuro::evaluate(fixed, inputs, fixedState, step,
+                                         kernel::NeuronModelTimeConstant);
+            (void)vkexp::neuro::evaluate(gated, inputs, gatedState, step,
+                                         kernel::NeuronModelGated);
+        }
+        check(closeTo(fixedState[0], gatedState[0], 1.0e-6F),
+              "A gate that ignores its inputs is the fixed-time-constant neuron");
+    }
+
+    // And the point of the thing: with a weight on it, the same neuron runs at
+    // different rates depending on what it is being shown. The gate asks for a
+    // time constant, so driving it up makes the neuron hold and leaving it low
+    // makes the neuron follow -- the opposite of a GRU update gate, and worth
+    // pinning down here because the sign is the easy thing to get backwards.
+    vkexp::neuro::Weights listening = weights;
+    listening[kernel::brainGateWeightIndex(0u, inputCount, hiddenCount, outputCount, 0u, 1u)] =
+        8.0F;
+    vkexp::neuro::Inputs holding = inputs;
+    holding[1] = 1.0F; // drives the gate up, so the neuron should barely move
+    vkexp::neuro::HiddenState held{};
+    vkexp::neuro::HiddenState following{};
+    for (int index = 0; index < 20; ++index) {
+        (void)vkexp::neuro::evaluate(listening, holding, held, step, kernel::NeuronModelGated);
+        (void)vkexp::neuro::evaluate(listening, inputs, following, step, kernel::NeuronModelGated);
+    }
+    check(held[0] < following[0] * 0.25F,
+          "A gate driven up holds while the same neuron left alone follows");
+
+    // The gate block is real genome, not a reinterpretation of existing weights:
+    // it sits after everything else and the count has room for it.
+    check(kernel::brainGateBiasIndex(0u, inputCount, hiddenCount, outputCount, hiddenCount - 1u) ==
+              vkexp::neuro::Topology::weightCount - 1u,
+          "The gate block ends exactly at the end of the genome");
+    check(kernel::brainGateWeightIndex(0u, inputCount, hiddenCount, outputCount, 0u, 0u) >
+              kernel::brainTimeConstantGeneIndex(0u, inputCount, hiddenCount, outputCount,
+                                                 hiddenCount - 1u),
+          "The gate block starts after the time constants");
+    check(vkexp::neuro::Topology::weightCount <= kernel::BrainStrideMask,
+          "The genome still fits the packed brain layout");
 }
 
 void testTwoDoorsGeometry() {
@@ -1382,6 +1453,7 @@ int main() {
     testGeneticAlgorithm();
     testExperimentSweep();
     testNeuronTimeConstants();
+    testGatedNeurons();
     testTwoDoorsGeometry();
     testShuttleGeometry();
     testScenarioRegistryContract();

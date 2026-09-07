@@ -398,10 +398,12 @@ const char* scenarioName(const vkexp::BeaconScenario scenario) {
 // the comparison free of the chaotic drift a free-running trajectory would
 // accumulate through tanh feedback.
 void runTrajectoryParity(vkexp::HeadlessComputeContext& context,
-                         const vkexp::BeaconScenario scenario, const std::uint32_t steps) {
+                         const vkexp::BeaconScenario scenario, const std::uint32_t steps,
+                         const vkexp::NeuronModel neuronModel = vkexp::NeuronModel::TimeConstant) {
     const vkexp::neuro::Weights weights = makeTestWeights();
     vkexp::SimulationStep base{};
     base.beaconScenario = scenario;
+    base.neuronModel = neuronModel;
     base.beaconMotionSeed = 0x5eed1234U;
 
     StepHarness harness{context, 1, 1, 1, 1, base.worldRadius};
@@ -462,7 +464,11 @@ void runTrajectoryParity(vkexp::HeadlessComputeContext& context,
     const double worstDrift =
         *std::max_element(drift.begin(), drift.end(),
                           [](const double a, const double b) { return std::abs(a) < std::abs(b); });
-    std::cout << "  drift[" << scenarioName(scenario) << "] = " << worstDrift << '\n';
+    const char* modelName = neuronModel == vkexp::NeuronModel::Reactive      ? "reactive"
+                            : neuronModel == vkexp::NeuronModel::Gated       ? "gated"
+                                                                            : "time constant";
+    std::cout << "  drift[" << scenarioName(scenario) << ", " << modelName << "] = " << worstDrift
+              << '\n';
     if (std::abs(worstDrift) > accumulatedDriftBudget) {
         throw std::runtime_error(std::string{"Trajectory parity ["} + scenarioName(scenario) +
                                  "] accumulated a systematic CPU/GPU drift of " +
@@ -792,7 +798,7 @@ void runAgentInteractionTest(vkexp::HeadlessComputeContext& context, const bool 
     // after a single step. A hidden neuron with a time constant deliberately
     // cannot answer within one step, so memory is off here: this asks whether
     // the wiring carries the signal, not how fast a neuron follows it.
-    settings.neuronMemoryEnabled = false;
+    settings.neuronModel = vkexp::NeuronModel::Reactive;
     const vkexp::neuro::BrainShape brain = vkexp::scenarioDefinition(settings.beaconScenario).brain;
     const auto inputCount = static_cast<kernel::uint>(brain.inputCount);
     const auto hiddenCount = static_cast<kernel::uint>(brain.hiddenCount);
@@ -868,6 +874,14 @@ int run() {
     runTrajectoryParity(context, vkexp::BeaconScenario::ScentRelay, 540);
     runTrajectoryParity(context, vkexp::BeaconScenario::TwoDoors, 540);
     runTrajectoryParity(context, vkexp::BeaconScenario::Shuttle, 540);
+    // Every neuron model over a long run, because the model decides the hidden
+    // state and the hidden state is the thing that accumulates: a gate loop that
+    // disagrees between the two languages shows up as drift and nowhere else.
+    // The gated one matters most -- it is the newest arithmetic written twice.
+    runTrajectoryParity(context, vkexp::BeaconScenario::Shuttle, 540,
+                        vkexp::NeuronModel::Reactive);
+    runTrajectoryParity(context, vkexp::BeaconScenario::Shuttle, 540, vkexp::NeuronModel::Gated);
+    runTrajectoryParity(context, vkexp::BeaconScenario::TwoDoors, 540, vkexp::NeuronModel::Gated);
     runGenomeAddressingProbe(context);
     runTrailFieldProbe(context);
     runMultiAgentDeterminism(context);

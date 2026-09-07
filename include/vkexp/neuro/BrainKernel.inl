@@ -161,16 +161,56 @@ VKEXP_BRAIN_MATH_FN float brainIntegrateNeuron(float state, float activation, fl
     return state + rate * (activation - state);
 }
 
+// --- neuron models -----------------------------------------------------------
+//
+// Three ways to decide the time constant, and one integrator. What changes
+// between them is only where tau comes from, which is why the UI can switch
+// them at runtime and why the ablation is exact rather than approximate.
+//
+//   Reactive      tau = dt. The update collapses to y = activation: the
+//                 memoryless network, reached through the same arithmetic.
+//   TimeConstant  tau from a gene, fixed for the neuron's life. A neuron
+//                 forgets at one rate whatever is happening to it.
+//   Gated         tau recomputed every step from the inputs, through the same
+//                 mapping the gene uses. A neuron can hold a value and then let
+//                 go of it when something tells it to -- which a fixed rate
+//                 cannot do, because "keep this until the trial ends" and "track
+//                 this closely" are the same neuron at different moments.
+//
+// Note the sign. The gate asks for a time constant, not for an update fraction:
+// driving it up makes the neuron hold, leaving it low makes the neuron follow.
+// That is the opposite of a GRU update gate, and it is this way round because
+// the gate and the gene go through the same mapping -- which is what makes the
+// two models comparable at all.
+//
+// Gated is a strict generalisation: feed it a constant and it is TimeConstant.
+// It costs one extra weight row and one bias per hidden neuron and no extra
+// state, because the state it needs is the one the neuron already carries.
+const uint NeuronModelReactive = 0u;
+const uint NeuronModelTimeConstant = 1u;
+const uint NeuronModelGated = 2u;
+const uint NeuronModelCount = 3u;
+
 // --- genome addressing: one dense network laid out flat ----------------------
 //
 // [input->hidden weights][hidden biases][hidden->output weights][output biases]
-// [hidden time constants]
+// [hidden time constants][gate weights][gate biases]
 //
-// The time constants go last so every earlier offset is unchanged and a
-// scenario that trims inputs or outputs still addresses a dense prefix.
+// Each block goes after the last so every earlier offset is unchanged and a
+// scenario that trims inputs or outputs still addresses a dense prefix. The gate
+// block is carried by every genome whatever model is selected: it is the same
+// genome under all three, so a model can be switched mid-experiment without the
+// population meaning something different afterwards.
 
 VKEXP_BRAIN_FN uint brainWeightCount(uint inputCount, uint hiddenCount, uint outputCount) {
     return inputCount * hiddenCount + hiddenCount + hiddenCount * outputCount + outputCount +
+           hiddenCount + hiddenCount * inputCount + hiddenCount;
+}
+
+// Start of the gate block: everything before it, in order.
+VKEXP_BRAIN_FN uint brainGateBlockOffset(uint base, uint inputCount, uint hiddenCount,
+                                         uint outputCount) {
+    return base + inputCount * hiddenCount + hiddenCount + hiddenCount * outputCount + outputCount +
            hiddenCount;
 }
 
@@ -198,6 +238,18 @@ VKEXP_BRAIN_FN uint brainTimeConstantGeneIndex(uint base, uint inputCount, uint 
                                                uint outputCount, uint neuron) {
     return base + inputCount * hiddenCount + hiddenCount + hiddenCount * outputCount + outputCount +
            neuron;
+}
+
+VKEXP_BRAIN_FN uint brainGateWeightIndex(uint base, uint inputCount, uint hiddenCount,
+                                         uint outputCount, uint neuron, uint inputIndex) {
+    return brainGateBlockOffset(base, inputCount, hiddenCount, outputCount) + neuron * inputCount +
+           inputIndex;
+}
+
+VKEXP_BRAIN_FN uint brainGateBiasIndex(uint base, uint inputCount, uint hiddenCount,
+                                       uint outputCount, uint neuron) {
+    return brainGateBlockOffset(base, inputCount, hiddenCount, outputCount) +
+           hiddenCount * inputCount + neuron;
 }
 
 // --- active shape packed into one uint for the GPU ---------------------------

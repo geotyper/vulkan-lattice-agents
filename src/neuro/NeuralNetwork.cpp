@@ -6,7 +6,7 @@
 namespace vkexp::neuro {
 
 Outputs evaluate(const std::span<const float, Topology::weightCount> weights, const Inputs& inputs,
-                 HiddenState& state, const float deltaTime, const bool neuronMemory,
+                 HiddenState& state, const float deltaTime, const kernel::uint model,
                  const BrainShape shape) {
     if (!shape.fitsCapacity()) {
         throw std::invalid_argument("Neural-network shape exceeds genome capacity");
@@ -24,13 +24,25 @@ Outputs evaluate(const std::span<const float, Topology::weightCount> weights, co
             activation += weights[kernel::brainHiddenWeightIndex(base, inputCount, neuron, input)] *
                           inputs[input];
         }
-        // Memory off pins the time constant to the step, which the shared
-        // integrator turns into a plain assignment. Same call either way.
-        const float timeConstant =
-            neuronMemory ? kernel::brainTimeConstant(
-                               weights[kernel::brainTimeConstantGeneIndex(
-                                   base, inputCount, hiddenCount, outputCount, neuron)])
-                         : deltaTime;
+        // Where the time constant comes from is the only thing the model
+        // changes. Reactive pins it to the step, which the shared integrator
+        // turns into a plain assignment; gated recomputes it from the inputs
+        // through the same mapping the gene uses, so a constant gate is exactly
+        // the fixed-time-constant neuron.
+        float timeConstant = deltaTime;
+        if (model == kernel::NeuronModelTimeConstant) {
+            timeConstant = kernel::brainTimeConstant(weights[kernel::brainTimeConstantGeneIndex(
+                base, inputCount, hiddenCount, outputCount, neuron)]);
+        } else if (model == kernel::NeuronModelGated) {
+            float gate = weights[kernel::brainGateBiasIndex(base, inputCount, hiddenCount,
+                                                            outputCount, neuron)];
+            for (kernel::uint input = 0; input < inputCount; ++input) {
+                gate += weights[kernel::brainGateWeightIndex(base, inputCount, hiddenCount,
+                                                             outputCount, neuron, input)] *
+                        inputs[input];
+            }
+            timeConstant = kernel::brainTimeConstant(gate);
+        }
         state[neuron] =
             kernel::brainIntegrateNeuron(state[neuron], activation, timeConstant, deltaTime);
         hidden[neuron] = std::tanh(state[neuron]);
@@ -53,9 +65,9 @@ Outputs evaluate(const std::span<const float, Topology::weightCount> weights, co
 Outputs evaluate(const std::span<const float, Topology::weightCount> weights, const Inputs& inputs,
                  const BrainShape shape) {
     HiddenState state{};
-    // Any positive step works: with memory off the integrator assigns the
-    // activation outright, so the value cannot reach the result.
-    return evaluate(weights, inputs, state, 1.0F, false, shape);
+    // Any positive step works: the reactive model assigns the activation
+    // outright, so the value cannot reach the result.
+    return evaluate(weights, inputs, state, 1.0F, kernel::NeuronModelReactive, shape);
 }
 
 } // namespace vkexp::neuro

@@ -46,7 +46,7 @@ void stepAgentCpu(AgentState& agent,
     }
     const neuro::Outputs output =
         neuro::evaluate(weights, sampleAgentInputs(agent, settings), hidden, settings.deltaTime,
-                        settings.neuronMemoryEnabled, brain);
+                        static_cast<neuro::kernel::uint>(settings.neuronModel), brain);
     for (std::size_t neuron = 0; neuron < brain.hiddenCount; ++neuron) {
         setAgentHiddenState(agent, neuron, hidden[neuron]);
     }

@@ -50,7 +50,7 @@ struct Options {
     std::optional<float> trailHalfLife;
     std::optional<float> trailCellSize;
     bool trailEnabled{true};
-    bool neuronMemory{true};
+    vkexp::NeuronModel neuronModel{vkexp::NeuronModel::TimeConstant};
     bool quiet{};
     std::string savePopulation;
     std::string saveChampion;
@@ -94,9 +94,13 @@ void printHelp(const char* executable) {
                  "  --no-agent-collisions    disable agent-agent collisions\n"
                  "  --no-agent-light         disable perception of other agents' signals\n"
                  "  --no-trail               disable the ground trail field entirely\n"
-                 "  --no-neuron-memory       pin every hidden neuron's time constant to the "
-                 "step,\n"
-                 "                           which is the memoryless network exactly\n\n"
+                 "  --neuron-model <name>    reactive|time|gated: where a hidden neuron's "
+                 "time\n"
+                 "                           constant comes from. reactive pins it to the step, "
+                 "which\n"
+                 "                           is the memoryless network exactly; gated recomputes "
+                 "it\n"
+                 "                           from the inputs every step (default time)\n\n"
                  "Trail field:\n"
                  "  --trail-deposit <x>      agent mark laid per second (default 4.0)\n"
                  "  --beacon-deposit <x>     beacon mark laid per second (default 12.0)\n"
@@ -144,6 +148,32 @@ vkexp::BeaconScenario parseScenario(const std::string_view name) {
         }
     }
     fail("Unknown scenario: " + std::string{name} + " (expected one of " + scenarioKeyList() + ")");
+}
+
+// Short names because they end up in run directories and CSV filenames.
+[[nodiscard]] vkexp::NeuronModel parseNeuronModel(const std::string_view name) {
+    if (name == "reactive") {
+        return vkexp::NeuronModel::Reactive;
+    }
+    if (name == "time") {
+        return vkexp::NeuronModel::TimeConstant;
+    }
+    if (name == "gated") {
+        return vkexp::NeuronModel::Gated;
+    }
+    fail("Unknown neuron model '" + std::string{name} + "'; expected reactive, time or gated");
+}
+
+[[nodiscard]] const char* neuronModelName(const vkexp::NeuronModel model) {
+    switch (model) {
+    case vkexp::NeuronModel::Reactive:
+        return "reactive (no state)";
+    case vkexp::NeuronModel::TimeConstant:
+        return "time constant (one evolved rate per neuron)";
+    case vkexp::NeuronModel::Gated:
+        return "gated (rate recomputed from the inputs each step)";
+    }
+    return "unknown";
 }
 
 Options parseOptions(const int argc, char** argv, bool& helpRequested) {
@@ -221,8 +251,8 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.trailHalfLife = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--no-agent-collisions") {
             options.agentCollisions = false;
-        } else if (argument == "--no-neuron-memory") {
-            options.neuronMemory = false;
+        } else if (argument == "--neuron-model") {
+            options.neuronModel = parseNeuronModel(next(index, argument));
         } else if (argument == "--no-agent-light") {
             options.agentLight = false;
         } else if (argument == "--quiet") {
@@ -289,7 +319,7 @@ int run(const Options& options) {
         state.physics.maximumSpeed = *options.maximumSpeed;
     }
     state.physics.trailEnabled = options.trailEnabled;
-    state.physics.neuronMemoryEnabled = options.neuronMemory;
+    state.physics.neuronModel = options.neuronModel;
     if (options.trailDepositRate) {
         state.physics.trailDepositRate = *options.trailDepositRate;
     }
@@ -378,8 +408,8 @@ int run(const Options& options) {
                   << "Ablations:  agent collisions "
                   << (state.physics.agentCollisionsEnabled ? "on" : "OFF") << ", agent light "
                   << (state.physics.agentLightEnabled ? "on" : "OFF") << ", trail "
-                  << (state.physics.trailEnabled ? "on" : "OFF") << ", neuron memory "
-                  << (state.physics.neuronMemoryEnabled ? "on" : "OFF") << '\n';
+                  << (state.physics.trailEnabled ? "on" : "OFF") << '\n'
+                  << "Neurons:    " << neuronModelName(state.physics.neuronModel) << '\n';
         // Only when it is on, so a default run's output stays byte-identical to
         // every run recorded before the option existed.
         if (state.physics.fitness.groupSharing > 0.0F) {

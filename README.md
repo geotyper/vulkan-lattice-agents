@@ -25,9 +25,9 @@ replay by step count -- while every physical quantity is expressed per second.
 - 8 full-body tactile sectors distinguishing walls from agents;
 - 3 ground antennae reading the RGB of a decaying trail field;
 - `61 inputs -> 20 tanh neurons -> 8 outputs`;
-- every hidden neuron holds its own state and an evolved time constant, so a
-  memory is measured in seconds and reflexes and slow facts separate by
-  selection;
+- every hidden neuron holds its own state and a time constant that is either
+  evolved or recomputed from the inputs each step, so a memory is measured in
+  seconds and can be held until something says to let go;
 - outputs control left/right motors, RGB emission, emission intensity, and two
   recurrent memory cells;
 - inertial movement with linear/angular drag and hard linear/angular speed
@@ -222,9 +222,9 @@ with nothing left to solve.
 
 ```sh
 vkneuro_headless --scenario doors --generations 200 --seed 5 --csv runs/doors.csv
-# and the same run without neuron memory, to see what the time constants bought
-vkneuro_headless --scenario doors --generations 200 --seed 5 --no-neuron-memory \
-                 --csv runs/doors-no-memory.csv
+# and the same run with a memoryless brain, to see what the time constants bought
+vkneuro_headless --scenario doors --generations 200 --seed 5 --neuron-model reactive \
+                 --csv runs/doors-reactive.csv
 ```
 
 ## Group fitness sharing
@@ -312,25 +312,46 @@ neurons a state and take no output slot at all. The recurrent cells stay --
 they are an explicit, inspectable channel -- but they are no longer the only
 thing holding the past.
 
-**Ablation.** `tau = dt` makes the update `y = activation` exactly, which is the
-memoryless network this replaced, so **Neuron memory** off (or
-`--no-neuron-memory`) is literally the old behaviour rather than a
-reimplementation of it -- the same code path with one parameter changed, no
-second network and no branch around the neuron. Compare the two the same way as
-any other ablation:
+### Three models, one integrator
+
+Where the time constant comes from is a setting -- **Neuron model** in the
+window, `--neuron-model` on the command line -- and it is the only thing that
+changes between the three. The integrator, the genome and the state are the
+same in every case, which is what makes switching an ablation rather than a
+swap between networks, and what lets a population keep its meaning across a
+switch mid-experiment.
+
+| Model | Time constant | What it is |
+| --- | --- | --- |
+| `reactive` | pinned to `dt` | The update collapses to `y = activation`: no state at all, the network from before time constants existed, reached by the same arithmetic. |
+| `time` (default) | one gene per neuron | Fixed for the neuron's life. It forgets at one rate whatever is happening to it. |
+| `gated` | recomputed each step from the inputs | The neuron can hold a value and then let go of it when something tells it to. |
+
+Gated is a strict generalisation: feed the gate a constant and it *is* the
+fixed-time-constant neuron, which the unit test asserts directly for three
+different constants. It costs one weight row and one bias per hidden neuron and
+no extra state, because the state it needs is the one the neuron already carries.
+
+**Watch the sign.** The gate asks for a time constant, not for an update
+fraction, so driving it up makes the neuron hold and leaving it low makes it
+follow. That is the opposite of a GRU update gate. It is this way round because
+the gate and the gene go through the same mapping, which is what makes the two
+models comparable at all.
 
 ```sh
-for memory in "" "--no-neuron-memory"; do
-  vkneuro_headless --scenario scent --generations 60 --seed 5 $memory \
-                   --csv "runs/scent-memory${memory:+-off}.csv"
+for model in reactive time gated; do
+  vkneuro_headless --scenario shuttle --generations 200 --seed 5 \
+                   --neuron-model "$model" --csv "runs/shuttle-$model.csv"
 done
 ```
 
-The genome grew by one gene per hidden neuron and the agent record by one float
-per hidden neuron (176 to 256 bytes). Both file formats notice: world snapshots
-are at version 3 and reject version 2, and a genome archive from the old brain
-is rejected by the weight count it already records -- with a message naming the
-counts, which is more use than a version number would be.
+The genome carries the gate block whatever model is selected, so it is the same
+genome under all three: 2668 weights, up from 1408 before time constants
+existed. The agent record grew by one float per hidden neuron (176 to 256
+bytes). Both file formats notice: world snapshots are at version 4 and reject
+earlier ones, and a genome archive from an older brain is rejected by the weight
+count it already records -- with a message naming the counts, which is more use
+than a version number would be.
 
 ## Replay
 

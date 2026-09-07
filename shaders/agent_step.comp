@@ -286,15 +286,25 @@ void main() {
             activation += weights[brainHiddenWeightIndex(base, inputCount, neuron, inputIndex)] *
                           inputs[inputIndex];
         }
-        // Memory off pins the time constant to the step, which the shared
-        // integrator turns into a plain assignment: the same call, the same
-        // arithmetic, and the ablation is a parameter rather than a branch
-        // around the neuron.
-        const float timeConstant =
-            params.neuronMemoryEnabled != 0u
-                ? brainTimeConstant(weights[brainTimeConstantGeneIndex(
-                      base, inputCount, hiddenCount, outputCount, neuron)])
-                : params.deltaTime;
+        // Where the time constant comes from is the only thing the model
+        // changes, exactly as in vkexp::neuro::evaluate. Reactive pins it to the
+        // step, which the shared integrator turns into a plain assignment; gated
+        // recomputes it from the inputs through the same mapping the gene uses,
+        // so a constant gate is the fixed-time-constant neuron.
+        float timeConstant = params.deltaTime;
+        if (params.neuronModel == NeuronModelTimeConstant) {
+            timeConstant = brainTimeConstant(weights[brainTimeConstantGeneIndex(
+                base, inputCount, hiddenCount, outputCount, neuron)]);
+        } else if (params.neuronModel == NeuronModelGated) {
+            float gate =
+                weights[brainGateBiasIndex(base, inputCount, hiddenCount, outputCount, neuron)];
+            for (uint gateInput = 0; gateInput < inputCount; ++gateInput) {
+                gate += weights[brainGateWeightIndex(base, inputCount, hiddenCount, outputCount,
+                                                     neuron, gateInput)] *
+                        inputs[gateInput];
+            }
+            timeConstant = brainTimeConstant(gate);
+        }
         const float state = brainIntegrateNeuron(agentHiddenState(agent, neuron), activation,
                                                  timeConstant, params.deltaTime);
         agent.hidden[neuron >> 2u][neuron & 3u] = state;

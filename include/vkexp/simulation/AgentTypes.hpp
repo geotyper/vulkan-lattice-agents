@@ -14,6 +14,18 @@
 
 namespace vkexp {
 
+// How a hidden neuron decides its time constant. One integrator, three sources
+// for the rate it runs at; declared in BrainKernel.inl so the shader gets the
+// same numbers. See there for what each one is and why Gated contains the other
+// two as special cases.
+enum class NeuronModel : std::uint32_t {
+    Reactive = neuro::kernel::NeuronModelReactive,
+    TimeConstant = neuro::kernel::NeuronModelTimeConstant,
+    Gated = neuro::kernel::NeuronModelGated,
+};
+
+inline constexpr std::size_t neuronModelCount = neuro::kernel::NeuronModelCount;
+
 enum class WorldShape : std::uint32_t {
     Circle = 0,
     Square = 1,
@@ -313,11 +325,11 @@ struct SimulationStep {
     bool beaconPhaseChanged{};
     bool agentCollisionsEnabled{true};
     bool agentLightEnabled{true};
-    // Whether hidden neurons use their evolved time constants. Off pins every
-    // one of them to deltaTime, which makes the update y = activation and so
-    // reproduces the memoryless network exactly -- the ablation is the same code
-    // path with one parameter changed, not a second network.
-    bool neuronMemoryEnabled{true};
+    // Where a hidden neuron's time constant comes from. Reactive pins it to
+    // deltaTime, which makes the update y = activation and reproduces the
+    // memoryless network exactly, so every model is the same code path with one
+    // parameter changed rather than a separate network.
+    NeuronModel neuronModel{NeuronModel::TimeConstant};
 };
 
 // Cells across the arena's bounding square. Constant in metres, so world size
@@ -415,7 +427,7 @@ struct alignas(16) GpuStepParameters {
     // Appended rather than slotted in beside the other flags: every offset above
     // is asserted and mirrored by the shader's struct, and moving one to save
     // twelve bytes of padding would be paid for in a silent misread.
-    std::uint32_t neuronMemoryEnabled{};
+    std::uint32_t neuronModel{};
     std::uint32_t obstacleCount{};
     std::uint32_t reserved1{};
     std::uint32_t reserved2{};
@@ -427,7 +439,7 @@ static_assert(offsetof(GpuStepParameters, beaconScenario) == 96);
 static_assert(offsetof(GpuStepParameters, trailCellSize) == 112);
 static_assert(offsetof(GpuStepParameters, fitness) == 144);
 static_assert(offsetof(GpuStepParameters, scenario) == 176);
-static_assert(offsetof(GpuStepParameters, neuronMemoryEnabled) == 224);
+static_assert(offsetof(GpuStepParameters, neuronModel) == 224);
 
 [[nodiscard]] constexpr GpuFitnessWeights packFitnessWeights(const FitnessWeights& weights) {
     return {weights.objectiveBonus,

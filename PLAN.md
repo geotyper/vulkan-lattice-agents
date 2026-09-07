@@ -115,6 +115,8 @@ and CPU/GPU parity fails loudly after a contract-breaking shader change.
 - [x] scenario-owned active dense topology descriptors and recurrent outputs;
 - [x] one network preset driving the CPU evaluator, the shader and the tests;
 - [x] continuous-time hidden neurons with evolved time constants;
+- [x] gated neurons whose time constant is recomputed from the inputs, selectable
+      at runtime against the other two models;
 - [ ] pluggable multi-layer/recurrent evaluator implementations;
 - [x] scenario registry and data-driven experiment configuration;
 - [x] batch/headless evolution executable;
@@ -153,16 +155,25 @@ vector without gaps, so a sensor block that no longer fits fails loudly.
 ## Neuron model
 
 Hidden neurons are continuous-time: each holds a state and integrates toward its
-activation at its own evolved time constant, `y += (dt/tau) * (-y + y_in)`. The
-integrator and the gene-to-tau mapping live in `BrainKernel.inl` beside the rest
-of the preset, so the CPU evaluator and the shader cannot integrate a neuron
-differently, and `dt` is explicit so a memory is a number of seconds rather than
-a number of steps.
+activation, `y += (dt/tau) * (-y + y_in)`. Where `tau` comes from is a runtime
+setting with three values -- pinned to the step, one gene per neuron, or
+recomputed each step from the inputs -- and that is the *only* difference
+between them. The integrator and the mapping into the tau range live in
+`BrainKernel.inl` beside the rest of the preset, so the CPU evaluator and the
+shader cannot integrate a neuron differently, and `dt` is explicit so a memory is
+a number of seconds rather than a number of steps.
 
-`tau = dt` reduces the update to `y = activation`, which is the memoryless
-network. That identity is what makes the ablation honest -- off is the old
-behaviour reached through the same arithmetic, not a second network -- and it is
-asserted directly rather than inferred.
+Two identities keep the models comparable instead of merely adjacent, and both
+are asserted rather than inferred. `tau = dt` reduces the update to
+`y = activation`, which is the memoryless network. And a gate fed a constant
+reproduces the fixed-time-constant neuron exactly, because the gate and the gene
+enter the same mapping.
+
+The genome carries every model's genes at once, so switching is a parameter
+change and not a reinterpretation of the population. Adding a fourth model means
+adding a value and a branch in one place on each side; per-block fixed time
+constants -- fast for tactile, slow for task, no evolution -- is the obvious next
+one, and is a control rather than an extension.
 
 The state lives on the agent record, next to everything else a step carries, so
 the CPU path and the GPU path store it the same way and multi-step parity covers
@@ -246,11 +257,13 @@ added tunable a build failure rather than a silently dropped field.
 
 ## Immediate next step
 
-Measure. The two-door world and the time constants both exist and both are
-ablatable, so the questions are now experiments rather than opinions: run
-`--scenario doors` with and without `--no-neuron-memory` from the same seed, and
-run the sharing sweep on the same world. Objective completion is the number to
-read, not best fitness.
+Measure. The worlds and all three neuron models exist and are selected by one
+parameter, so the questions are now experiments rather than opinions: run
+`--scenario doors` and `--scenario shuttle` across `--neuron-model reactive`,
+`time` and `gated` from the same seed, and run the sharing sweep on the same
+world. Objective completion is the number to read, not best fitness -- a gate
+that never closes and a gene that never varies both look like adequate fitness
+and differ in whether the task is finished.
 
 Then receptor visualization -- seeing what a champion perceives is what makes a
 later failure attributable to perception, control, fitness or evolution instead
