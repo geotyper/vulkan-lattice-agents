@@ -39,6 +39,7 @@ struct Options {
     bool agentCollisions{true};
     bool agentLight{true};
     bool swapDeliveryEnds{false};
+    bool uniformBeaconColor{false};
     vkexp::FitnessWeights fitness{};
     // Optional physics overrides. Absent means "keep the default", which lets a
     // sweep change one term without restating the rest of SimulationStep.
@@ -95,6 +96,7 @@ void printHelp(const char* executable) {
                  "  --no-agent-collisions    disable agent-agent collisions\n"
                  "  --no-agent-light         disable perception of other agents' signals\n"
                  "  --swap-ends              two gaps: trade the ends every other generation\n"
+                 "  --uniform-beacon-color   ablate hue: both ends emit the average colour\n"
                  "  --no-trail               disable the ground trail field entirely\n"
                  "  --neuron-model <name>    reactive|time|gated: where a hidden neuron's "
                  "time\n"
@@ -259,6 +261,8 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.agentLight = false;
         } else if (argument == "--swap-ends") {
             options.swapDeliveryEnds = true;
+        } else if (argument == "--uniform-beacon-color") {
+            options.uniformBeaconColor = true;
         } else if (argument == "--quiet") {
             options.quiet = true;
         } else if (argument == "--save-population") {
@@ -310,6 +314,7 @@ int run(const Options& options) {
     state.physics.agentCollisionsEnabled = options.agentCollisions;
     state.physics.agentLightEnabled = options.agentLight;
     state.physics.swapDeliveryEnds = options.swapDeliveryEnds;
+    state.physics.uniformBeaconColor = options.uniformBeaconColor;
     state.physics.fitness = options.fitness;
     if (options.beaconAngularSpeed) {
         state.physics.beaconAngularSpeed = *options.beaconAngularSpeed;
@@ -413,7 +418,8 @@ int run(const Options& options) {
                   << "Ablations:  agent collisions "
                   << (state.physics.agentCollisionsEnabled ? "on" : "OFF") << ", agent light "
                   << (state.physics.agentLightEnabled ? "on" : "OFF") << ", trail "
-                  << (state.physics.trailEnabled ? "on" : "OFF") << '\n'
+                  << (state.physics.trailEnabled ? "on" : "OFF") << ", beacon hue "
+                  << (state.physics.uniformBeaconColor ? "ABLATED" : "on") << '\n'
                   << "Neurons:    " << neuronModelName(state.physics.neuronModel) << '\n';
         // Only when it is on, and only where it does something, so a default
         // run's output stays comparable with every run recorded before it.

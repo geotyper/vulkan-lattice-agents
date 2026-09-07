@@ -1572,6 +1572,64 @@ void testTwoGapsGeometry() {
     }
 }
 
+void testBeaconColorAblation() {
+    vkexp::AgentState agent{};
+    agent.pose = {0.0F, 0.0F, 0.0F, vkexp::agentBodyRadius};
+
+    vkexp::SimulationStep settings;
+    settings.beaconScenario = vkexp::BeaconScenario::TwoGaps;
+    check(!settings.uniformBeaconColor, "The colour cue is present unless it is ablated");
+
+    const vkexp::ActiveBeacons lit = vkexp::activeBeacons(agent, settings);
+    check(lit.count == 2, "Two gaps has two ends");
+    const vkexp::Float4 first = lit.values[0].color;
+    const vkexp::Float4 second = lit.values[1].color;
+    check(!closeTo(first.x, second.x) || !closeTo(first.y, second.y) ||
+              !closeTo(first.z, second.z),
+          "The two ends are told apart by colour to begin with");
+
+    settings.uniformBeaconColor = true;
+    const vkexp::ActiveBeacons ablated = vkexp::activeBeacons(agent, settings);
+    check(closeTo(ablated.values[0].color.x, ablated.values[1].color.x) &&
+              closeTo(ablated.values[0].color.y, ablated.values[1].color.y) &&
+              closeTo(ablated.values[0].color.z, ablated.values[1].color.z),
+          "Ablated, the two ends are the same colour");
+
+    // The point of averaging rather than copying one colour onto the other: the
+    // information goes and the light stays. If the ends emitted more or less
+    // light than before, a control run would be answering two questions at once.
+    check(closeTo(ablated.values[0].color.x + ablated.values[1].color.x, first.x + second.x) &&
+              closeTo(ablated.values[0].color.y + ablated.values[1].color.y, first.y + second.y) &&
+              closeTo(ablated.values[0].color.z + ablated.values[1].color.z, first.z + second.z),
+          "Ablating the cue leaves the total emitted light unchanged");
+
+    // Positions are not a colour cue and must survive untouched, or the control
+    // would be moving the world as well as recolouring it.
+    check(closeTo(ablated.values[0].position.y, lit.values[0].position.y) &&
+              closeTo(ablated.values[1].position.y, lit.values[1].position.y),
+          "Ablating the cue moves neither end");
+
+    // And it reaches the receptors, which is the only place it matters. Standing
+    // on the wall itself would prove nothing -- both ends are occluded from
+    // there and every channel reads zero either way -- so this stands clear of
+    // it on the resource side, facing the resource.
+    vkexp::SimulationStep sensing = settings;
+    sensing.uniformBeaconColor = false;
+    sensing.neuronModel = vkexp::NeuronModel::Reactive;
+    agent.pose.y = settings.worldRadius * 0.25F;
+    agent.pose.z = 1.5707963F; // +y, straight at the resource
+    const vkexp::neuro::Inputs plain = vkexp::sampleAgentInputs(agent, sensing);
+    sensing.uniformBeaconColor = true;
+    const vkexp::neuro::Inputs ablatedInputs = vkexp::sampleAgentInputs(agent, sensing);
+    bool anyChannelMoved = false;
+    for (std::size_t index = 0; index < plain.size(); ++index) {
+        if (!closeTo(plain[index], ablatedInputs[index])) {
+            anyChannelMoved = true;
+        }
+    }
+    check(anyChannelMoved, "The ablation reaches the receptors, not only the beacon record");
+}
+
 void testExperimentSweep() {
     vkexp::SweepState sweep;
     sweep.values = {0.0F, 0.5F, 1.0F};
@@ -1668,6 +1726,7 @@ int main() {
     testTwoDoorsGeometry();
     testShuttleGeometry();
     testTwoGapsGeometry();
+    testBeaconColorAblation();
     testScenarioRegistryContract();
     testFitnessWeightsAreParameters();
     testSharedScenarioKernel();

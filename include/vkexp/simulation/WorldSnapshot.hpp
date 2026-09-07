@@ -44,7 +44,7 @@ struct WorldSnapshot {
 // bumps reject rather than fill in.
 // 4 replaced the neuron-memory flag with a three-valued model and grew the
 // genome by a gate block, so a version 3 file names a different network.
-inline constexpr std::uint32_t worldSnapshotVersion = 5;
+inline constexpr std::uint32_t worldSnapshotVersion = 6;
 
 // Versioned and little-endian, like the genome archive, and just as strict: a
 // file from another brain topology, another agent layout or another scenario

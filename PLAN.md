@@ -107,6 +107,8 @@ and CPU/GPU parity fails loudly after a contract-breaking shader change.
 - [x] decaying ground trail field with antenna sensing (stigmergy);
 - [x] wall occlusion;
 - [ ] family/colony fitness and related genome batches;
+- [x] hue ablation: both ends emit the average colour, so a solution that reads
+      the colour and one that only alternates can be told apart;
 - [ ] signal-off ablation to prove communication affects fitness;
 - [ ] multiple colonies and optional interception of foreign signals.
 

@@ -331,6 +331,11 @@ struct SimulationStep {
     // colour it is heading for. Off by default, because it is the harder task
     // and a run that has not learned the easy one first says nothing.
     bool swapDeliveryEnds{false};
+    // Ablation: give every beacon the average of the two beacon colours, so the
+    // ends stay lit and stop being told apart by hue. The control for "the agents
+    // read the colour" -- a policy that does not read it scores the same with
+    // this on, and a policy that does collapses.
+    bool uniformBeaconColor{false};
     // Where a hidden neuron's time constant comes from. Reactive pins it to
     // deltaTime, which makes the update y = activation and reproduces the
     // memoryless network exactly, so every model is the same code path with one
@@ -435,7 +440,7 @@ struct alignas(16) GpuStepParameters {
     // twelve bytes of padding would be paid for in a silent misread.
     std::uint32_t neuronModel{};
     std::uint32_t obstacleCount{};
-    std::uint32_t reserved1{};
+    std::uint32_t uniformBeaconColor{};
     std::uint32_t reserved2{};
 };
 

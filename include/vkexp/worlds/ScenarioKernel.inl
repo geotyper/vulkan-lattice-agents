@@ -205,6 +205,18 @@ VKEXP_KERNEL_FN vec2 twoDoorsBoxHalfExtent(uint index, float worldRadius) {
     return vec2(thickness, TwoDoorsPocketDepth * worldRadius * 0.5f);
 }
 
+// Colour with the cue taken out of it: both ends show the average of the two, so
+// the information a colour carries is gone while the light itself is very nearly
+// unchanged. Replacing one colour with the other would remove the information
+// too, but would also move how much light each end emits, and a control that
+// changes two things answers neither.
+//
+// Per channel because only vec2, float, uint and bool may cross the language
+// boundary; the callers apply it three times.
+VKEXP_KERNEL_FN float scenarioColorCueRemoved(float channelA, float channelB) {
+    return 0.5f * (channelA + channelB);
+}
+
 // --- two gaps --------------------------------------------------------------
 //
 // A wall right across the arena with two ways through, neither of them a dead

@@ -215,6 +215,15 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
         }
         ImGui::TextDisabled("Home relocates every %.0f seconds", forageHomeRelocationSeconds);
     }
+    if (scenario.beaconCount >= 2) {
+        if (ImGui::Checkbox("Beacons share one colour", &state_.physics.uniformBeaconColor)) {
+            state_.controls.resetRequested = true;
+        }
+        ImGui::SetItemTooltip("Ablation: both ends emit the average of the two colours, so they "
+                              "stay lit and stop being told apart by hue. The control for whether "
+                              "a solution reads the colour at all -- one that does not will score "
+                              "the same with this on.");
+    }
     if (scenario.tunables.swapDeliveryEnds) {
         if (ImGui::Checkbox("Swap ends each generation", &state_.physics.swapDeliveryEnds)) {
             state_.controls.resetRequested = true;

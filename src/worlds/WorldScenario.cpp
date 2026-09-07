@@ -91,7 +91,22 @@ bool homeBeaconRelocated(const SimulationStep& settings) {
 }
 
 ActiveBeacons activeBeacons(const AgentState& agent, const SimulationStep& settings) {
-    return scenarioDefinition(settings.beaconScenario).beacons(agent, settings);
+    ActiveBeacons beacons = scenarioDefinition(settings.beaconScenario).beacons(agent, settings);
+    // Applied here rather than in each scenario: this is the one place a CPU
+    // caller gets a beacon colour, so the ablation cannot be on for the sensors
+    // and off for anything else that asks. Mirrored by scenarioBeaconColorCue in
+    // shaders/worlds/world_scenarios.glsl.
+    if (settings.uniformBeaconColor && beacons.count >= 2) {
+        const Float4 first = beacons.values[0].color;
+        const Float4 second = beacons.values[1].color;
+        const Float4 shared{worlds::kernel::scenarioColorCueRemoved(first.x, second.x),
+                            worlds::kernel::scenarioColorCueRemoved(first.y, second.y),
+                            worlds::kernel::scenarioColorCueRemoved(first.z, second.z), 0.0F};
+        for (std::size_t index = 0; index < beacons.count; ++index) {
+            beacons.values[index].color = shared;
+        }
+    }
+    return beacons;
 }
 
 float nearestBeaconDistance(const AgentState& agent, const SimulationStep& settings) {

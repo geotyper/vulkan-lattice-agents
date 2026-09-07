@@ -50,7 +50,8 @@ vec2 activeBeaconPosition(Agent agent, uint beaconIndex) {
 }
 
 vec3 activeBeaconColor(uint beaconIndex, uint trial) {
-    return scenarioBeaconColor(params.beaconScenario, beaconIndex, params.beaconPhase, trial);
+    return scenarioBeaconColorCue(params.beaconScenario, beaconIndex, params.beaconPhase, trial,
+                                  params.beaconCount, params.uniformBeaconColor);
 }
 
 float nearestBeaconDistance(Agent agent, vec2 position) {

@@ -31,6 +31,8 @@ layout(push_constant) uniform DrawParameters {
     float trailCellSize;
     uint trailRoundMarks;
     float backgroundBrightness;
+    uint beaconCount;
+    uint uniformBeaconColor;
     ScenarioParameters scenario;
 } params;
 
@@ -127,8 +129,9 @@ void main() {
         world = scenarioBeaconPosition(params.beaconScenario, agent, gl_InstanceIndex,
                                        params.beaconPhase, params.worldRadius, params.scenario) +
                 circleVertex(gl_VertexIndex, BeaconVisualRadius, 16);
-        color = vec4(scenarioBeaconColor(params.beaconScenario, gl_InstanceIndex,
-                                         params.beaconPhase, trial),
+        color = vec4(scenarioBeaconColorCue(params.beaconScenario, gl_InstanceIndex,
+                                            params.beaconPhase, trial, params.beaconCount,
+                                            params.uniformBeaconColor),
                      params.opacity);
     } else if (params.mode == 6) {
         // One quad per obstacle box, placed by the same kernel the step uses, so

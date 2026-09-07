@@ -297,6 +297,39 @@ vkneuro_headless --scenario gaps --generations 200 --seed 5 --swap-ends \
                  --csv runs/gaps-swapped.csv
 ```
 
+### What the swap does not prove
+
+With the swap on, 250 generations reach about 75% of the round trips the trial
+has room for. That is a real result -- an absolute heading is worth nothing
+under the swap -- but it is *not* evidence that the agents read the beacon
+colour, and it is worth being precise about why.
+
+The task is to alternate between two ends. A policy that never looks at colour
+solves it: **head for whichever beacon is further away.** Standing at home, the
+resource is the far one; standing at the resource, home is the far one. Distance
+is available without hue, because the nearer beacon is simply brighter. Swapping
+the ends does nothing to this policy, since it is stated in terms of *here* and
+*the other one* rather than north and south.
+
+So the swap closes the direction shortcut and leaves the alternation shortcut
+open. The control that tells the two apart is to remove the colour instead:
+
+```sh
+# Same world, same seed, hue carrying no information.
+vkneuro_headless --scenario gaps --generations 250 --seed 5 --swap-ends \
+                 --uniform-beacon-color --csv runs/gaps-no-hue.csv
+```
+
+Both ends then emit the *average* of the two colours -- averaged rather than one
+copied onto the other, so the amount of light each end emits is unchanged and
+the run answers one question instead of two. If the score holds, the solution
+was alternation and colour was never being read. If it collapses, colour was
+carrying the task.
+
+Forcing colour to matter is a further step and not yet taken: it needs the two
+ends to stop being distinguishable by "the one I am not at" -- a third beacon,
+or a home that appears in one of two places after each pickup.
+
 ## Group fitness sharing
 
 Selection is individual by default: a genome is scored on what it did, so a

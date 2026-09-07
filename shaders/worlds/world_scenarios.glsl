@@ -62,6 +62,22 @@ vec3 scenarioBeaconColor(uint scenario, uint beaconIndex, uint phase, uint trial
     return stationaryScenarioColor(trial);
 }
 
+// Beacon colour as everything downstream should see it: the scenario's own
+// colour, or -- with the cue ablated -- the average of the two ends, so they stay
+// lit and stop being distinguishable by hue. Mirrors activeBeacons in
+// src/worlds/WorldScenario.cpp.
+vec3 scenarioBeaconColorCue(uint scenario, uint beaconIndex, uint phase, uint trial,
+                            uint beaconCount, uint uniformColor) {
+    if (uniformColor == 0u || beaconCount < 2u) {
+        return scenarioBeaconColor(scenario, beaconIndex, phase, trial);
+    }
+    const vec3 first = scenarioBeaconColor(scenario, 0u, phase, trial);
+    const vec3 second = scenarioBeaconColor(scenario, 1u, phase, trial);
+    return vec3(scenarioColorCueRemoved(first.x, second.x),
+                scenarioColorCueRemoved(first.y, second.y),
+                scenarioColorCueRemoved(first.z, second.z));
+}
+
 // Scenario 4 scores against the beacon the agent is currently seeking rather than
 // the nearest one; the others take the nearest of `beaconCount` beacons. The
 // count comes from the scenario definition through the step parameters, so this

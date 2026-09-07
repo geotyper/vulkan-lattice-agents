@@ -28,16 +28,21 @@ struct DrawParameters {
     float trailCellSize{};
     std::uint32_t trailRoundMarks{};
     float backgroundBrightness{};
+    std::uint32_t beaconCount{};
+    std::uint32_t uniformBeaconColor{};
     ScenarioParameterBlock scenario;
 };
-// Still inside the 128 bytes Vulkan guarantees for maxPushConstantsSize; the
-// step parameters ran out of that budget, this has not.
+// Exactly the 128 bytes Vulkan guarantees for maxPushConstantsSize, with nothing
+// left over: the next field to reach the drawing has to move to a uniform buffer
+// the way the step parameters already did. Note that a smaller field buys
+// nothing here -- the trailing scenario block is 16-aligned, so one more uint and
+// three more cost the same.
 // Segments in a round trail mark. Shared with the vertex shader's fan, which is
 // why it is not written twice.
 constexpr std::uint32_t trailDiscSegments = 8;
 
-static_assert(sizeof(DrawParameters) == 112);
-static_assert(offsetof(DrawParameters, scenario) == 64);
+static_assert(sizeof(DrawParameters) == 128);
+static_assert(offsetof(DrawParameters, scenario) == 80);
 
 } // namespace
 
@@ -227,6 +232,8 @@ void AgentRenderer::draw(const VkCommandBuffer commands, const float scaleX, con
         state_.physics.trailCellSize,
         state_.display.roundTrailMarks ? 1U : 0U,
         state_.display.backgroundBrightness,
+        scenarioDefinition(settings.beaconScenario).beaconCount,
+        settings.uniformBeaconColor ? 1U : 0U,
         scenarioDefinition(settings.beaconScenario).gpuParameters(settings)};
     vkCmdPushConstants(commands, pipelineLayout_.get(), VK_SHADER_STAGE_VERTEX_BIT, 0,
                        sizeof(parameters), &parameters);

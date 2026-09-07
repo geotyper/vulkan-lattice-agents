@@ -59,7 +59,7 @@ struct StepParameters {
     ScenarioParameters scenario;
     uint neuronModel;
     uint obstacleCount;
-    uint reserved1;
+    uint uniformBeaconColor;
     uint reserved2;
 };
 

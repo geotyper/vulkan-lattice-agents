@@ -400,13 +400,14 @@ const char* scenarioName(const vkexp::BeaconScenario scenario) {
 void runTrajectoryParity(vkexp::HeadlessComputeContext& context,
                          const vkexp::BeaconScenario scenario, const std::uint32_t steps,
                          const vkexp::NeuronModel neuronModel = vkexp::NeuronModel::TimeConstant,
-                         const bool swapEnds = false) {
+                         const bool swapEnds = false, const bool uniformBeaconColor = false) {
     const vkexp::neuro::Weights weights = makeTestWeights();
     vkexp::SimulationStep base{};
     base.beaconScenario = scenario;
     base.neuronModel = neuronModel;
     base.beaconMotionSeed = 0x5eed1234U;
     base.swapDeliveryEnds = swapEnds;
+    base.uniformBeaconColor = uniformBeaconColor;
     // The seed is the generation number, and the swap fires on odd ones. The
     // default seed is even, so asking for the swap without this would set a flag
     // that changes nothing and call the result parity.
@@ -476,7 +477,8 @@ void runTrajectoryParity(vkexp::HeadlessComputeContext& context,
                             : neuronModel == vkexp::NeuronModel::Gated       ? "gated"
                                                                             : "time constant";
     std::cout << "  drift[" << scenarioName(scenario) << ", " << modelName
-              << (swapEnds ? ", swapped" : "") << "] = " << worstDrift << '\n';
+              << (swapEnds ? ", swapped" : "") << (uniformBeaconColor ? ", hue ablated" : "")
+              << "] = " << worstDrift << '\n';
     if (std::abs(worstDrift) > accumulatedDriftBudget) {
         throw std::runtime_error(std::string{"Trajectory parity ["} + scenarioName(scenario) +
                                  "] accumulated a systematic CPU/GPU drift of " +
@@ -896,6 +898,11 @@ int run() {
     runTrajectoryParity(context, vkexp::BeaconScenario::TwoGaps, 540);
     runTrajectoryParity(context, vkexp::BeaconScenario::TwoGaps, 540,
                         vkexp::NeuronModel::TimeConstant, true);
+    // The hue ablation is applied in two languages, once where the CPU asks for
+    // the active beacons and once in the shaders that read a beacon colour, so
+    // it is exactly the kind of rule that can be written differently twice.
+    runTrajectoryParity(context, vkexp::BeaconScenario::TwoGaps, 540,
+                        vkexp::NeuronModel::TimeConstant, false, true);
     runGenomeAddressingProbe(context);
     runTrailFieldProbe(context);
     runMultiAgentDeterminism(context);

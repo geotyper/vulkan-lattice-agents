@@ -79,7 +79,8 @@ void main() {
                 scenarioBeaconPosition(params.beaconScenario, agent, beaconIndex,
                                        params.beaconPhase, params.worldRadius, params.scenario);
             const vec3 color =
-                scenarioBeaconColor(params.beaconScenario, beaconIndex, params.beaconPhase, trial);
+                scenarioBeaconColorCue(params.beaconScenario, beaconIndex, params.beaconPhase,
+                                       trial, params.beaconCount, params.uniformBeaconColor);
             depositAt(position, world, color, params.beaconTrailDeposit);
         }
     }
