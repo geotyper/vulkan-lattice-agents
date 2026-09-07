@@ -16,6 +16,7 @@ using uint = std::uint32_t;
     return std::clamp(value, low, high);
 }
 [[nodiscard]] inline float exp(const float value) { return std::exp(value); }
+[[nodiscard]] inline float tanh(const float value) { return std::tanh(value); }
 
 // Layout arithmetic is pure integer maths, so the C++ side evaluates it at
 // compile time and uses the results as array bounds. The sensor response model

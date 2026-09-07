@@ -45,7 +45,7 @@ Outputs evaluate(const std::span<const float, Topology::weightCount> weights, co
         }
         state[neuron] =
             kernel::brainIntegrateNeuron(state[neuron], activation, timeConstant, deltaTime);
-        hidden[neuron] = std::tanh(state[neuron]);
+        hidden[neuron] = kernel::brainActivation(state[neuron]);
     }
 
     Outputs outputs{};
@@ -57,7 +57,7 @@ Outputs evaluate(const std::span<const float, Topology::weightCount> weights, co
                                                                  neuron, hiddenIndex)] *
                           hidden[hiddenIndex];
         }
-        outputs[neuron] = std::tanh(activation);
+        outputs[neuron] = kernel::brainActivation(activation);
     }
     return outputs;
 }

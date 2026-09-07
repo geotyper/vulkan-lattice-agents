@@ -309,7 +309,7 @@ void main() {
         const float state = brainIntegrateNeuron(agentHiddenState(agent, neuron), activation,
                                                  timeConstant, params.deltaTime);
         agent.hidden[neuron >> 2u][neuron & 3u] = state;
-        hidden[neuron] = tanh(state);
+        hidden[neuron] = brainActivation(state);
     }
     float outputs[BrainOutputCapacity];
     for (uint neuron = 0; neuron < outputCount; ++neuron) {
@@ -320,7 +320,7 @@ void main() {
                                                          hiddenIndex)] *
                           hidden[hiddenIndex];
         }
-        outputs[neuron] = tanh(activation);
+        outputs[neuron] = brainActivation(activation);
     }
 
     const float left = outputs[BrainMotorLeftOutput];

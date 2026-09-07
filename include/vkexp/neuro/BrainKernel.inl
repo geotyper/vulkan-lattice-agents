@@ -116,6 +116,39 @@ VKEXP_BRAIN_MATH_FN float brainLuminance(float red, float green, float blue) {
     return red * BrainLuminanceRed + green * BrainLuminanceGreen + blue * BrainLuminanceBlue;
 }
 
+// --- activation --------------------------------------------------------------
+//
+// The squash on a hidden neuron's state and on every output. It lives here
+// because it was written twice -- once in the CPU evaluator and once in the
+// shader -- and a change applied to one of them would be found by nothing but
+// accumulated parity drift, which says a number is wrong without saying which
+// line wrote it.
+//
+// It is tanh and not something periodic on purpose, and the reasons are worth
+// keeping next to the code that would be edited to change it:
+//
+//   * Monotone. More input is more output, everywhere. Under a periodic
+//     activation the sign of the response flips every half period, so a mutation
+//     that raises a weight helps or hurts depending on where the neuron happens
+//     to sit, and "brighter on the left" stops meaning one thing.
+//   * Saturating, which is what makes a memory possible at all here. A neuron
+//     driven hard sits at +/-1 and stops responding, which is a decision that
+//     holds; a periodic activation cycles back through zero instead, so a
+//     neuron cannot commit. That is the whole point of the time constants
+//     undone. Note this is not an argument about the Lipschitz bound -- tanh and
+//     sin are both 1-Lipschitz -- but about where the derivative vanishes.
+//   * Insensitive to input error exactly where the input is large, which is what
+//     keeps the CPU/GPU drift budget tight. A periodic activation is maximally
+//     sensitive there, and large-argument reduction is where implementations
+//     differ most, so drift would become a function of how confident the network
+//     is.
+//
+// Periodic activations are a real tool where repetition is wanted -- CPPNs use
+// them for symmetry, SIREN for high-frequency detail. This network is a
+// controller that has to hold decisions, and it can already oscillate through a
+// recurrent loop with two different time constants when it wants to.
+VKEXP_BRAIN_MATH_FN float brainActivation(float value) { return tanh(value); }
+
 // --- neuron time constants ---------------------------------------------------
 //
 // Every hidden neuron carries its own state and its own time constant:
