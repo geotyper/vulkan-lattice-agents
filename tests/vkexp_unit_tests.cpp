@@ -28,6 +28,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -1130,6 +1131,68 @@ void testGatedNeurons() {
           "The genome still fits the packed brain layout");
 }
 
+// What fraction of the far side of the wall can see `target` at all: in light
+// range and with no box in the way. This is the number that separates a world
+// that is learned from one that is not, so it belongs in the build rather than
+// in a notebook. Two doors sat at 5.7% and was not solved in 450 generations;
+// Two gaps sits at 19% and is solved. The floor below is set between them.
+//
+// Swept over the area rather than probed at points: the question is how much
+// room there is to pick the signal up, and no single point answers that.
+template <typename BoxAt>
+float visibleFractionOfFarSide(const float radius, const vkexp::worlds::kernel::vec2 target,
+                               const std::uint32_t boxCount, BoxAt&& boxAt) {
+    namespace kernel = vkexp::worlds::kernel;
+    vkexp::SimulationStep settings;
+    settings.worldRadius = radius;
+    const float range = vkexp::lightRangeForWorld(settings);
+    const float body = vkexp::agentBodyRadius;
+    constexpr int samples = 200;
+    int standable = 0;
+    int visible = 0;
+    for (int ix = 0; ix < samples; ++ix) {
+        for (int iy = 0; iy < samples; ++iy) {
+            const float x = -radius + 2.0F * radius * (static_cast<float>(ix) + 0.5F) /
+                                          static_cast<float>(samples);
+            // The far side is the half the target is not on.
+            const float y = radius * (static_cast<float>(iy) + 0.5F) / static_cast<float>(samples);
+            if (std::hypot(x, y) > radius) {
+                continue;
+            }
+            bool insideAWall = false;
+            for (std::uint32_t index = 0; index < boxCount; ++index) {
+                const auto [centre, halfExtent] = boxAt(index);
+                if (std::abs(x - centre.x) <= halfExtent.x + body &&
+                    std::abs(y - centre.y) <= halfExtent.y + body) {
+                    insideAWall = true;
+                }
+            }
+            if (insideAWall) {
+                continue;
+            }
+            ++standable;
+            if (std::hypot(x - target.x, y - target.y) >= range) {
+                continue;
+            }
+            bool blocked = false;
+            for (std::uint32_t index = 0; index < boxCount; ++index) {
+                const auto [centre, halfExtent] = boxAt(index);
+                if (kernel::segmentHitsBox({x, y}, target, centre, halfExtent)) {
+                    blocked = true;
+                }
+            }
+            if (!blocked) {
+                ++visible;
+            }
+        }
+    }
+    return standable == 0 ? 0.0F : static_cast<float>(visible) / static_cast<float>(standable);
+}
+
+// Below this the plateau the straight-line shaping creates has no perceptual way
+// out, which is what 450 generations of Two doors demonstrated.
+constexpr float minimumTargetVisibility = 0.12F;
+
 void testTwoDoorsGeometry() {
     namespace kernel = vkexp::worlds::kernel;
     constexpr float radius = 1.84F;
@@ -1237,6 +1300,46 @@ void testTwoDoorsGeometry() {
         }
     }
     check(everyBoxStopsAnAgent, "No barrier can be stepped over between two contact tests");
+
+    // What this world was retuned for, and the assertion Two gaps carries too.
+    // Fitness shapes on the best straight-line approach, so a wall between the
+    // two ends makes the blindest spot the highest-scoring one; the only way out
+    // of that plateau is seeing the target, which needs it to be in range at all.
+    // At the original 0.72 the ends sat 1.10x the light range apart -- the same
+    // ratio at every world size, since the range is a fraction of the arena
+    // radius -- so an agent on one end perceived nothing whatever of the other.
+    for (const vkexp::WorldSize size :
+         {vkexp::WorldSize::Small, vkexp::WorldSize::Medium, vkexp::WorldSize::Large}) {
+        vkexp::SimulationStep settings;
+        settings.worldRadius = vkexp::worldRadiusForSize(size);
+        const kernel::vec2 resource = kernel::twoDoorsResourcePosition(settings.worldRadius);
+        const kernel::vec2 home = kernel::twoDoorsHomePosition(settings.worldRadius);
+        check(std::hypot(resource.x - home.x, resource.y - home.y) <
+                  vkexp::lightRangeForWorld(settings),
+              "Each end is inside light range of the other, in every world size");
+    }
+
+    // The other half of the retune, and the one that mattered most. Widening the
+    // door was a stronger lever on visibility than moving the beacons: from the
+    // home side only one opening transmits light, and how much of the far side
+    // it lights is what decides whether the plateau can be escaped.
+    for (const kernel::uint blocked : {0U, 1U}) {
+        const float visible = visibleFractionOfFarSide(
+            radius, kernel::twoDoorsHomePosition(radius), kernel::TwoDoorsBoxCount,
+            [&](const kernel::uint index) {
+                return std::pair{kernel::twoDoorsBoxCentre(index, radius, blocked),
+                                 kernel::twoDoorsBoxHalfExtent(index, radius)};
+            });
+        check(visible > minimumTargetVisibility, "Home is visible from enough of the far side");
+    }
+
+    // And the divider has to stay a divider: with a door wider than the wall
+    // between the two, the pair reads as one opening with a post in it and there
+    // is no choice left for the world to be about.
+    const float doorWidth = 2.0F * kernel::TwoDoorsDoorHalfWidth * radius;
+    const float divider =
+        2.0F * (kernel::TwoDoorsDoorOffset - kernel::TwoDoorsDoorHalfWidth) * radius;
+    check(divider > doorWidth, "The wall between the doors is wider than either door");
 
     // The body radius is written in the shared kernel and in AgentTypes.hpp and
     // neither can reference the other, so this is what keeps them equal.
@@ -1439,6 +1542,16 @@ void testTwoGapsGeometry() {
               "Each end is inside light range of the other, in every world size");
     }
     check(separation < vkexp::lightRangeForWorld(defaults), "The ends are mutually visible");
+
+    // In range is necessary and not sufficient: the wall still has to leave room
+    // to pick the signal up. The same floor the retuned Two doors is held to.
+    const float visible = visibleFractionOfFarSide(
+        radius, kernel::twoGapsHomePosition(radius, false), kernel::TwoGapsBoxCount,
+        [&](const kernel::uint index) {
+            return std::pair{kernel::twoGapsBoxCentre(index, radius),
+                             kernel::twoGapsBoxHalfExtent(index, radius)};
+        });
+    check(visible > minimumTargetVisibility, "Home is visible from enough of the far side");
 
     // The swap. Off, it never fires whatever the generation; on, it alternates,
     // and it exchanges the two ends rather than moving either one somewhere new.

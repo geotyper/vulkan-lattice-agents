@@ -82,7 +82,7 @@ only work from one spawn position or heading.
 | Beacon scenario | Random movement | Each trial follows a smooth bounded wandering path with adjustable speed and a configurable teleport chance checked every three seconds. |
 | Beacon scenario | Forage + home | Agents collect an orange orbiting resource, then carry its decaying value to a blue home that relocates every eight seconds before seeking the resource again. |
 | Beacon scenario | Scent relay | The same collect-and-deliver cycle, but home emits no light and lays no trail: it can only be found by dead reckoning or by a path the agents themselves marked. |
-| Beacon scenario | Two doors | The same cycle across a wall with two gaps, one of which is a dead end. Which one swaps every trial, and from the home side they are identical. |
+| Beacon scenario | Two doors | The same cycle across a wall with two gaps, one of which is a dead end. Which one swaps every trial, and from the home side they are identical. Retuned after it went unsolved for 450 generations; see Two gaps for the measurement. |
 | Beacon scenario | Shuttle | Fetch and carry back, over and over until the trial ends, around a short wall that closes the straight line between the two beacons. |
 | Beacon scenario | Two gaps | The same repeated cycle across a wall with two ways through, neither a dead end, with an option to make the two ends trade places every other generation. |
 
@@ -267,19 +267,28 @@ how much of the far side can see the target at all:
 
 | | plateau | target visible from | outcome |
 | --- | --- | --- | --- |
-| Two doors | 0.17 m | 5.7% of the far side | not solved in 450 generations |
+| Two doors, as first built | 0.15 m | 5.7% of the far side | not solved in 450 generations |
 | Shuttle | 0.12 m | 36% | solved quickly |
-| Two gaps | 0.11 m | 19% | the geometry these numbers chose |
+| Two gaps | 0.11 m | 19% | solved |
+| Two doors, retuned | 0.10 m | 16% | see below |
 
-Two doors is not hard because the arena is big. Its ends sit 1.10x the light
-range apart -- and that ratio is the same in every world size, because the range
-is a fraction of the arena radius rather than a fixed number of metres -- so an
-agent standing on one end perceives *nothing whatever* of the other, and the
-plateau has no gradient to climb out on at any world size. Two gaps puts them
-0.77x apart, so what hides the target is the wall, which the agent can do
-something about, and not the range, which it cannot. `testTwoGapsGeometry`
-asserts that separation against the light range in all three world sizes, so the
-constant cannot drift back.
+Two doors is not hard because the arena is big. Light range is a fraction of the
+arena radius rather than a fixed number of metres, so a bigger world does not
+change any of these ratios at all.
+
+What the sweep found, once Two gaps was learned and Two doors still was not, is
+that the strongest lever is **how much of the far side one opening lights**, and
+that the width of the opening moves it far more than the distance does. Bringing
+the ends from 0.72 to 0.55 of the arena radius -- which was the first guess, and
+does put them inside each other's range -- moves visibility from 5.7% to 7.1% on
+its own and makes the plateau *worse*. Widening the door from 0.07 to 0.11 and
+bringing the pair in from 0.40 to 0.30 takes it to 16% and cuts the plateau to
+0.10 m. Two doors now carries all three changes.
+
+Both worlds assert the result rather than the constants that produced it:
+`visibleFractionOfFarSide` sweeps the far side in the unit tests and holds each
+world above a floor set between the world that was not learned and the one that
+was. Reverting any one of the three constants fails it.
 
 ```sh
 # Learn the fixed layout first, then the swapped one from the same seed.

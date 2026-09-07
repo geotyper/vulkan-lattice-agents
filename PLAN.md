@@ -273,14 +273,18 @@ of only showing that population fitness stopped improving. The two-door world
 makes that worth building: there is now a specific thing to look for in a
 champion, which there was not on an orbiting beacon.
 
-Held deliberately, and now with a measurement behind it: fitness shapes on the
-best straight-line approach, which in a world with a wall between the two ends
-makes the blindest spot the highest-scoring one. Two gaps works around that by
-geometry -- the ends stay inside light range of each other, so the wall is what
-hides the target and the wall can be walked around. The general fix is a shaping
-term that measures progress along a route rather than in a straight line, and it
-should be written when a world needs geometry that cannot be arranged around the
-plateau, not before one does.
+Held deliberately, and now with a run behind it: fitness shapes on the best
+straight-line approach, which in a world with a wall between the two ends makes
+the blindest spot the highest-scoring one. Two gaps is learned and the original
+Two doors was not, and the sweep that followed says the binding term is how much
+of the far side one opening lights -- opening width moves it several times as
+much as beacon distance does. Both worlds are now held above a measured
+visibility floor by their unit tests rather than by their constants.
+
+The general fix is still a shaping term that measures progress along a route
+rather than in a straight line. It should be written when a world needs geometry
+that cannot be arranged around the plateau; two worlds have now been arranged
+around it instead, which is evidence that the cheaper move is not yet exhausted.
 
 Held deliberately: the obstacle interface is axis-aligned boxes, not the general
 segment-and-material world interface milestone 3 describes. Boxes are what a

@@ -102,12 +102,34 @@ const uint TwoDoorsBoxCount = 6u;
 // reads as architecture rather than as a divider. One body diameter is enough to
 // be seen and far more than enough to be felt.
 const float TwoDoorsWallHalfThickness = ScenarioAgentBodyRadius;
-const float TwoDoorsDoorOffset = 0.40f;
-const float TwoDoorsDoorHalfWidth = 0.07f;
+// Measured, not guessed, and re-measured after Two gaps was solved and this
+// world was not. The failure is not that the task is hard: fitness shapes on the
+// best straight-line approach, so the spot pressed against the middle of the
+// wall scores best and sees nothing, and getting to a door pays nothing until
+// the agent is well past it. Escaping that plateau needs the target to be
+// visible from somewhere, and with the old numbers it was visible from 5.7% of
+// the far side -- against 19% for Two gaps, which learns.
+//
+// The strongest lever turned out to be the opening, not the distance: widening
+// the door from 0.07 to 0.11 and bringing the pair in from 0.40 to 0.30 takes
+// visibility to 15.6% and cuts the plateau from 0.147 m to 0.097 m. Moving the
+// beacons closer, which was the first guess, moves visibility by a point and a
+// half on its own and makes the plateau worse.
+//
+// The door is now 9 body diameters wide and the divider between the two doors is
+// wider than either of them, so the question this world asks is still which
+// opening leads through, and not whether an agent can thread a slot.
+const float TwoDoorsDoorOffset = 0.30f;
+const float TwoDoorsDoorHalfWidth = 0.11f;
 const float TwoDoorsPocketDepth = 0.30f;
 const float TwoDoorsArenaReach = 1.05f; // past the arena edge, so no gap at the rim
-const float TwoDoorsHomeY = -0.72f;
-const float TwoDoorsResourceY = 0.72f;
+// 0.84x the light range apart, so an agent standing on one end can see the other
+// when nothing is in the way. At the old 0.72 the separation was 1.10x the range
+// -- and that ratio is the same in every world size, since the range is a
+// fraction of the arena radius -- so what hid the target was partly the distance,
+// which an agent can do nothing about, rather than only the wall, which it can.
+const float TwoDoorsHomeY = -0.55f;
+const float TwoDoorsResourceY = 0.55f;
 
 // Which gap is a dead end this trial. Alternating by trial means a genome is
 // scored on both, so it cannot win by always turning the same way -- and the
