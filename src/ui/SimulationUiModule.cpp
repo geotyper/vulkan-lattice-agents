@@ -488,7 +488,8 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
         state_.controls.resetRequested = true;
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("completed: %zu", state_.history.bestFitness.size());
+    ImGui::TextDisabled("completed: %llu",
+                        static_cast<unsigned long long>(state_.statistics.evaluatedGenerations));
     ImGui::SeparatorText("Last evaluated generation");
     ImGui::Text("Best fitness:   %.4f", state_.statistics.bestFitness);
     ImGui::Text("Median fitness: %.4f", state_.statistics.medianFitness);
@@ -496,6 +497,13 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::Text("%s: %.1f%%", scenarioDefinition(state_.physics.beaconScenario).objectiveLabel,
                 state_.statistics.arrivalRatio * 100.0F);
     ImGui::SeparatorText("Fitness history");
+    // Say so when the plots are a window onto a longer run, rather than letting
+    // a curve that has stopped extending read as a run that has stopped.
+    if (state_.history.bestFitness.size() < state_.statistics.evaluatedGenerations) {
+        ImGui::TextDisabled("last %zu generations of %llu", state_.history.bestFitness.size(),
+                            static_cast<unsigned long long>(
+                                state_.statistics.evaluatedGenerations));
+    }
     plotHistory("Best", state_.history.bestFitness);
     plotHistory("Median", state_.history.medianFitness);
     plotHistory("Mean", state_.history.meanFitness);

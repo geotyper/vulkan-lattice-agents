@@ -431,6 +431,11 @@ GenerationSummary SimulationDriver::finishGeneration() {
     state_.statistics.arrivalRatio =
         static_cast<float>(achievedObjectives) /
         static_cast<float>(agents_.size() * scenario.objectivesPerAgent);
+    // Counted here rather than taken from the history length, which stops
+    // growing at maximumSamples, and rather than from the generation number,
+    // which stands still under replay. A sweep stage restarts the run, and
+    // restart() zeroes the statistics, so a stage counts its own generations.
+    ++state_.statistics.evaluatedGenerations;
     const auto appendHistory = [&](std::vector<float>& history, const float value) {
         history.push_back(value);
         if (history.size() > state_.history.maximumSamples) {

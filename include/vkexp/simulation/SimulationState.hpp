@@ -47,6 +47,12 @@ struct SimulationControls {
 
 struct SimulationStatistics {
     std::uint64_t generation{};
+    // Generations actually evaluated since the run started. Not the same as
+    // `generation`, which does not advance under replay, and emphatically not
+    // the same as the length of the history below, which stops at
+    // maximumSamples and would otherwise report a run as having frozen the
+    // moment the plots filled up.
+    std::uint64_t evaluatedGenerations{};
     std::uint32_t step{};
     float bestFitness{};
     float meanFitness{};
@@ -59,6 +65,9 @@ struct EvolutionHistory {
     std::vector<float> medianFitness;
     std::vector<float> meanFitness;
     std::vector<float> arrivalRatio;
+    // The plots keep a window, not the whole run. Anything reading a length
+    // here is reading how much is plotted; how far the run has got is
+    // SimulationStatistics::evaluatedGenerations.
     std::size_t maximumSamples{256};
 };
 
