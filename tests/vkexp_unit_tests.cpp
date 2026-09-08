@@ -1846,7 +1846,8 @@ void testPuckWorld() {
     const float trialSeconds =
         vkexp::units::secondsForSteps(vkexp::SimulationControls{}.stepsPerGeneration,
                                       vkexp::units::fixedTimeStep);
-    const float parked = trialSeconds * settings.fitness.trackingReward;
+    const float parked =
+        trialSeconds * settings.fitness.trackingReward * puck::PuckProximityShare;
     const float startDistance =
         std::hypot(puck::puckStartPosition(radius, 0).x, puck::puckStartPosition(radius, 0).y);
 
@@ -1872,6 +1873,86 @@ void testPuckWorld() {
     check(nudge > parked * 0.2F,
           "A tenth of the journey is worth a fifth of a whole trial's loitering");
     check(scenario.puck, "The puck world says it has a puck, which is what runs the puck pass");
+}
+
+// Who gets paid for moving the puck, which is the one thing in this world that
+// is not shared. Every other term in the score is derived from the puck's
+// position, so it is the same number for every agent in the world -- and with
+// only those terms a population settled on leaning against the near face of the
+// puck and blocking it, which collected the proximity reward and cost nothing.
+void testPuckPushCredit() {
+    namespace puck = vkexp::puck::kernel;
+    vkexp::SimulationStep settings;
+    settings.beaconScenario = vkexp::BeaconScenario::PuckPush;
+    const float radius = puck::puckRadius(settings.worldRadius, settings.puckRadiusRatio);
+    const float contact = radius + vkexp::agentBodyRadius;
+    // A puck on the axis, above the middle, so "toward the middle" is straight
+    // down and the two sides of it are unambiguous.
+    const puck::vec2 puckAt{0.0F, 0.6F};
+    const puck::vec2 still{0.0F, 0.0F};
+    const float speed = settings.maximumSpeed;
+
+    // Behind it, pushing down: the whole approach is useful.
+    const float behind = puck::puckPushContribution({0.0F, puckAt.y + contact}, {0.0F, -speed},
+                                                    vkexp::agentBodyRadius, puckAt, still, radius);
+    check(closeTo(behind, speed), "An agent pushing straight toward the middle is paid its approach");
+
+    // In the way, pushing up with exactly the same effort. It is in contact, it
+    // is approaching, and it moves the puck the wrong way -- so it earns nothing.
+    // Nothing here names a correct side; the projection does the work.
+    const float blocking = puck::puckPushContribution({0.0F, puckAt.y - contact}, {0.0F, speed},
+                                                      vkexp::agentBodyRadius, puckAt, still, radius);
+    // Zero and not negative: blocking stops being paid for, it does not become
+    // a thing to avoid. An agent taught to keep clear of the puck is worse than
+    // one that leans on it.
+    check(closeTo(blocking, 0.0F), "An agent wedged between the puck and the middle earns nothing");
+
+    // Sideways: in contact and approaching, but the push is perpendicular to the
+    // journey, so it is worth nothing without being wrong.
+    const float sideways = puck::puckPushContribution({contact, puckAt.y}, {-speed, 0.0F},
+                                                      vkexp::agentBodyRadius, puckAt, still, radius);
+    check(closeTo(sideways, 0.0F), "A push across the puck's path is worth nothing");
+
+    // Half a turn off the line: paid, but less. This is the part that makes it a
+    // gradient rather than a switch -- getting further round the puck pays more.
+    const float diagonal = puck::puckPushContribution(
+        {contact * 0.7071F, puckAt.y + contact * 0.7071F}, {-speed * 0.7071F, -speed * 0.7071F},
+        vkexp::agentBodyRadius, puckAt, still, radius);
+    check(diagonal > 0.0F && diagonal < behind,
+          "Pushing at an angle pays, and pays less than pushing straight");
+
+    // Touching and not pushing, and near but not touching: neither is work.
+    check(closeTo(puck::puckPushContribution({0.0F, puckAt.y + contact}, still,
+                                             vkexp::agentBodyRadius, puckAt, still, radius),
+                  0.0F),
+          "Resting against the puck is not pushing it");
+    check(closeTo(puck::puckPushContribution({0.0F, puckAt.y + contact * 3.0F}, {0.0F, -speed},
+                                             vkexp::agentBodyRadius, puckAt, still, radius),
+                  0.0F),
+          "An agent that has not reached the puck is not moving it");
+
+    // Measured against the puck, the same way the push in puck_step.comp is: an
+    // agent trailing a puck already outrunning it is not pushing it. This is the
+    // assertion that fails if the mirrored velocity is dropped from target.xy.
+    check(closeTo(puck::puckPushContribution({0.0F, puckAt.y + contact}, {0.0F, -speed},
+                                             vkexp::agentBodyRadius, puckAt, {0.0F, -speed * 2.0F},
+                                             radius),
+                  0.0F),
+          "An agent slower than the puck it follows is not pushing it");
+
+    // And the balance: a delivery's worth of pushing has to beat a whole trial
+    // of leaning on the puck, or the behaviour that is cheaper still wins. The
+    // journey is 1.1 m at the puck's settled speed, and the pusher is credited
+    // only the approach behind it.
+    const float trialSeconds =
+        vkexp::units::secondsForSteps(vkexp::SimulationControls{}.stepsPerGeneration,
+                                      vkexp::units::fixedTimeStep);
+    const float parked = trialSeconds * settings.fitness.trackingReward * puck::PuckProximityShare;
+    const float puckSpeed = speed * puck::PuckPushRate / (puck::PuckPushRate + puck::PuckDrag);
+    const float journey = std::hypot(puck::puckStartPosition(settings.worldRadius, 0).x,
+                                     puck::puckStartPosition(settings.worldRadius, 0).y);
+    const float pushed = (speed - puckSpeed) * (journey / puckSpeed) * puck::PuckWorkReward;
+    check(pushed > parked * 2.0F, "Pushing the puck home outearns a whole trial of leaning on it");
 }
 
 void testExperimentSweep() {
@@ -1972,6 +2053,7 @@ int main() {
     testTwoGapsGeometry();
     testBeaconColorAblation();
     testPuckWorld();
+    testPuckPushCredit();
     testDeliveryCannotBeScoredTwice();
     testScenarioRegistryContract();
     testFitnessWeightsAreParameters();

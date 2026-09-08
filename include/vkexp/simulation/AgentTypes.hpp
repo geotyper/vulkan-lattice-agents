@@ -177,7 +177,11 @@ struct alignas(16) AgentState {
     Float4 pose;        // position.xy, angle, circular collision radius
     Float4 motion;      // velocity.xy, angular velocity, normalized energy
     Float4 signal;      // emitted RGB and intensity
-    Float4 target;      // base beacon.xy, trial id, completed mask or forage-cycle count
+    // Base beacon.xy, trial id, completed mask or forage-cycle count. In the
+    // puck world .xy is the puck's velocity instead, mirrored beside its
+    // position below: nothing there reads a base beacon, and the work reward
+    // needs the puck's motion to measure an approach against it.
+    Float4 target;
     Float4 metrics;     // phase start/min distance, motor cost, completed-phase progress
     // .x penalty total, .yz the world's puck position mirrored onto the agent,
     // .w logical world id. The mirror exists because fitness and the progress

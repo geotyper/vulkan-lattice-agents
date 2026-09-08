@@ -418,6 +418,46 @@ light range it is a broad haze over most of the arena and loitering in the
 general area collects most of what pushing would pay. Six puck radii pays for
 being *at* it, which is where pushing starts.
 
+**Why pushing is priced per agent.** The third reason, and the one the world
+itself created. With the two fixes above a population does improve, slowly, and
+it improves into the wrong shape: agents lean against whichever face of the puck
+they arrive at, several of them on the side facing the middle, and hold it still.
+
+That is not evolution failing to find the answer. It is the score paying for it.
+Every term derived from the puck -- progress, level, the approach reward -- is
+read off one object twelve agents share, so it is the *same number* for all
+twelve. The agent that shoved the puck home and the agent standing in its way
+were scored identically, and selection cannot separate behaviours it cannot see
+apart. What it could see was that being near the puck pays and that moving costs
+motor effort, and it evolved accordingly.
+
+The fix is deliberately not "reward the agents pushing from the correct side".
+That hands over the answer, and this world exists to ask the question. It is to
+pay each agent for the work it actually did, which is a physical quantity rather
+than an opinion: the same approach speed `puck_step.comp` integrates, projected
+onto the direction the puck still has to travel. An agent wedged between the
+puck and the middle projects negative and earns nothing -- but nothing told it
+that side was wrong, only that its pushing does not move the puck where the puck
+has to go. Pushing at an angle pays less than pushing straight, so getting
+further round the puck is a gradient and not a switch.
+
+Zero, and not a penalty. Blocking should stop being paid for; it should not
+become a thing to actively avoid, or an agent learns to keep clear of the puck
+rather than to get behind it.
+
+The approach reward is cut to a quarter of `trackingReward` at the same time.
+The weight means "per second for being near the thing you are meant to track",
+which is the right rate in a world where being near the beacon *is* the task;
+here it is only how pushing starts, and at the full rate a trial spent leaning
+on the puck out-earned a trial spent delivering it. A parked agent now collects
+0.94 against the 12-plus-bonuses a delivery pays. The slider still scales it,
+and setting it to zero still turns the search reward off without touching what
+pushing pays -- which is the experiment worth running once the world moves.
+
+So the score now has two parts that answer different questions: the joint part
+says the puck arrived, and the per-agent part says who moved it. That split is
+also what makes the sharing sweep below meaningful rather than circular.
+
 **The first knob to reach for** is the puck's size. Bigger is easier twice over:
 a wider contact arc for several agents to push at once, and a larger thing to
 find. Both sliders -- `Puck radius` and `Target radius` -- take effect on reset.

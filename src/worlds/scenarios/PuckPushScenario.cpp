@@ -26,16 +26,17 @@ constexpr Float4 targetColor{0.35F, 1.00F, 0.55F, 0.0F};
 constexpr Float4 puckColor{1.00F, 0.92F, 0.70F, 0.0F};
 
 // What delivering is worth against what loitering is worth, which is the other
-// half of why nothing was learned. Being near the puck pays trackingReward per
-// second -- 0.25, so 3.75 over a fifteen-second trial for an agent that simply
-// parks on it. Pushing the puck all the way in used to pay about the same: the
+// half of why nothing was learned. Being near the puck used to pay trackingReward
+// per second -- 0.25, so 3.75 over a fifteen-second trial for an agent that
+// simply parks on it. Pushing the puck all the way in paid about the same: the
 // raw progress term is metres, and there are only 1.1 of them to the middle.
 // Two behaviours worth the same is not a gradient, and the easier one wins.
 //
 // Progress is normalised to the fraction of the way the puck has come, so it
 // does not depend on arena size, and weighted so that delivering is worth
 // several times loitering: 12 for the journey plus two levels of objective
-// bonus against 3.75 for standing still beside it.
+// bonus, against the 0.94 a parked agent now collects once the proximity reward
+// is cut to its share.
 constexpr float puckProgressReward = 12.0F;
 
 // Two levels, and the completion ratio is read against both: half means the
@@ -61,12 +62,23 @@ float fitness(const AgentState& agent, const FitnessWeights& weights) {
            agent.metrics.z * weights.motorCostWeight - agent.penalties.x;
 }
 
+// Two shaping terms, and they answer different questions.
+//
 // Being near the puck pays a little, per second. Without it an untrained
 // population scores identically -- it barely reaches the puck at all -- and
 // selection has nothing to work with. Squared, so the reward concentrates near
 // the puck rather than spreading a shallow gradient over the whole arena.
+//
+// Pushing the puck toward the middle pays properly, and pays the agent doing it.
+// Every other term here is read off the shared puck and is therefore the same
+// number for all twelve agents in a world, which is what let a population settle
+// on leaning against the near face of the puck and blocking it: that behaviour
+// collected the proximity reward and cost nothing, and no term in the score
+// could tell it apart from pushing. See puckPushContribution for why the answer
+// is to price the work rather than to name the correct side.
 void afterStep(AgentState& agent, const SimulationStep& settings, float) {
     rewardPuckProximity(agent, settings);
+    rewardPuckWork(agent, settings);
 }
 
 // Two: the lit disc in the middle, which is a marker and not a goal to arrive
@@ -92,6 +104,12 @@ void spawn(AgentState& agent, const SimulationStep& settings) {
     const puck::vec2 start = puck::puckStartPosition(settings.worldRadius, trial);
     agent.penalties.y = start.x;
     agent.penalties.z = start.y;
+    // And with the puck at rest, which is where the mirrored velocity the work
+    // reward reads against starts. Without it the slot still holds the base
+    // beacon this world does not use, and the first steps of a trial measure an
+    // approach against a puck the agent believes is already moving.
+    agent.target.x = 0.0F;
+    agent.target.y = 0.0F;
 }
 
 // floats0 = {target radius ratio, puck radius ratio, unused, unused}. The

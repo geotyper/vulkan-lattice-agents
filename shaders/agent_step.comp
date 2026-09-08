@@ -385,7 +385,11 @@ void main() {
         const Puck puck = pucks[world];
         // Mirrored onto the agent so the fitness and the progress shaping, which
         // only ever see one agent, can read a quantity the whole world shares.
+        // The velocity comes with it because the work reward is measured against
+        // the puck the same way the push is -- an agent trailing a puck that is
+        // already outrunning it is not pushing it.
         agent.penalties.yz = puck.pose.xy;
+        agent.target.xy = puck.motion.xy;
         agent.target.w = puck.motion.z;
         const vec2 offset = agent.pose.xy - puck.pose.xy;
         const float distance = length(offset);

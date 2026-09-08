@@ -10,11 +10,12 @@ namespace vkexp::puck::kernel {
 using uint = std::uint32_t;
 using vec2 = worlds::kernel::vec2;
 
-// vec2 and length() come from the scenario shim rather than being defined
+// vec2, length() and max() come from the scenario shim rather than being defined
 // again here: vec2 is the same type on both sides of the boundary, and a second
 // length() for it is not merely redundant -- it is ambiguous, because argument
 // lookup finds both.
 using worlds::kernel::length;
+using worlds::kernel::max;
 
 // Everything here is either integer arithmetic or one square root, so unlike
 // the brain preset it needs no second marker for the parts that cannot be

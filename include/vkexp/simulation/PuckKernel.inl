@@ -44,12 +44,79 @@ const float PuckContactSkin = 0.012f; // m
 // the puck it pays for being *at* it, which is where pushing starts.
 const float PuckApproachReach = 6.0f;
 
+// And how much of the tracking weight that approach reward is allowed to be.
+// The weight means "per second for being near the thing you are meant to track",
+// which is the right rate in a world where being near the beacon *is* the task.
+// Here it is not: being near the puck is how pushing starts, and at the full
+// rate a trial spent leaning on the puck out-earns a trial spent delivering it.
+// So the search reward keeps a quarter and the work below keeps the rest. The
+// slider still scales it, and setting the slider to zero still turns the search
+// reward off without touching what pushing pays.
+const float PuckProximityShare = 0.25f;
+
 // Per second, per agent in contact, applied to the approach speed. Chosen so
 // one agent at the speed limit settles the puck at roughly a third of its own
 // speed and a group moves it faster: cooperation has to pay, or the world is
 // not asking the question it exists to ask.
 const float PuckPushRate = 2.0f;  // 1/s
 const float PuckDrag = 3.0f;      // 1/s, applied as exp(-drag * dt)
+
+// What one agent's share of the pushing is, right now, in metres per second of
+// useful approach. This is the answer to the credit-assignment problem the world
+// created: the puck is one object, the outcome is joint, and every score derived
+// from the puck's position is therefore identical for every agent in the world --
+// the one that shoved it home and the one that stood in the way are scored the
+// same. Selection cannot separate behaviours it cannot see apart, so what it
+// saw was that standing near the puck pays and pushing costs motor effort, and
+// it duly evolved agents that lean on the nearest face of the puck and block it.
+//
+// The fix is not to say which side to push from. That would be handing over the
+// answer, and the world exists to ask the question. It is to pay each agent for
+// the work it actually did, which is a physical quantity and not an opinion: the
+// same approach speed the puck integrates, projected onto the direction the puck
+// has to travel. An agent wedged between the puck and the middle projects
+// negative and earns nothing -- but nothing told it that side was wrong, only
+// that its pushing does not move the puck where the puck has to go.
+//
+// Zero and not a penalty, deliberately. Blocking should stop being paid for; it
+// should not become a thing to actively avoid, or an agent learns to keep clear
+// of the puck rather than to get behind it.
+VKEXP_PUCK_FN float puckPushContribution(vec2 agentPosition, vec2 agentVelocity, float agentRadius,
+                                         vec2 puckPosition, vec2 puckVelocity, float radius) {
+    const float offsetX = puckPosition.x - agentPosition.x;
+    const float offsetY = puckPosition.y - agentPosition.y;
+    const float distance = length(vec2(offsetX, offsetY));
+    // The same contact test the puck pass uses, skin included, so an agent is
+    // credited exactly when it is one of the agents actually moving the puck.
+    if (distance <= 1.0e-6f || distance > radius + PuckContactSkin + agentRadius) {
+        return 0.0f;
+    }
+    const float normalX = offsetX / distance;
+    const float normalY = offsetY / distance;
+    const float approach = (agentVelocity.x - puckVelocity.x) * normalX +
+                           (agentVelocity.y - puckVelocity.y) * normalY;
+    if (approach <= 0.0f) {
+        return 0.0f;
+    }
+    // Where the puck still has to go. Taken from the puck's own position rather
+    // than passed in, because the destination is the middle in this world and a
+    // puck already there has nowhere left to be pushed.
+    const float remaining = length(puckPosition);
+    if (remaining <= 1.0e-6f) {
+        return 0.0f;
+    }
+    const float useful = -(puckPosition.x * normalX + puckPosition.y * normalY) / remaining;
+    return approach * max(useful, 0.0f);
+}
+
+// Fitness per metre of useful approach. Sized against the delivery it is meant
+// to lead to rather than picked: a lone agent at the speed limit holds the puck
+// at roughly 0.24 m/s with 0.36 m/s of approach behind it, so the 1.1 m journey
+// takes about 4.6 s and banks about 1.5 -- which at this weight is six, the same
+// order as the whole-journey progress term the world already pays. That is the
+// balance being aimed at. The joint part of the score says the puck arrived; this
+// part says who moved it, and neither should drown the other out.
+const float PuckWorkReward = 4.0f;
 
 // Where the puck starts: on the world's vertical axis, this far up or down.
 const float PuckStartOffset = 0.60f; // fraction of the world radius
