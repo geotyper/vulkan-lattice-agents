@@ -689,14 +689,23 @@ void SimulationDriver::updateGridDescriptors() {
 GpuStepParameters SimulationDriver::stepParameters(const std::uint32_t generationStep) const {
     const SimulationStep settings =
         resolveStepSettings(state_.physics, generationStep, state_.controls.stepsPerGeneration);
-    return packStepParameters(settings, StepParameterLayout{state_.agents.agentCount,
-                                                            config_.trialsPerGenome,
-                                                            state_.worlds.agentsPerWorld,
-                                                            gridCellSize(),
-                                                            gridWidth_,
-                                                            gridCellsPerWorld_,
-                                                            trailWidth_,
-                                                            trailCellsPerWorld_});
+    // Every field named. Positionally this was eight initialisers for a nine
+    // field aggregate, and the ninth -- worldCount -- kept its default of 1, so
+    // the puck pass returned from every thread but the first and only world zero
+    // ever had a puck that moved. Agents in every other world pushed a puck that
+    // could not be integrated: contact worked, the reward for pushing paid, and
+    // nothing happened. That is the third time a field has been silently dropped
+    // on the way to this struct; see the note on packStepParameters.
+    return packStepParameters(settings,
+                              StepParameterLayout{.agentCount = state_.agents.agentCount,
+                                                  .trialsPerGenome = config_.trialsPerGenome,
+                                                  .agentsPerWorld = state_.worlds.agentsPerWorld,
+                                                  .gridCellSize = gridCellSize(),
+                                                  .gridWidth = gridWidth_,
+                                                  .gridCellsPerWorld = gridCellsPerWorld_,
+                                                  .trailWidth = trailWidth_,
+                                                  .trailCellsPerWorld = trailCellsPerWorld_,
+                                                  .worldCount = state_.worlds.worldCount});
 }
 
 std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,

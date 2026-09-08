@@ -110,6 +110,67 @@ int run() {
     // lucky collision. If the push were not wired up, or the puck pass never ran,
     // or it read the wrong world's agents, every one of these would be zero.
     require(touched > 0, "agents shift the puck at all");
+
+    // And every world integrates its own puck, not only the first. This is the
+    // assertion the count above was too weak to make: it read "1 of 16" for as
+    // long as the puck world existed, and 1 is what `touched > 0` accepts. The
+    // cause was a step-parameter aggregate initialised positionally, one field
+    // short, so worldCount kept its default of 1 and every thread but the first
+    // returned before it integrated anything. Agents in the other fifteen worlds
+    // touched their puck, were paid for pushing it, and moved nothing.
+    //
+    // Staged rather than waited for, because untrained agents reaching every
+    // puck at once is luck: one agent per world is placed behind its puck moving
+    // at the speed limit, the rest are parked out of the way, and then every
+    // puck has to move.
+    {
+        vkexp::WorldSnapshot staged = driver.snapshot();
+        const std::uint32_t trials = state.agents.trialsPerGenome;
+        const std::uint32_t perWorld = state.worlds.agentsPerWorld;
+        for (auto& puck : staged.pucks) {
+            puck.motion = {};
+        }
+        for (std::size_t index = 0; index < staged.agents.size(); ++index) {
+            const std::uint32_t world = vkexp::logicalWorldForAgent(
+                static_cast<std::uint32_t>(index), perWorld, trials);
+            const vkexp::PuckState& puck = staged.pucks[world];
+            vkexp::AgentState& agent = staged.agents[index];
+            const float span = std::hypot(puck.pose.x, puck.pose.y);
+            const float outwardX = span > 1.0e-6F ? puck.pose.x / span : 0.0F;
+            const float outwardY = span > 1.0e-6F ? puck.pose.y / span : 1.0F;
+            if ((index / trials) % perWorld == 0) {
+                // Behind the puck, on the far side from the middle, at exactly
+                // touching distance and driving inward.
+                const float reach = puck.pose.z + vkexp::agentBodyRadius;
+                agent.pose.x = puck.pose.x + outwardX * reach;
+                agent.pose.y = puck.pose.y + outwardY * reach;
+                agent.motion.x = -outwardX * state.physics.maximumSpeed;
+                agent.motion.y = -outwardY * state.physics.maximumSpeed;
+            } else {
+                // Everyone else against the opposite rim, still, so exactly one
+                // agent is pushing and the puck's motion has one explanation.
+                agent.pose.x = -outwardX * (state.physics.worldRadius - vkexp::agentBodyRadius);
+                agent.pose.y = -outwardY * (state.physics.worldRadius - vkexp::agentBodyRadius);
+                agent.motion.x = 0.0F;
+                agent.motion.y = 0.0F;
+            }
+        }
+        // The snapshot was taken on a finished generation, and recordSteps would
+        // hand back nothing to run.
+        staged.step = 0;
+        driver.restoreSnapshot(staged);
+        context.immediate().execute(
+            [&](const VkCommandBuffer commands) { driver.recordSteps(commands, 8); });
+        const std::vector<vkexp::PuckState> nudged = driver.snapshot().pucks;
+        require(nudged.size() == staged.pucks.size(), "the staged run keeps one puck per world");
+        for (std::size_t world = 0; world < nudged.size(); ++world) {
+            const float before = std::hypot(staged.pucks[world].pose.x, staged.pucks[world].pose.y);
+            const float after = std::hypot(nudged[world].pose.x, nudged[world].pose.y);
+            require(before - after > 1.0e-3F,
+                    "world " + std::to_string(world) +
+                        " integrates its own puck when an agent pushes it");
+        }
+    }
     // How far it goes is not asserted. Untrained agents wander, and a bar in
     // metres would be a competence check dressed as a wiring one -- it already
     // broke once when the puck was made bigger, which changed nothing about
