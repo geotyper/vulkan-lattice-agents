@@ -84,6 +84,7 @@ only work from one spawn position or heading.
 | Beacon scenario | Scent relay | The same collect-and-deliver cycle, but home emits no light and lays no trail: it can only be found by dead reckoning or by a path the agents themselves marked. |
 | Beacon scenario | Two doors | The same cycle across a wall with two gaps, one of which is a dead end. Which one swaps every trial -- or every generation, as an option -- and from the home side they are identical. Retuned after it went unsolved for 450 generations; see Two gaps for the measurement. |
 | Beacon scenario | Shuttle | Fetch and carry back, over and over until the trial ends, around a short wall that closes the straight line between the two beacons. |
+| Beacon scenario | Puck push | A round puck shared by every agent in a logical world, starting on one side of the centre line. Push it at least across the line, and at best into the lit disc in the middle whose radius is a slider. |
 | Beacon scenario | Two gaps | The same repeated cycle across a wall with two ways through, neither a dead end, with an option to make the two ends trade places every other generation. |
 
 Changing the world size, shape, or beacon scenario resets the evolution because
@@ -356,6 +357,65 @@ carrying the task.
 Forcing colour to matter is a further step and not yet taken: it needs the two
 ends to stop being distinguishable by "the one I am not at" -- a third beacon,
 or a home that appears in one of two places after each pickup.
+
+## Puck push
+
+The first world where agents change something rather than only move through it,
+and the first whose outcome belongs to a group rather than to an individual.
+
+```text
+        the side the puck starts on, by trial
+   +-----------------------------+
+   |            ( o )            |   the puck
+   |  - - - - - -( * )- - - - -  |   the line, half the objective
+   |            (   )            |   the lit disc, the whole of it
+   +-----------------------------+
+```
+
+One puck per logical world, integrated by its own compute pass. Agents push it
+by touching it; the puck is a body they cannot walk through, reported through
+the same tactile channel a wall is, so no new sensor had to be found room for.
+The two objectives are levels rather than a count: crossing the line is one,
+sitting in the disc is two, and the reported ratio is read against both. They
+are latched and taken as a maximum, so the curve is monotone -- a puck nudged
+through the middle and out the other side still got there.
+
+**Why the push is a velocity and not an overlap.** The obvious model sums
+penetration depths and pushes the puck out of them. That cannot work here: the
+agent step resolves its own overlap first, so by the time the puck is integrated
+there is no penetration left to read. The push is taken from the approach speed
+along the contact normal instead -- which is what a push is -- and measured
+*relative to the puck*, so an agent cannot push something already outrunning it.
+That relative term is what bounds the puck's speed by the agents' own, and the
+smoke test asserts the bound rather than the formula.
+
+**Why there is an approach reward.** Measured before it was added: an untrained
+population touches its puck in about one world in sixteen over a four-second
+trial. With the objective being the puck's distance to the middle, that means
+almost every genome scores exactly the same and selection has nothing to climb.
+Being near the puck therefore pays a little per second, on the `trackingReward`
+weight that already existed for this job on moving beacons, so finding the puck
+is worth something before moving it is.
+
+**This is the world the sharing option was built for.** `--fitness-sharing`
+blends a genome's score with its world's average, which is meant to make helping
+a neighbour pay -- and until now every world scored an individual's own
+journey, so there was little to share. Here the outcome is joint by
+construction: one puck, one result, twelve agents. Whether sharing helps is the
+measurement this world exists to make.
+
+```sh
+vkneuro_headless --scenario puck --generations 300 --seed 5 --csv runs/puck.csv
+for share in 0.0 0.5 1.0; do
+  vkneuro_headless --scenario puck --generations 300 --seed 5 \
+                   --fitness-sharing "$share" --csv "runs/puck-share-$share.csv"
+done
+```
+
+The puck is saved in world snapshots, unlike the trail field: the trail is
+derived and recovers in a few half-lives, the puck's position is the state of
+the experiment, and a resume that put it back at the start would read as a run
+that had lost ground it had not lost.
 
 ## Group fitness sharing
 

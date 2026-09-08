@@ -111,6 +111,9 @@ struct ScenarioDefinition {
     // renderer both read, and one accessor. Zero means an empty arena, which is
     // every scenario but one.
     std::uint32_t obstacleCount{};
+    // Whether this world has a puck. Decides whether the driver runs the puck
+    // pass at all, and whether the target-radius slider is offered.
+    bool puck{};
     ScenarioObstacle obstacle{};
 
     ScenarioSpawn spawn{};

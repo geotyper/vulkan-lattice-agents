@@ -53,6 +53,10 @@ GpuStepParameters packStepParameters(const SimulationStep& resolved,
             static_cast<std::uint32_t>(resolved.neuronModel),
             scenario.obstacleCount,
             resolved.uniformBeaconColor ? 1U : 0U,
+            layout.worldCount,
+            resolved.puckTargetRadiusRatio,
+            scenario.puck ? 1U : 0U,
+            0U,
             0U};
 }
 

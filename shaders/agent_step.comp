@@ -5,6 +5,8 @@
 #include "simulation/step_parameters.glsl"
 #include "simulation/trail_kernel.glsl"
 #include "simulation/agent_layout.glsl"
+#include "simulation/puck_layout.glsl"
+#include "simulation/puck_kernel.glsl"
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
@@ -33,6 +35,12 @@ layout(std430, set = 0, binding = 5) readonly buffer StepParameterBlocks {
 };
 layout(std430, set = 0, binding = 6) readonly buffer TrailField {
     uint trailValues[];
+};
+// Read only here. An agent is moved out of the puck by the agent step; the puck
+// is moved by the agents in puck_step.comp, one thread per world, so no two
+// invocations ever write the same puck.
+layout(std430, set = 0, binding = 7) readonly buffer Pucks {
+    Puck pucks[];
 };
 
 layout(push_constant) uniform StepSelector {
@@ -367,6 +375,28 @@ void main() {
         }
         recordTouch(agent, contactSector(normal, agent.pose.z),
                     0.25 + max(into, 0.0) / params.maximumSpeed, true);
+    }
+
+    // The puck is a body in the way like any other, and reports through the same
+    // tactile channel: to the network a thing you cannot walk through is a thing
+    // you cannot walk through, whether or not it moves when you lean on it.
+    if (params.puckEnabled != 0u) {
+        const uint world = uint(max(agent.penalties.w, 0.0) + 0.5);
+        const Puck puck = pucks[world];
+        // Mirrored onto the agent so the fitness and the progress shaping, which
+        // only ever see one agent, can read a quantity the whole world shares.
+        agent.penalties.yz = puck.pose.xy;
+        agent.target.w = puck.motion.z;
+        const vec2 offset = agent.pose.xy - puck.pose.xy;
+        const float distance = length(offset);
+        const float contact = agent.pose.w + puck.pose.z;
+        if (distance > 1.0e-6 && distance < contact) {
+            const vec2 normal = offset / distance;
+            agent.pose.xy += normal * (contact - distance);
+            recordTouch(agent, contactSector(normal, agent.pose.z),
+                        0.25 + max(-dot(agent.motion.xy, normal), 0.0) / params.maximumSpeed,
+                        true);
+        }
     }
 
     const float maximumCenterDistance = max(params.worldRadius - agent.pose.w, 0.0);

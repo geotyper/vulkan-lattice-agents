@@ -24,6 +24,7 @@ struct SnapshotHeader {
     std::uint32_t weightCount{};
     std::uint32_t agentCount{};
     std::uint32_t agentStateBytes{};
+    std::uint32_t puckCount{};
     std::uint32_t physicsFieldCount{};
     std::uint32_t stepsPerGeneration{};
     std::uint32_t step{};
@@ -33,7 +34,7 @@ struct SnapshotHeader {
     std::uint64_t generation{};
 };
 
-static_assert(sizeof(SnapshotHeader) == 56);
+static_assert(sizeof(SnapshotHeader) == 64);
 
 // One list, walked in both directions, so a field can never be saved and loaded
 // in a different order. Adding a tunable means adding a line here and bumping
@@ -64,6 +65,7 @@ template <typename Visit> void visitPhysics(SimulationStep& physics, Visit&& vis
     visit(physics.forageCargoDecayRate);
     visit(physics.foragePickupReward);
     visit(physics.forageDeliveryReward);
+    visit(physics.puckTargetRadiusRatio);
     visit(physics.trailDepositRate);
     visit(physics.trailHalfLife);
     visit(physics.beaconTrailDepositRate);
@@ -77,7 +79,7 @@ template <typename Visit> void visitPhysics(SimulationStep& physics, Visit&& vis
     visit(physics.fitness.groupSharing);
 }
 
-constexpr std::uint32_t physicsFloatCount = 36;
+constexpr std::uint32_t physicsFloatCount = 37;
 
 // visitPhysics and PhysicsIntegers together have to name every field of
 // SimulationStep, and this is what notices when a new tunable is added and
@@ -90,7 +92,7 @@ constexpr std::uint32_t physicsFloatCount = 36;
 // after it. A new bool is therefore
 // covered by testWorldSnapshotRoundTrip naming it in both polarities, which is
 // the check that does not depend on the size changing.
-static_assert(sizeof(SimulationStep) == 180,
+static_assert(sizeof(SimulationStep) == 184,
               "SimulationStep changed shape -- update the world snapshot field lists");
 
 // The handful of fields that are not floats, kept apart so the float list above
@@ -143,6 +145,7 @@ void saveWorldSnapshot(const std::filesystem::path& path, const WorldSnapshot& s
                                 static_cast<std::uint32_t>(neuro::Topology::weightCount),
                                 static_cast<std::uint32_t>(snapshot.agents.size()),
                                 static_cast<std::uint32_t>(sizeof(AgentState)),
+                                static_cast<std::uint32_t>(snapshot.pucks.size()),
                                 physicsFloatCount,
                                 snapshot.stepsPerGeneration,
                                 snapshot.step,
@@ -183,6 +186,8 @@ void saveWorldSnapshot(const std::filesystem::path& path, const WorldSnapshot& s
     }
     stream.write(reinterpret_cast<const char*>(snapshot.agents.data()),
                  static_cast<std::streamsize>(snapshot.agents.size() * sizeof(AgentState)));
+    stream.write(reinterpret_cast<const char*>(snapshot.pucks.data()),
+                 static_cast<std::streamsize>(snapshot.pucks.size() * sizeof(PuckState)));
     stream.flush();
     if (!stream) {
         throw WorldSnapshotError("Failed while writing world snapshot: " + path.string());
@@ -262,6 +267,10 @@ WorldSnapshot loadWorldSnapshot(const std::filesystem::path& path) {
     }
     snapshot.agents.resize(header.agentCount);
     readExactly(stream, snapshot.agents.data(), snapshot.agents.size() * sizeof(AgentState), path);
+    snapshot.pucks.resize(header.puckCount);
+    if (header.puckCount > 0) {
+        readExactly(stream, snapshot.pucks.data(), snapshot.pucks.size() * sizeof(PuckState), path);
+    }
     return snapshot;
 }
 

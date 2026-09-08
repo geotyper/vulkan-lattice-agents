@@ -118,6 +118,13 @@ struct TrailBufferView {
     std::uint32_t cellsPerWorld{};
 };
 
+// The puck buffer, published so the renderer can draw what the simulation is
+// pushing around rather than a copy of it.
+struct PuckBufferView {
+    VkBuffer buffer{};
+    VkDeviceSize size{};
+};
+
 struct SimulationViewport {
     VkImageView imageView{};
     VkSampler sampler{};
@@ -138,6 +145,7 @@ struct SimulationState {
     SimulationDisplay display;
     AgentBufferView agents;
     TrailBufferView trail;
+    PuckBufferView puck;
     SimulationViewport viewport;
 };
 

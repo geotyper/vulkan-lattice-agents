@@ -5,10 +5,14 @@
 #include "worlds/scenario_params.glsl"
 #include "neuro/brain_kernel.glsl"
 #include "simulation/agent_layout.glsl"
+#include "simulation/puck_layout.glsl"
 
 
 layout(std430, set = 0, binding = 0) readonly buffer Agents {
     Agent agents[];
+};
+layout(std430, set = 0, binding = 2) readonly buffer Pucks {
+    Puck pucks[];
 };
 layout(std430, set = 0, binding = 1) readonly buffer TrailField {
     uint trailValues[];
@@ -133,6 +137,23 @@ void main() {
                                             params.beaconPhase, trial, params.beaconCount,
                                             params.uniformBeaconColor),
                      params.opacity);
+    } else if (params.mode == 7) {
+        // The puck of the world being watched, drawn from the same record the
+        // simulation integrates, so what is on screen is what is being pushed.
+        const Puck puck = pucks[params.selectedWorld];
+        world = puck.pose.xy + circleVertex(gl_VertexIndex, puck.pose.z, 24);
+        // Tinted by how far it has got: the level is latched, so the colour is a
+        // reading of the score rather than of the position.
+        const float level = clamp(puck.motion.z / 2.0, 0.0, 1.0);
+        color = vec4(mix(vec3(0.85, 0.85, 0.90), vec3(0.35, 1.00, 0.55), level), params.opacity);
+    } else if (params.mode == 8) {
+        // The target disc, drawn as ground under everything: it is a region the
+        // puck has to reach, not a body anything collides with.
+        // The ratio is already in the scenario block -- the push constants are at
+        // the 128 bytes Vulkan guarantees and have no room for a copy of it.
+        const float targetRadius = params.worldRadius * params.scenario.floats0.x;
+        world = circleVertex(gl_VertexIndex, targetRadius, 48);
+        color = vec4(0.20, 0.42, 0.28, params.opacity);
     } else if (params.mode == 6) {
         // One quad per obstacle box, placed by the same kernel the step uses, so
         // what is drawn is what an agent will actually walk into.

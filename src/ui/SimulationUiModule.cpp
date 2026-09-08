@@ -224,6 +224,16 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                               "a solution reads the colour at all -- one that does not will score "
                               "the same with this on.");
     }
+    if (scenario.puck) {
+        if (ImGui::SliderFloat("Target radius", &state_.physics.puckTargetRadiusRatio, 0.05F, 0.60F,
+                               "%.2f of arena")) {
+            state_.controls.resetRequested = true;
+        }
+        ImGui::SetItemTooltip("The disc in the middle the puck has to end up in. Reaching the "
+                              "halfway line already counts for half; this is what the other half "
+                              "costs. Widen it to see whether the task is being solved at all, "
+                              "narrow it to ask for the puck to be placed rather than shoved.");
+    }
     if (scenario.tunables.blockedDoorPerGeneration) {
         if (ImGui::Checkbox("Dead end changes by generation",
                             &state_.physics.blockedDoorPerGeneration)) {
@@ -259,7 +269,8 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                            0.02F, "%.4f")) {
         state_.controls.resetRequested = true;
     }
-    if (scenario.tunables.beaconAngularSpeed || scenario.tunables.beaconRandomMotion) {
+    if (scenario.tunables.beaconAngularSpeed || scenario.tunables.beaconRandomMotion ||
+        scenario.puck) {
         if (ImGui::SliderFloat("Tracking reward", &state_.physics.fitness.trackingReward, 0.0F,
                                1.0F, "%.3f")) {
             state_.controls.resetRequested = true;

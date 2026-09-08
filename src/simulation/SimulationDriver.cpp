@@ -1,6 +1,7 @@
 #include "vkexp/simulation/SimulationDriver.hpp"
 
 #include "vkexp/simulation/CpuSimulation.hpp"
+#include "vkexp/simulation/PuckKernel.hpp"
 #include "vkexp/simulation/StepParameters.hpp"
 #include "vkexp/worlds/WorldScenario.hpp"
 
@@ -101,6 +102,25 @@ void SimulationDriver::createStepResources() {
     trailField_.create(physicalDevice_, device_,
                        {trailFieldBudget(),
                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT});
+    // One puck per logical world, sized for the most worlds the population can
+    // ever be split into rather than resized when agentsPerWorld changes. The
+    // whole buffer is a few kilobytes, and the trail field's history says a
+    // resizable device buffer buys a lifetime bug and nothing else.
+    //
+    // Host-visible, unlike the trail field: a snapshot has to carry the pucks,
+    // and at a few kilobytes read once per save that is cheaper than staging a
+    // copy. The trail field is device-local because it is 256 MiB and derived.
+    //
+    // Host-visible, unlike the trail field: a snapshot has to carry the pucks,
+    // and at a few kilobytes read once per save that is cheaper than a staging
+    // copy. The trail field is device-local because it is 256 MiB and derived.
+    puckField_.create(
+        physicalDevice_, device_,
+        {sizeof(PuckState) * std::max<VkDeviceSize>(
+                                 logicalWorldCount(static_cast<std::uint32_t>(genomeCount),
+                                                   minimumAgentsPerWorld, config_.trialsPerGenome),
+                                 1),
+         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
     updateWorldLayout();
     updateGridDimensions();
     ensureGridCapacity();
@@ -108,12 +128,13 @@ void SimulationDriver::createStepResources() {
     const VkDeviceSize gridLinkBytes = sizeof(std::int32_t) * agentCount;
     gridNext_.create(physicalDevice_, device_, {gridLinkBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT});
 
-    createStorageLayout(device_, 7, stepDescriptorSetLayout_);
+    createStorageLayout(device_, 8, stepDescriptorSetLayout_);
     createStorageLayout(device_, 1, gridClearDescriptorSetLayout_);
     createStorageLayout(device_, 3, gridBuildDescriptorSetLayout_);
     createStorageLayout(device_, 1, trailDecayDescriptorSetLayout_);
     createStorageLayout(device_, 3, trailDepositDescriptorSetLayout_);
-    descriptorAllocator_.create(device_, {8, {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 29}}});
+    createStorageLayout(device_, 3, puckStepDescriptorSetLayout_);
+    descriptorAllocator_.create(device_, {10, {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 37}}});
 
     for (std::uint32_t readIndex = 0; readIndex < 2; ++readIndex) {
         const VkBuffer readBuffer =
@@ -135,7 +156,21 @@ void SimulationDriver::createStepResources() {
                          stepParameterBuffer_.size())
             .writeBuffer(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, trailField_.buffer(), 0,
                          trailField_.size())
+            .writeBuffer(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, puckField_.buffer(), 0,
+                         puckField_.size())
             .update(device_, stepDescriptorSets_[readIndex]);
+
+        // Reads the agents the step has just written, so the puck responds to
+        // where they ended up rather than to where they were before it ran.
+        puckStepDescriptorSets_[readIndex] =
+            descriptorAllocator_.allocate(puckStepDescriptorSetLayout_.get());
+        DescriptorSetWriter{}
+            .writeBuffer(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, writeBuffer, 0, agentBytes)
+            .writeBuffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, puckField_.buffer(), 0,
+                         puckField_.size())
+            .writeBuffer(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stepParameterBuffer_.buffer(), 0,
+                         stepParameterBuffer_.size())
+            .update(device_, puckStepDescriptorSets_[readIndex]);
 
         trailDepositDescriptorSets_[readIndex] =
             descriptorAllocator_.allocate(trailDepositDescriptorSetLayout_.get());
@@ -190,6 +225,12 @@ void SimulationDriver::createStepResources() {
             .shader(VKEXP_SHADER_DIR "/trail_decay.comp.spv")
             .addDescriptorSetLayout(trailDecayDescriptorSetLayout_.get())
             .addPushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, sizeof(TrailDecayParameters))
+            .build();
+    puckStepPipeline_ =
+        ComputePipelineBuilder{physicalDevice_, device_}
+            .shader(VKEXP_SHADER_DIR "/puck_step.comp.spv")
+            .addDescriptorSetLayout(puckStepDescriptorSetLayout_.get())
+            .addPushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, sizeof(std::uint32_t))
             .build();
     trailDepositPipeline_ =
         ComputePipelineBuilder{physicalDevice_, device_}
@@ -279,6 +320,25 @@ std::vector<AgentState> SimulationDriver::makeInitialAgents() const {
     return result;
 }
 
+// One puck per logical world, placed by the shared kernel from the trial the
+// world belongs to, so which side it starts on is the same question on both
+// sides of the language boundary.
+std::vector<PuckState> SimulationDriver::makeInitialPucks() const {
+    const std::uint32_t worlds = state_.worlds.worldCount;
+    const std::uint32_t trials = std::max(config_.trialsPerGenome, 1U);
+    std::vector<PuckState> result(worlds);
+    for (std::uint32_t world = 0; world < worlds; ++world) {
+        const std::uint32_t trial = world % trials;
+        const ::vkexp::puck::kernel::vec2 start =
+            ::vkexp::puck::kernel::puckStartPosition(state_.physics.worldRadius, trial);
+        PuckState& state = result[world];
+        state.pose = {start.x, start.y, ::vkexp::puck::kernel::PuckRadius,
+                      ::vkexp::puck::kernel::puckStartSide(trial)};
+        state.motion = {};
+    }
+    return result;
+}
+
 void SimulationDriver::uploadPopulation() {
     std::vector<float> flattened;
     flattened.reserve(evolution_.population().size() * neuro::Topology::weightCount);
@@ -288,6 +348,9 @@ void SimulationDriver::uploadPopulation() {
     genomeBuffer_.write(flattened.data(), flattened.size() * sizeof(float));
     agentBuffers_.read().write(agents_.data(), agents_.size() * sizeof(AgentState));
     agentBuffers_.write().write(agents_.data(), agents_.size() * sizeof(AgentState));
+    if (!pucks_.empty()) {
+        puckField_.write(pucks_.data(), pucks_.size() * sizeof(PuckState));
+    }
     hostUploadPending_ = true;
     trailClearPending_ = true;
 }
@@ -297,6 +360,7 @@ void SimulationDriver::resetGeneration() {
     // here keeps simulation and visualization on the same random world.
     state_.physics.beaconMotionSeed = static_cast<std::uint32_t>(evolution_.generation());
     agents_ = makeInitialAgents();
+    pucks_ = makeInitialPucks();
     uploadPopulation();
     state_.statistics.step = 0;
     state_.statistics.generation = evolution_.generation();
@@ -328,6 +392,11 @@ WorldSnapshot SimulationDriver::snapshot() {
     result.physics = state_.physics;
     result.genomes.assign(evolution_.population().begin(), evolution_.population().end());
     result.agents = agents_;
+    if (scenarioDefinition(state_.physics.beaconScenario).puck && !pucks_.empty()) {
+        pucks_.resize(state_.worlds.worldCount);
+        puckField_.read(pucks_.data(), pucks_.size() * sizeof(PuckState));
+        result.pucks = pucks_;
+    }
     result.generation = evolution_.generation();
     result.step = state_.statistics.step;
     result.stepsPerGeneration = state_.controls.stepsPerGeneration;
@@ -370,6 +439,9 @@ void SimulationDriver::restoreSnapshot(const WorldSnapshot& snapshot) {
 
     // After uploadPopulation, which would otherwise send freshly spawned agents.
     agents_ = snapshot.agents;
+    // A snapshot from a world without a puck carries none, and a world that has
+    // one then starts it where the scenario puts it rather than at the origin.
+    pucks_ = snapshot.pucks.empty() ? makeInitialPucks() : snapshot.pucks;
     state_.statistics.step = std::min(snapshot.step, snapshot.stepsPerGeneration);
 
     uploadPopulation();
@@ -540,6 +612,7 @@ void SimulationDriver::updateTrailDimensions() {
         throw std::runtime_error("Trail field does not fit even at the coarsest resolution");
     }
     state_.trail = {trailField_.buffer(), trailField_.size(), trailWidth_, trailCellsPerWorld_};
+    state_.puck = {puckField_.buffer(), puckField_.size()};
 }
 
 void SimulationDriver::updateWorldLayout() {
@@ -682,13 +755,14 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
     const DispatchSize buildGroups = checkedDispatchSize(
         physicalDevice_,
         {{state_.agents.agentCount, 1, 1}, {64, 1, 1}, sizeof(gridParameters), buildRanges});
-    const std::array<VkDeviceSize, 7> stepRanges{agentBuffers_.read().size(),
+    const std::array<VkDeviceSize, 8> stepRanges{agentBuffers_.read().size(),
                                                  agentBuffers_.write().size(),
                                                  genomeBuffer_.size(),
                                                  gridHeads_.size(),
                                                  gridNext_.size(),
                                                  stepParameterBuffer_.size(),
-                                                 trailField_.size()};
+                                                 trailField_.size(),
+                                                 puckField_.size()};
     const std::uint32_t trailValueCount =
         trailCellsPerWorld_ * state_.worlds.worldCount * trail::kernel::TrailChannels;
     const std::array<VkDeviceSize, 1> decayRanges{trailField_.size()};
@@ -703,6 +777,14 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
     const DispatchSize stepGroups = checkedDispatchSize(
         physicalDevice_,
         {{state_.agents.agentCount, 1, 1}, {64, 1, 1}, sizeof(std::uint32_t), stepRanges});
+    const std::array<VkDeviceSize, 3> puckRanges{agentBuffers_.write().size(), puckField_.size(),
+                                                 stepParameterBuffer_.size()};
+    const DispatchSize puckGroups = checkedDispatchSize(
+        physicalDevice_,
+        {{std::max(state_.worlds.worldCount, 1U), 1, 1},
+         {64, 1, 1},
+         sizeof(std::uint32_t),
+         puckRanges});
 
     for (std::uint32_t step = 0; step < stepCount; ++step) {
         cmdBufferBarrier(commands, gridHeads_.buffer(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -778,6 +860,22 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
             VK_ACCESS_2_SHADER_STORAGE_READ_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
         cmdComputeWriteToComputeRead(commands, agentBuffers_.write().buffer());
+
+        // After the step, so the puck is pushed by where the agents actually
+        // ended up rather than by where they were before they moved. One thread
+        // per world and no atomics: each thread owns one puck and reads its own
+        // world's agents, so nothing is shared between invocations.
+        if (scenarioDefinition(state_.physics.beaconScenario).puck) {
+            vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
+                              puckStepPipeline_.pipeline());
+            const VkDescriptorSet puckSet = puckStepDescriptorSets_[readIndex];
+            vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    puckStepPipeline_.layout(), 0, 1, &puckSet, 0, nullptr);
+            vkCmdPushConstants(commands, puckStepPipeline_.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                               sizeof(step), &step);
+            vkCmdDispatch(commands, puckGroups.x, 1, 1);
+            cmdComputeWriteToComputeRead(commands, puckField_.buffer());
+        }
         agentBuffers_.swap();
         state_.agents.currentIndex = agentBuffers_.readIndex();
     }

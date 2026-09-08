@@ -8,6 +8,7 @@
 #include "vkexp/simulation/CpuSimulation.hpp"
 #include "vkexp/simulation/ExperimentSweep.hpp"
 #include "vkexp/simulation/Sensors.hpp"
+#include "vkexp/simulation/PuckKernel.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
 #include "vkexp/simulation/TrailKernel.hpp"
 #include "vkexp/simulation/Units.hpp"
@@ -1731,6 +1732,79 @@ void testDeliveryCannotBeScoredTwice() {
           "The resource is available again after a delivery");
 }
 
+void testPuckWorld() {
+    namespace puck = vkexp::puck::kernel;
+    const vkexp::ScenarioDefinition& scenario =
+        vkexp::scenarioDefinition(vkexp::BeaconScenario::PuckPush);
+    vkexp::SimulationStep settings;
+    settings.beaconScenario = vkexp::BeaconScenario::PuckPush;
+    const float radius = settings.worldRadius;
+
+    // Which side the puck starts on alternates by trial, so one genome meets
+    // both and pushing always the same way cannot stand in for perceiving where
+    // the puck is.
+    check(puck::puckStartSide(0) == -puck::puckStartSide(1) &&
+              puck::puckStartSide(0) == puck::puckStartSide(2),
+          "The puck starts on alternating sides by trial");
+    for (const std::uint32_t trial : {0U, 1U, 2U, 3U}) {
+        const auto start = puck::puckStartPosition(radius, trial);
+        check(closeTo(start.x, 0.0F), "The puck starts on the arena's axis");
+        check(std::abs(start.y) < radius - puck::PuckRadius,
+              "The puck starts inside the arena, clear of the rim");
+        check(!puck::puckCrossedLine(puck::puckStartSide(trial), start.y),
+              "The puck has not crossed the line at the moment it is placed");
+    }
+
+    // The two levels. The target disc straddles the line, so being inside it
+    // does not imply having crossed -- which is exactly why the level is taken
+    // as a maximum rather than as a count, and why this checks both directions.
+    const float target = puck::puckTargetRadius(radius, settings.puckTargetRadiusRatio);
+    check(target > puck::PuckRadius * 2.0F, "The target disc is wider than the puck");
+    check(target < radius * 0.5F, "The target disc is a target and not most of the arena");
+    check(puck::puckInsideTarget({0.0F, 0.0F}, target), "The middle is inside the target");
+    check(!puck::puckInsideTarget({target * 1.01F, 0.0F}, target),
+          "Just outside the target is outside it");
+    check(puck::puckCrossedLine(1.0F, -0.01F) && !puck::puckCrossedLine(1.0F, 0.01F),
+          "Crossing is measured against the side the puck started on");
+    check(puck::puckCrossedLine(-1.0F, 0.01F) && !puck::puckCrossedLine(-1.0F, -0.01F),
+          "And it is measured the other way for a puck starting on the other side");
+
+    // The shaping opens against the puck's own starting distance. This is the
+    // assertion that catches a spawn which forgets to seed the mirror: with the
+    // mirror at zero the trial opens believing the puck is already in the
+    // middle, every genome banks the same nothing, and the world scores as a
+    // hard task rather than as a broken one. No device test sees it, because the
+    // puck still moves exactly as before.
+    check(scenario.spawn != nullptr && scenario.targetDistance != nullptr,
+          "The puck world places its own agents and measures its own target");
+    for (const std::uint32_t trial : {0U, 1U}) {
+        vkexp::AgentState agent{};
+        agent.pose = {0.3F, 0.2F, 0.0F, vkexp::agentBodyRadius};
+        agent.target.z = static_cast<float>(trial);
+        scenario.spawn(agent, settings);
+        const auto start = puck::puckStartPosition(radius, trial);
+        check(closeTo(scenario.targetDistance(agent, settings), std::hypot(start.x, start.y)),
+              "A trial opens measuring the puck's distance to the middle, not zero");
+        // And the agents are put on the puck's side, so the first thing they
+        // have to do is reach it rather than already be behind it.
+        check(agent.pose.y * puck::puckStartSide(trial) > 0.0F,
+              "Agents spawn on the side the puck starts on");
+    }
+
+    // Scoring reads the level the puck pass latched, and is capped at the two
+    // levels the world has: a number above that would report more than complete.
+    for (float level = 0.0F; level <= 4.0F; level += 1.0F) {
+        vkexp::AgentState agent{};
+        agent.target.w = level;
+        check(scenario.achievedObjectives(agent) ==
+                  std::min(static_cast<std::uint32_t>(level), puck::PuckLevelCount),
+              "Objectives are the puck's level, capped at the levels that exist");
+    }
+    check(scenario.objectivesPerAgent == puck::PuckLevelCount,
+          "The reported ratio is read against both levels");
+    check(scenario.puck, "The puck world says it has a puck, which is what runs the puck pass");
+}
+
 void testExperimentSweep() {
     vkexp::SweepState sweep;
     sweep.values = {0.0F, 0.5F, 1.0F};
@@ -1828,6 +1902,7 @@ int main() {
     testShuttleGeometry();
     testTwoGapsGeometry();
     testBeaconColorAblation();
+    testPuckWorld();
     testDeliveryCannotBeScoredTwice();
     testScenarioRegistryContract();
     testFitnessWeightsAreParameters();

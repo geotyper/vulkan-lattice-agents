@@ -9,6 +9,7 @@
 #include "worlds/two_doors.glsl"
 #include "worlds/shuttle.glsl"
 #include "worlds/two_gaps.glsl"
+#include "worlds/puck_push.glsl"
 
 vec2 scenarioBeaconPosition(uint scenario, Agent agent, uint beaconIndex, uint phase,
                             float worldRadius, ScenarioParameters sp) {
@@ -37,6 +38,9 @@ vec2 scenarioBeaconPosition(uint scenario, Agent agent, uint beaconIndex, uint p
     if (scenario == 8u) {
         return twoGapsScenarioPosition(beaconIndex, worldRadius, sp);
     }
+    if (scenario == 9u) {
+        return puckPushScenarioPosition();
+    }
     return scentRelayScenarioPosition(agent, beaconIndex, worldRadius, sp);
 }
 
@@ -58,6 +62,9 @@ vec3 scenarioBeaconColor(uint scenario, uint beaconIndex, uint phase, uint trial
     }
     if (scenario == 8u) {
         return twoGapsScenarioColor(beaconIndex);
+    }
+    if (scenario == 9u) {
+        return puckPushScenarioColor();
     }
     return stationaryScenarioColor(trial);
 }
@@ -84,6 +91,9 @@ vec3 scenarioBeaconColorCue(uint scenario, uint beaconIndex, uint phase, uint tr
 // file never enumerates which scenarios have two beacons.
 float scenarioTargetDistance(uint scenario, Agent agent, vec2 position, uint phase,
                              float worldRadius, uint beaconCount, ScenarioParameters sp) {
+    if (scenario == 9u) {
+        return length(agent.penalties.yz);
+    }
     if (scenario == 4u || scenario == 5u || scenario == 6u || scenario == 7u ||
         scenario == 8u) {
         const uint targetIndex = agent.internal.y >= 0.5 ? 1u : 0u;

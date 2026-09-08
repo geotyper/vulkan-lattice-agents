@@ -60,7 +60,11 @@ struct StepParameters {
     uint neuronModel;
     uint obstacleCount;
     uint uniformBeaconColor;
-    uint reserved2;
+    uint worldCount;
+    float puckTargetRadiusRatio;
+    uint puckEnabled;
+    uint reserved3;
+    uint reserved4;
 };
 
 #endif

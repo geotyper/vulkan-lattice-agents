@@ -89,6 +89,25 @@ inline void deliveryCycleAfterStep(AgentState& agent, const SimulationStep& sett
     agent.metrics.y = agent.metrics.x;
 }
 
+// Shaping for the puck world, and the reason it needs any. The objective is the
+// puck's distance to the middle, which is a fine gradient once the puck is being
+// pushed and no gradient at all before that: an untrained population barely
+// touches the puck -- one world in sixteen over a four-second trial, measured --
+// so every genome scores the same and there is nothing for selection to climb.
+//
+// This pays for being near the puck, per second, so finding it is worth
+// something before moving it is. It uses trackingReward, the weight that already
+// exists for exactly this job on moving beacons, rather than adding a second
+// knob that means the same thing.
+//
+// Mirrored by puckPushScenarioAfterStep in shaders/worlds/steps/puck_push.glsl.
+inline void rewardPuckProximity(AgentState& agent, const SimulationStep& settings) {
+    const float distance =
+        std::hypot(agent.penalties.y - agent.pose.x, agent.penalties.z - agent.pose.y);
+    const float closeness = std::clamp(1.0F - distance / settings.lightSensorRange, 0.0F, 1.0F);
+    agent.metrics.w += closeness * closeness * settings.deltaTime * settings.fitness.trackingReward;
+}
+
 // Continuous shaping for scenarios whose beacon keeps moving: without it a
 // tracking agent scores nothing between arrivals.
 inline void rewardVisibleTracking(AgentState& agent, const SimulationStep& settings,

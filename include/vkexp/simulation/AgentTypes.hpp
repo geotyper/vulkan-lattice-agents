@@ -47,9 +47,10 @@ enum class BeaconScenario : std::uint32_t {
     TwoDoors = 6,
     Shuttle = 7,
     TwoGaps = 8,
+    PuckPush = 9,
 };
 
-inline constexpr std::size_t beaconScenarioCount = 9;
+inline constexpr std::size_t beaconScenarioCount = 10;
 
 // Body radius in metres: a 4.4 cm disc, roughly an e-puck-class table robot.
 // Stored per agent in `pose.w`, so a scenario may vary it; this is the spawn
@@ -177,7 +178,13 @@ struct alignas(16) AgentState {
     Float4 signal;      // emitted RGB and intensity
     Float4 target;      // base beacon.xy, trial id, completed mask or forage-cycle count
     Float4 metrics;     // phase start/min distance, motor cost, completed-phase progress
-    Float4 penalties;   // wall/agent/hazard penalties and logical world id
+    // .x penalty total, .yz the world's puck position mirrored onto the agent,
+    // .w logical world id. The mirror exists because fitness and the progress
+    // shaping only ever see one agent: the puck is shared state on the device,
+    // and copying its position onto each agent in its world is what lets the
+    // ordinary machinery -- best-approach shaping, objective counting -- score a
+    // joint outcome without a second mechanism beside it.
+    Float4 penalties;
     Float4 internal;    // cargo level, seeking-home flag, and two recurrent memory cells
     Float4 wallTouch0;  // wall contact sectors 0..3
     Float4 wallTouch1;  // wall contact sectors 4..7
@@ -199,6 +206,31 @@ static_assert(offsetof(AgentState, internal) == 96);
 static_assert(offsetof(AgentState, hidden) == 176,
               "The hidden block goes last, so every earlier offset the shaders "
               "and the renderer use is unchanged");
+
+// One puck per logical world -- shared state several agents act on at once, and
+// the first thing in this simulation they can change rather than only read.
+//
+// pose:   x, y, radius, the side of the centre line it started on
+// motion: vx, vy, the highest level reached so far, unused
+//
+// The level is latched into the record rather than recomputed at the end
+// because it is a milestone: "the puck got at least this far" is what the run
+// is measuring, and a puck nudged through the middle and out the other side
+// still got there. It is stored as a float beside the velocity for the same
+// reason the agent's cargo flag is: this is a std430 block the shaders read,
+// and a float keeps the four-lane layout the rest of the file uses.
+struct PuckState {
+    Float4 pose{};
+    Float4 motion{};
+};
+
+static_assert(std::is_trivially_copyable_v<PuckState>);
+static_assert(sizeof(PuckState) == 32);
+static_assert(offsetof(PuckState, motion) == 16);
+
+[[nodiscard]] inline std::uint32_t puckLevel(const PuckState& puck) {
+    return static_cast<std::uint32_t>(std::max(puck.motion.z, 0.0F) + 0.5F);
+}
 
 // Reading and writing one neuron's state. The shader does the same arithmetic on
 // its own vec4 array; this is index maths on a different substrate rather than a
@@ -297,6 +329,11 @@ struct SimulationStep {
     float forageCargoDecayRate{0.08F};      // cargo fraction lost per second
     float foragePickupReward{0.25F};        // fitness per pickup event
     float forageDeliveryReward{4.0F};       // fitness per unit of cargo delivered
+    // Puck world: the radius of the disc in the middle that counts as delivered,
+    // as a fraction of the arena radius. A quarter is a target a group can hit
+    // and one agent shoving blindly cannot, which is the difficulty the world is
+    // for; it is a slider because where that boundary sits is the experiment.
+    float puckTargetRadiusRatio{0.25F};
     // Trail field. The deposit is per second and the lifetime is a half-life in
     // seconds, so neither becomes a function of the step rate.
     // Deposit rates come from what a single pass has to leave behind, not from a
@@ -446,10 +483,16 @@ struct alignas(16) GpuStepParameters {
     std::uint32_t neuronModel{};
     std::uint32_t obstacleCount{};
     std::uint32_t uniformBeaconColor{};
-    std::uint32_t reserved2{};
+    // The puck pass runs one thread per logical world, so unlike every other
+    // pass it has to be told how many there are.
+    std::uint32_t worldCount{};
+    float puckTargetRadiusRatio{};
+    std::uint32_t puckEnabled{};
+    std::uint32_t reserved3{};
+    std::uint32_t reserved4{};
 };
 
-static_assert(sizeof(GpuStepParameters) == 240);
+static_assert(sizeof(GpuStepParameters) == 256);
 static_assert(offsetof(GpuStepParameters, agentCount) == 64);
 static_assert(offsetof(GpuStepParameters, beaconScenario) == 96);
 static_assert(offsetof(GpuStepParameters, trailCellSize) == 112);
