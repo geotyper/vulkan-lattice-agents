@@ -18,15 +18,31 @@
 // which is what a push is anyway -- and measured relative to the puck, so an
 // agent cannot push a puck that is already outrunning it.
 
-// Radii. The puck is deliberately several bodies across: one agent should be
-// able to move it and a group should be able to move it faster, which needs a
-// contact arc wide enough for several agents to share.
-const float PuckRadius = 0.075f; // m, about 3.4 body diameters
+// How big the puck is, as a fraction of the arena radius, so it scales with the
+// room the way every other length here does. Several bodies across on purpose:
+// one agent should be able to move it and a group should be able to move it
+// faster, which needs a contact arc wide enough for several agents to share.
+//
+// This is only the value a puck is created with -- each puck carries its own
+// radius in its record, and the contact tests read that -- so the slider changes
+// the world without anything else having to be told.
+const float PuckRadiusRatio = 0.060f; // ~11 cm in the small arena, 5 body diameters
+
+VKEXP_PUCK_FN float puckRadius(float worldRadius, float radiusRatio) {
+    return worldRadius * radiusRatio;
+}
 
 // A skin on the contact test. The agent step pushes an agent clear of the puck
 // in the same step, so a test at exactly touching distance would find nobody in
 // contact and the puck would never move at all.
 const float PuckContactSkin = 0.012f; // m
+
+// How far from the puck the approach reward still pays anything, in puck radii.
+// Tied to the puck rather than to the light range on purpose: at light range the
+// reward is a broad haze over most of the arena, and loitering in the general
+// area collects most of what pushing the puck to the middle would pay. Tied to
+// the puck it pays for being *at* it, which is where pushing starts.
+const float PuckApproachReach = 6.0f;
 
 // Per second, per agent in contact, applied to the approach speed. Chosen so
 // one agent at the speed limit settles the puck at roughly a third of its own

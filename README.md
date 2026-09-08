@@ -389,13 +389,38 @@ along the contact normal instead -- which is what a push is -- and measured
 That relative term is what bounds the puck's speed by the agents' own, and the
 smoke test asserts the bound rather than the formula.
 
-**Why there is an approach reward.** Measured before it was added: an untrained
-population touches its puck in about one world in sixteen over a four-second
-trial. With the objective being the puck's distance to the middle, that means
-almost every genome scores exactly the same and selection has nothing to climb.
-Being near the puck therefore pays a little per second, on the `trackingReward`
-weight that already existed for this job on moving beacons, so finding the puck
-is worth something before moving it is.
+**Why the puck emits light.** The first version of this world did not learn at
+all, and the reason is worth keeping: the photoreceptors see beacons and other
+agents' signals and nothing else, so a puck that was neither was *invisible*. An
+agent could only discover it by walking into it. The fitness paid for
+approaching the puck and for moving it, and both rewards were real -- but a
+population cannot climb a gradient it has no sense of. The reward existed and
+the handle on it did not. The puck is a beacon now, at the position every agent
+already mirrors, so reaching it is phototaxis, which is the one thing these
+agents reliably evolve.
+
+**Why the journey outweighs loitering.** The second reason, and the arithmetic
+matters because the obvious version of the claim is wrong. Being near the puck
+pays `trackingReward` per second, 3.75 over a fifteen-second trial for an agent
+that simply parks on it. Pushing the puck all the way in and completing both
+levels paid 8.85 -- more, so the endpoint was never the problem.
+
+What was missing was the increment. The whole journey to the middle is 1.1 m, so
+moving the puck a hand's width was worth 0.10 against that 3.75: under three per
+cent. Evolution improves by increments, and there was none to find -- only the
+completion, which nothing was going to stumble into. Progress is now a fraction
+of the journey rather than a number of metres, weighted so the same push is
+worth 29 per cent instead. The unit test asserts the increment, not the
+endpoint, because the endpoint was never what failed.
+
+**And the approach reward is tied to the puck, not to the light range.** At
+light range it is a broad haze over most of the arena and loitering in the
+general area collects most of what pushing would pay. Six puck radii pays for
+being *at* it, which is where pushing starts.
+
+**The first knob to reach for** is the puck's size. Bigger is easier twice over:
+a wider contact arc for several agents to push at once, and a larger thing to
+find. Both sliders -- `Puck radius` and `Target radius` -- take effect on reset.
 
 **This is the world the sharing option was built for.** `--fitness-sharing`
 blends a genome's score with its world's average, which is meant to make helping

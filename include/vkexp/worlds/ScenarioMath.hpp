@@ -104,7 +104,10 @@ inline void deliveryCycleAfterStep(AgentState& agent, const SimulationStep& sett
 inline void rewardPuckProximity(AgentState& agent, const SimulationStep& settings) {
     const float distance =
         std::hypot(agent.penalties.y - agent.pose.x, agent.penalties.z - agent.pose.y);
-    const float closeness = std::clamp(1.0F - distance / settings.lightSensorRange, 0.0F, 1.0F);
+    const float reach =
+        puck::kernel::PuckApproachReach *
+        puck::kernel::puckRadius(settings.worldRadius, settings.puckRadiusRatio);
+    const float closeness = std::clamp(1.0F - distance / std::max(reach, 1.0e-4F), 0.0F, 1.0F);
     agent.metrics.w += closeness * closeness * settings.deltaTime * settings.fitness.trackingReward;
 }
 

@@ -5,6 +5,7 @@
 // can be.
 void puckPushScenarioAfterStep(inout Agent agent) {
     const float distance = length(agent.penalties.yz - agent.pose.xy);
-    const float closeness = clamp(1.0 - distance / params.lightSensorRange, 0.0, 1.0);
+    const float reach = PuckApproachReach * puckRadius(params.worldRadius, params.scenario.floats0.y);
+    const float closeness = clamp(1.0 - distance / max(reach, 1.0e-4), 0.0, 1.0);
     agent.metrics.w += closeness * closeness * params.deltaTime * params.fitness.trackingReward;
 }

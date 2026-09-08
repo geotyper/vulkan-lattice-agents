@@ -39,7 +39,7 @@ vec2 scenarioBeaconPosition(uint scenario, Agent agent, uint beaconIndex, uint p
         return twoGapsScenarioPosition(beaconIndex, worldRadius, sp);
     }
     if (scenario == 9u) {
-        return puckPushScenarioPosition();
+        return puckPushScenarioPosition(beaconIndex, agent);
     }
     return scentRelayScenarioPosition(agent, beaconIndex, worldRadius, sp);
 }
@@ -64,7 +64,7 @@ vec3 scenarioBeaconColor(uint scenario, uint beaconIndex, uint phase, uint trial
         return twoGapsScenarioColor(beaconIndex);
     }
     if (scenario == 9u) {
-        return puckPushScenarioColor();
+        return puckPushScenarioColor(beaconIndex);
     }
     return stationaryScenarioColor(trial);
 }

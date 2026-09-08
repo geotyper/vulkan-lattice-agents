@@ -1,6 +1,7 @@
 #pragma once
 
 #include "vkexp/neuro/BrainKernel.hpp"
+#include "vkexp/simulation/PuckKernel.hpp"
 #include "vkexp/simulation/TrailKernel.hpp"
 #include "vkexp/simulation/Units.hpp"
 #include "vkexp/worlds/ScenarioKernel.hpp"
@@ -334,6 +335,11 @@ struct SimulationStep {
     // and one agent shoving blindly cannot, which is the difficulty the world is
     // for; it is a slider because where that boundary sits is the experiment.
     float puckTargetRadiusRatio{0.25F};
+    // How big the puck is, as a fraction of the arena radius. Bigger is easier
+    // in two ways at once -- more contact arc for a group to share, and a larger
+    // thing to find -- so it is the first knob to reach for when the world is
+    // not being learned at all.
+    float puckRadiusRatio{puck::kernel::PuckRadiusRatio};
     // Trail field. The deposit is per second and the lifetime is a half-life in
     // seconds, so neither becomes a function of the step rate.
     // Deposit rates come from what a single pass has to leave behind, not from a

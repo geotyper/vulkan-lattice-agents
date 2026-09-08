@@ -1739,6 +1739,7 @@ void testPuckWorld() {
     vkexp::SimulationStep settings;
     settings.beaconScenario = vkexp::BeaconScenario::PuckPush;
     const float radius = settings.worldRadius;
+    const float puckSize = puck::puckRadius(radius, settings.puckRadiusRatio);
 
     // Which side the puck starts on alternates by trial, so one genome meets
     // both and pushing always the same way cannot stand in for perceiving where
@@ -1749,7 +1750,7 @@ void testPuckWorld() {
     for (const std::uint32_t trial : {0U, 1U, 2U, 3U}) {
         const auto start = puck::puckStartPosition(radius, trial);
         check(closeTo(start.x, 0.0F), "The puck starts on the arena's axis");
-        check(std::abs(start.y) < radius - puck::PuckRadius,
+        check(std::abs(start.y) < radius - puckSize,
               "The puck starts inside the arena, clear of the rim");
         check(!puck::puckCrossedLine(puck::puckStartSide(trial), start.y),
               "The puck has not crossed the line at the moment it is placed");
@@ -1759,7 +1760,28 @@ void testPuckWorld() {
     // does not imply having crossed -- which is exactly why the level is taken
     // as a maximum rather than as a count, and why this checks both directions.
     const float target = puck::puckTargetRadius(radius, settings.puckTargetRadiusRatio);
-    check(target > puck::PuckRadius * 2.0F, "The target disc is wider than the puck");
+    check(target > puckSize * 2.0F, "The target disc is wider than the puck");
+    check(puckSize > vkexp::agentBodyRadius * 2.0F,
+          "The puck is wider than the agents pushing it, so a group can share its contact arc");
+
+    // The puck has to be perceivable, not merely present. It was not at first:
+    // the receptors see beacons and other agents' light and nothing else, so a
+    // puck that was neither could only be discovered by walking into it, and a
+    // fitness that paid for approaching it was paying for something no agent had
+    // a sense of. It is a beacon now, at the position every agent mirrors.
+    vkexp::AgentState lookout{};
+    lookout.penalties.y = 0.4F;
+    lookout.penalties.z = -0.3F;
+    const vkexp::ActiveBeacons lit = scenario.beacons(lookout, settings);
+    check(lit.count == 2, "The puck world lights both the middle and the puck");
+    bool puckIsLit = false;
+    for (std::size_t index = 0; index < lit.count; ++index) {
+        if (closeTo(lit.values[index].position.x, lookout.penalties.y) &&
+            closeTo(lit.values[index].position.y, lookout.penalties.z)) {
+            puckIsLit = true;
+        }
+    }
+    check(puckIsLit, "One of the lights is the puck, wherever the puck is");
     check(target < radius * 0.5F, "The target disc is a target and not most of the arena");
     check(puck::puckInsideTarget({0.0F, 0.0F}, target), "The middle is inside the target");
     check(!puck::puckInsideTarget({target * 1.01F, 0.0F}, target),
@@ -1802,6 +1824,53 @@ void testPuckWorld() {
     }
     check(scenario.objectivesPerAgent == puck::PuckLevelCount,
           "The reported ratio is read against both levels");
+
+    // The journey has to outweigh loitering *on its own*, before any objective
+    // completes. This is the other half of why nothing was learned at first, and
+    // the arithmetic is worth stating exactly, because the obvious version of
+    // the claim is wrong: raw progress in metres did beat loitering once the
+    // objective bonus landed, 8.85 against 3.75.
+    //
+    // What it did not do was leave a gradient to get there. The whole journey to
+    // the middle is 1.1 m, so moving the puck a hand's width was worth 0.1
+    // against the 3.75 an agent collects by parking beside it for the trial --
+    // under three per cent. Evolution improves by increments, and there was no
+    // increment: only the completion, which nothing was going to stumble into.
+    // Normalising the journey to a fraction and weighting it puts that same
+    // push at 29 per cent instead.
+    //
+    // So the assertion is on the progress term alone, with the objective bonus
+    // deliberately withheld from the deliverer, and the loiterer given the same
+    // proximity reward it could not really have earned while moving. Both make
+    // the check pessimistic.
+    const float trialSeconds =
+        vkexp::units::secondsForSteps(vkexp::SimulationControls{}.stepsPerGeneration,
+                                      vkexp::units::fixedTimeStep);
+    const float parked = trialSeconds * settings.fitness.trackingReward;
+    const float startDistance =
+        std::hypot(puck::puckStartPosition(radius, 0).x, puck::puckStartPosition(radius, 0).y);
+
+    vkexp::AgentState loiterer{};
+    loiterer.metrics = {startDistance, startDistance, 0.0F, parked};
+    loiterer.target.w = 0.0F;
+
+    vkexp::AgentState deliverer{};
+    deliverer.metrics = {startDistance, 0.0F, 0.0F, parked};
+    deliverer.target.w = 0.0F; // no objective bonus: the journey has to carry it
+
+    const float loiteringScore = scenario.fitness(loiterer, settings.fitness);
+    const float deliveringScore = scenario.fitness(deliverer, settings.fitness);
+    check(deliveringScore > loiteringScore * 2.0F,
+          "Moving the puck home outweighs parking beside it before any objective lands");
+
+    // And the increment is what matters, not the endpoint: a small push has to
+    // be worth a real fraction of what standing still pays, or there is no path
+    // from one behaviour to the other for selection to walk.
+    vkexp::AgentState nudged{};
+    nudged.metrics = {startDistance, startDistance * 0.9F, 0.0F, parked};
+    const float nudge = scenario.fitness(nudged, settings.fitness) - loiteringScore;
+    check(nudge > parked * 0.2F,
+          "A tenth of the journey is worth a fifth of a whole trial's loitering");
     check(scenario.puck, "The puck world says it has a puck, which is what runs the puck pass");
 }
 

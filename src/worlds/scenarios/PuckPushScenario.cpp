@@ -12,20 +12,35 @@ namespace {
 namespace kernel = worlds::kernel;
 namespace puck = ::vkexp::puck::kernel;
 
-// The middle is lit, so where the puck has to go is perceivable rather than
-// something an agent has to infer. This world is about moving a thing together;
-// making the destination invisible as well would be two questions at once, and
-// the scent relay already asks the other one.
+// Both the destination and the puck are lit, and the puck's light is the whole
+// reason this world can be learned at all.
+//
+// It was not, at first. The photoreceptors see beacons and other agents' signals
+// and nothing else, so a puck that was neither was invisible: an agent could
+// only discover it by walking into it. The fitness paid for being near it and
+// for moving it, but a population cannot climb a gradient it has no sense of --
+// the reward existed and the handle on it did not. So the puck emits, its
+// position taken from the mirror every agent already carries, and finding it
+// becomes something an agent can steer at rather than something it stumbles on.
 constexpr Float4 targetColor{0.35F, 1.00F, 0.55F, 0.0F};
+constexpr Float4 puckColor{1.00F, 0.92F, 0.70F, 0.0F};
+
+// What delivering is worth against what loitering is worth, which is the other
+// half of why nothing was learned. Being near the puck pays trackingReward per
+// second -- 0.25, so 3.75 over a fifteen-second trial for an agent that simply
+// parks on it. Pushing the puck all the way in used to pay about the same: the
+// raw progress term is metres, and there are only 1.1 of them to the middle.
+// Two behaviours worth the same is not a gradient, and the easier one wins.
+//
+// Progress is normalised to the fraction of the way the puck has come, so it
+// does not depend on arena size, and weighted so that delivering is worth
+// several times loitering: 12 for the journey plus two levels of objective
+// bonus against 3.75 for standing still beside it.
+constexpr float puckProgressReward = 12.0F;
 
 // Two levels, and the completion ratio is read against both: half means the
 // pucks reached the halfway line, full means they are sitting in the middle.
 constexpr std::uint32_t levelsPerWorld = puck::PuckLevelCount;
-
-float fitness(const AgentState& agent, const FitnessWeights& weights) {
-    return objectiveFitness(agent, static_cast<std::uint32_t>(std::max(agent.target.w, 0.0F)),
-                            weights);
-}
 
 // Every agent in a world is scored on the same puck, which is the point: the
 // outcome is joint, so an individual's contribution is worth something only if
@@ -33,6 +48,17 @@ float fitness(const AgentState& agent, const FitnessWeights& weights) {
 // fitness sharing was built for and has never been measured against.
 std::uint32_t achievedObjectives(const AgentState& agent) {
     return std::min(static_cast<std::uint32_t>(std::max(agent.target.w, 0.0F)), levelsPerWorld);
+}
+
+float fitness(const AgentState& agent, const FitnessWeights& weights) {
+    // Not objectiveFitness: that adds the progress term in metres, and here it
+    // has to be a fraction of the journey and weighted against the loitering
+    // reward. Everything else is the same shape as every other world's score.
+    const float start = std::max(agent.metrics.x, 1.0e-4F);
+    const float progress = std::clamp((agent.metrics.x - agent.metrics.y) / start, 0.0F, 1.0F);
+    const auto level = static_cast<float>(achievedObjectives(agent));
+    return agent.metrics.w + progress * puckProgressReward + level * weights.objectiveBonus -
+           agent.metrics.z * weights.motorCostWeight - agent.penalties.x;
 }
 
 // Being near the puck pays a little, per second. Without it an untrained
@@ -43,10 +69,13 @@ void afterStep(AgentState& agent, const SimulationStep& settings, float) {
     rewardPuckProximity(agent, settings);
 }
 
-// One beacon, standing on the target disc. It is a marker and not a goal to
-// arrive at: nothing here scores an agent for touching it.
-ActiveBeacons activeBeacons(const SimulationStep&) {
-    return {{{Beacon{{0.0F, 0.0F, 0.0F, 0.0F}, targetColor}}}, 1};
+// Two: the lit disc in the middle, which is a marker and not a goal to arrive
+// at, and the puck itself, whose position comes from the mirror every agent
+// already carries. Nothing here scores an agent for touching either one.
+ActiveBeacons activeBeacons(const AgentState& agent) {
+    return {{{Beacon{{0.0F, 0.0F, 0.0F, 0.0F}, targetColor},
+              Beacon{{agent.penalties.y, agent.penalties.z, 0.0F, 0.0F}, puckColor}}},
+            2};
 }
 
 // Agents start spread over the side the puck starts on, so the first thing they
@@ -65,11 +94,11 @@ void spawn(AgentState& agent, const SimulationStep& settings) {
     agent.penalties.z = start.y;
 }
 
-// floats0 = {target radius ratio, unused, unused, unused}. The puck's own
-// physics is in the shared kernel and needs nothing packed; what the scenario
-// has to send is the one number that is a slider.
+// floats0 = {target radius ratio, puck radius ratio, unused, unused}. The
+// puck's physics is in the shared kernel and needs nothing packed; what has to
+// be sent is the two numbers that are sliders.
 ScenarioParameterBlock gpuParameters(const SimulationStep& settings) {
-    return {{settings.puckTargetRadiusRatio, 0.0F, 0.0F, 0.0F}, {}, {}};
+    return {{settings.puckTargetRadiusRatio, settings.puckRadiusRatio, 0.0F, 0.0F}, {}, {}};
 }
 
 constexpr neuro::BrainShape brain = neuro::maximumBrainShape;
@@ -91,7 +120,7 @@ const ScenarioDefinition& definition() {
         .radiusLabel = "Orbit radius",
         .description = "Push a shared puck to the middle; the outcome belongs to the whole world",
         .beacons = beacons,
-        .beaconCount = 1,
+        .beaconCount = 2,
         .targetDistance = targetDistance,
         .phaseForStep = nullptr,
         .fitness = fitness,
@@ -108,8 +137,8 @@ const ScenarioDefinition& definition() {
     return value;
 }
 
-ActiveBeacons beacons(const AgentState&, const SimulationStep& settings) {
-    return activeBeacons(settings);
+ActiveBeacons beacons(const AgentState& agent, const SimulationStep&) {
+    return activeBeacons(agent);
 }
 
 // What the shaping measures. Not the agent's distance to the middle -- an agent

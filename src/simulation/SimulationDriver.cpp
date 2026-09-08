@@ -332,7 +332,9 @@ std::vector<PuckState> SimulationDriver::makeInitialPucks() const {
         const ::vkexp::puck::kernel::vec2 start =
             ::vkexp::puck::kernel::puckStartPosition(state_.physics.worldRadius, trial);
         PuckState& state = result[world];
-        state.pose = {start.x, start.y, ::vkexp::puck::kernel::PuckRadius,
+        state.pose = {start.x, start.y,
+                      ::vkexp::puck::kernel::puckRadius(state_.physics.worldRadius,
+                                                        state_.physics.puckRadiusRatio),
                       ::vkexp::puck::kernel::puckStartSide(trial)};
         state.motion = {};
     }

@@ -225,6 +225,14 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                               "the same with this on.");
     }
     if (scenario.puck) {
+        if (ImGui::SliderFloat("Puck radius", &state_.physics.puckRadiusRatio, 0.02F, 0.20F,
+                               "%.3f of arena")) {
+            state_.controls.resetRequested = true;
+        }
+        ImGui::SetItemTooltip("How big the puck is. Bigger is easier twice over: a wider contact "
+                              "arc for several agents to push at once, and a larger thing to find "
+                              "in the first place. The first knob to reach for when nothing is "
+                              "being learned at all.");
         if (ImGui::SliderFloat("Target radius", &state_.physics.puckTargetRadiusRatio, 0.05F, 0.60F,
                                "%.2f of arena")) {
             state_.controls.resetRequested = true;
