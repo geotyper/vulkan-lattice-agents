@@ -24,6 +24,8 @@
 #include "vkexp/simulation/SimulationDriver.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <exception>
@@ -49,6 +51,13 @@ int run() {
     state.controls.stepsPerGeneration = 240;
     state.worlds.requestedAgentsPerWorld = 16;
     state.physics.beaconScenario = vkexp::BeaconScenario::PuckPush;
+    // The wiring half of this test runs with the friction floor off. With the
+    // floor at its default no single agent can move the puck, which is the whole
+    // point of it -- but then "does contact do anything at all" cannot be asked,
+    // because the answer is legitimately no. The floor gets its own staged case
+    // at the end, where one agent has to move nothing and three have to move
+    // everything.
+    state.physics.puckBreakawayPushes = 0.0F;
     state.physics.worldRadius = vkexp::worldRadiusForSize(state.physics.worldSize);
     state.physics.lightSensorRange = vkexp::lightRangeForWorld(state.physics);
 
@@ -225,6 +234,67 @@ int run() {
                     std::abs(saved.pucks[world].pose.y - resting[world].pose.y) < 1.0e-6F,
                 "a snapshot carries where the puck actually is");
     }
+
+    // The friction floor, on the device rather than in the kernel function. What
+    // the unit test cannot reach is whether the puck pass applies it to the
+    // world's total push -- an implementation that applied it per agent, or
+    // forgot it, would pass every assertion there and change what this world
+    // asks for.
+    //
+    // Staged twice from the same placement, because one run proves nothing: the
+    // same geometry with one pusher has to move nothing and with three has to
+    // move everything. A floor that absorbs everything passes the first and
+    // fails the second; one that absorbs nothing does the reverse.
+    const auto stagePushers = [&](const int pushers, const float floor) {
+        vkexp::WorldSnapshot staged = driver.snapshot();
+        staged.physics.puckBreakawayPushes = floor;
+        staged.step = 0;
+        const std::uint32_t trials = state.agents.trialsPerGenome;
+        const std::uint32_t perWorld = state.worlds.agentsPerWorld;
+        for (auto& puck : staged.pucks) {
+            puck.motion = {};
+        }
+        // Spread over a short arc behind the puck: far enough apart not to
+        // overlap, close enough that their pushes still add rather than cancel.
+        const std::array<float, 3> arc{0.0F, -0.44F, 0.44F};
+        for (std::size_t index = 0; index < staged.agents.size(); ++index) {
+            const std::uint32_t world = vkexp::logicalWorldForAgent(
+                static_cast<std::uint32_t>(index), perWorld, trials);
+            const vkexp::PuckState& puck = staged.pucks[world];
+            vkexp::AgentState& agent = staged.agents[index];
+            const float span = std::hypot(puck.pose.x, puck.pose.y);
+            const float outward = span > 1.0e-6F ? puck.pose.y / span : 1.0F;
+            const auto slot = static_cast<int>((index / trials) % perWorld);
+            if (slot < pushers) {
+                const float angle = std::atan2(outward, 0.0F) + arc[static_cast<std::size_t>(slot)];
+                const float reach = puck.pose.z + vkexp::agentBodyRadius;
+                agent.pose.x = puck.pose.x + std::cos(angle) * reach;
+                agent.pose.y = puck.pose.y + std::sin(angle) * reach;
+                agent.motion.x = -std::cos(angle) * state.physics.maximumSpeed;
+                agent.motion.y = -std::sin(angle) * state.physics.maximumSpeed;
+            } else {
+                agent.pose.x = 0.0F;
+                agent.pose.y = -outward * (state.physics.worldRadius - vkexp::agentBodyRadius);
+                agent.motion.x = 0.0F;
+                agent.motion.y = 0.0F;
+            }
+        }
+        driver.restoreSnapshot(staged);
+        context.immediate().execute(
+            [&](const VkCommandBuffer commands) { driver.recordSteps(commands, 16); });
+        const std::vector<vkexp::PuckState> after = driver.snapshot().pucks;
+        float least = state.physics.worldRadius;
+        for (std::size_t world = 0; world < after.size(); ++world) {
+            least = std::min(least, std::hypot(staged.pucks[world].pose.x, staged.pucks[world].pose.y) -
+                                        std::hypot(after[world].pose.x, after[world].pose.y));
+        }
+        return least;
+    };
+    const float floor = vkexp::puck::kernel::PuckBreakawayPushes;
+    require(stagePushers(1, floor) < 1.0e-4F,
+            "one agent cannot start the puck once the world has a friction floor");
+    require(stagePushers(3, floor) > 1.0e-3F,
+            "but three pushing the same way start every one of them");
 
     std::cout << "Puck smoke: " << touched << " of " << pushed.size()
               << " worlds shifted their puck, " << moved << " by a whole puck width\n";

@@ -109,14 +109,25 @@ ActiveBeacons activeBeacons(const AgentState& agent) {
 // have to do is find it rather than already be behind it.
 void spawn(AgentState& agent, const SimulationStep& settings) {
     const auto trial = static_cast<kernel::uint>(std::max(agent.target.z, 0.0F));
-    const float side = puck::puckStartSide(trial);
-    agent.pose.x *= 0.55F;
-    agent.pose.y = agent.pose.y * 0.28F + side * settings.worldRadius * 0.82F;
+    const auto world = static_cast<kernel::uint>(std::max(agent.penalties.w, 0.0F));
+    if (settings.puckRandomStart) {
+        // Scattered: the agents stay where the driver's spiral put them and the
+        // puck is somewhere in the arena, so the first thing they have to do is
+        // look for it rather than walk forward.
+        agent.pose.x *= 0.85F;
+        agent.pose.y *= 0.85F;
+    } else {
+        const float side = puck::puckStartSide(trial);
+        agent.pose.x *= 0.55F;
+        agent.pose.y = agent.pose.y * 0.28F + side * settings.worldRadius * 0.82F;
+    }
     // Seed the mirror with where the puck actually starts. Without this the
     // shaping opens the trial believing the puck is already at the origin, so
     // the distance it banks progress against is zero and no progress toward the
     // middle can ever be positive -- a world that silently scores nothing.
-    const puck::vec2 start = puck::puckStartPosition(settings.worldRadius, trial);
+    const puck::vec2 start = puck::puckStartPositionFor(settings.worldRadius, trial, world,
+                                                       settings.beaconMotionSeed,
+                                                       settings.puckRandomStart);
     agent.penalties.y = start.x;
     agent.penalties.z = start.y;
     // And with the puck at rest, which is where the mirrored velocity the work
@@ -127,11 +138,14 @@ void spawn(AgentState& agent, const SimulationStep& settings) {
     agent.target.y = 0.0F;
 }
 
-// floats0 = {target radius ratio, puck radius ratio, unused, unused}. The
-// puck's physics is in the shared kernel and needs nothing packed; what has to
-// be sent is the two numbers that are sliders.
+// floats0 = {target radius ratio, puck radius ratio, breakaway pushes, unused}.
+// The puck's physics is in the shared kernel and needs nothing packed; what has
+// to be sent is the three numbers that are sliders.
 ScenarioParameterBlock gpuParameters(const SimulationStep& settings) {
-    return {{settings.puckTargetRadiusRatio, settings.puckRadiusRatio, 0.0F, 0.0F}, {}, {}};
+    return {{settings.puckTargetRadiusRatio, settings.puckRadiusRatio,
+             settings.puckBreakawayPushes, 0.0F},
+            {},
+            {}};
 }
 
 constexpr neuro::BrainShape brain = neuro::maximumBrainShape;

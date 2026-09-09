@@ -14,8 +14,13 @@ using vec2 = worlds::kernel::vec2;
 // again here: vec2 is the same type on both sides of the boundary, and a second
 // length() for it is not merely redundant -- it is ambiguous, because argument
 // lookup finds both.
+using worlds::kernel::cos;
 using worlds::kernel::length;
 using worlds::kernel::max;
+using worlds::kernel::scenarioRandom01;
+using worlds::kernel::ScenarioTau;
+using worlds::kernel::sin;
+using worlds::kernel::sqrt;
 
 // Everything here is either integer arithmetic or one square root, so unlike
 // the brain preset it needs no second marker for the parts that cannot be

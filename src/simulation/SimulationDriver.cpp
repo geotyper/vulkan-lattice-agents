@@ -329,8 +329,12 @@ std::vector<PuckState> SimulationDriver::makeInitialPucks() const {
     std::vector<PuckState> result(worlds);
     for (std::uint32_t world = 0; world < worlds; ++world) {
         const std::uint32_t trial = world % trials;
-        const ::vkexp::puck::kernel::vec2 start =
-            ::vkexp::puck::kernel::puckStartPosition(state_.physics.worldRadius, trial);
+        // The one entry point the scenario's spawn also goes through, so the
+        // puck and the distance the shaping banks against cannot be placed from
+        // two different answers.
+        const ::vkexp::puck::kernel::vec2 start = ::vkexp::puck::kernel::puckStartPositionFor(
+            state_.physics.worldRadius, trial, world, state_.physics.beaconMotionSeed,
+            state_.physics.puckRandomStart);
         PuckState& state = result[world];
         // The fourth slot is how far from the middle it was placed, which is what
         // the rungs are fractions of: a puck carries its own journey so the

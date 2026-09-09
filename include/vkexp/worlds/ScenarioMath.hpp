@@ -130,7 +130,14 @@ inline void rewardPuckWork(AgentState& agent, const SimulationStep& settings) {
         {agent.pose.x, agent.pose.y}, {agent.motion.x, agent.motion.y}, agent.pose.w,
         {agent.penalties.y, agent.penalties.z}, {agent.target.x, agent.target.y},
         puck::kernel::puckRadius(settings.worldRadius, settings.puckRadiusRatio));
-    agent.metrics.w += contribution * settings.deltaTime * puck::kernel::PuckWorkReward;
+    // Scaled by whether the puck is actually moving. With a friction floor in
+    // the world a lone agent can lean on a stuck puck at full speed all trial,
+    // and paying for that would teach the futile pushing the floor exists to
+    // rule out.
+    const float moving = puck::kernel::puckWorkMovingFraction(
+        std::hypot(agent.target.x, agent.target.y), settings.maximumSpeed);
+    agent.metrics.w +=
+        contribution * moving * settings.deltaTime * puck::kernel::PuckWorkReward;
 }
 
 // Continuous shaping for scenarios whose beacon keeps moving: without it a

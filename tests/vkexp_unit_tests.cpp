@@ -798,6 +798,8 @@ void testWorldSnapshotRoundTrip() {
     snapshot.physics.uniformBeaconColor = true;
     snapshot.physics.blockedDoorPerGeneration = true;
     snapshot.physics.gateLatchSeconds = 2.75F;
+    snapshot.physics.puckBreakawayPushes = 2.5F;
+    snapshot.physics.puckRandomStart = true;
 
     snapshot.genomes.resize(4);
     for (std::size_t index = 0; index < snapshot.genomes.size(); ++index) {
@@ -852,6 +854,9 @@ void testWorldSnapshotRoundTrip() {
           "Snapshot keeps the world options");
     check(closeTo(loaded.physics.gateLatchSeconds, 2.75F),
           "Snapshot keeps the gate latch, which is a whole world's difficulty");
+    check(closeTo(loaded.physics.puckBreakawayPushes, 2.5F),
+          "Snapshot keeps the puck's friction floor, which decides whether one agent can move it");
+    check(loaded.physics.puckRandomStart, "Snapshot keeps where the puck is placed");
 
     // Once more with every flag inverted, because one polarity proves nothing
     // about a bool. All four default to true, so a flag the loader forgets to
@@ -871,6 +876,7 @@ void testWorldSnapshotRoundTrip() {
         inverted.physics.swapDeliveryEnds = false;
         inverted.physics.uniformBeaconColor = false;
         inverted.physics.blockedDoorPerGeneration = false;
+        inverted.physics.puckRandomStart = false;
         const std::filesystem::path invertedPath = path.parent_path() / "inverted.vknw";
         vkexp::saveWorldSnapshot(invertedPath, inverted);
         const vkexp::WorldSnapshot back = vkexp::loadWorldSnapshot(invertedPath);
@@ -878,7 +884,7 @@ void testWorldSnapshotRoundTrip() {
                   !back.physics.agentCollisionsEnabled && back.physics.beaconPhaseChanged &&
                   back.physics.neuronModel == vkexp::NeuronModel::Reactive &&
                   !back.physics.swapDeliveryEnds && !back.physics.uniformBeaconColor &&
-                  !back.physics.blockedDoorPerGeneration,
+                  !back.physics.blockedDoorPerGeneration && !back.physics.puckRandomStart,
               "Snapshot ablation flags round-trip in both directions");
     }
 
@@ -2000,6 +2006,116 @@ void testPuckPushCredit() {
                                      puck::puckStartPosition(settings.worldRadius, 0).y);
     const float pushed = (speed - puckSpeed) * (journey / puckSpeed) * puck::PuckWorkReward;
     check(pushed > parked * 2.0F, "Pushing the puck home outearns a whole trial of leaning on it");
+
+    // The friction floor, which is what turns the world from one that permits a
+    // group into one that requires it. Without it a single agent moves the puck
+    // on its own, so cooperation is a convenience and the question the world
+    // exists to ask -- can selection produce agents that push together -- is one
+    // it never puts.
+    const float breakaway =
+        puck::puckBreakawayPush(settings.maximumSpeed, settings.puckBreakawayPushes);
+    check(breakaway > settings.maximumSpeed,
+          "By default one agent at the speed limit cannot start the puck at all");
+    check(closeTo(puck::puckFrictionFraction(speed, breakaway), 0.0F),
+          "So its whole push is absorbed");
+    check(puck::puckFrictionFraction(speed * 2.0F, breakaway) > 0.0F,
+          "And two pushing the same way get through");
+
+    // Pushes are summed as vectors before the floor is measured, so two agents on
+    // opposite faces cancel and move nothing however hard they try. This is what
+    // makes "two agents" mean two agents pushing the same way rather than two
+    // agents touching.
+    const puck::vec2 facing{0.0F, puckAt.y + contact};
+    const puck::vec2 opposing{0.0F, puckAt.y - contact};
+    const float sumX = (puckAt.x - facing.x) / contact * speed + (puckAt.x - opposing.x) / contact * speed;
+    const float sumY = (puckAt.y - facing.y) / contact * speed + (puckAt.y - opposing.y) / contact * speed;
+    check(closeTo(puck::puckFrictionFraction(std::hypot(sumX, sumY), breakaway), 0.0F),
+          "Two agents on opposite faces cancel before the floor is measured");
+
+    // Subtracted, not switched: a pair that barely clears the floor moves the
+    // puck slowly rather than the world flipping between nothing and everything.
+    // Selection needs an increment here for the same reason the journey is a
+    // fraction rather than a completion.
+    const float justOver = puck::puckFrictionFraction(breakaway * 1.02F, breakaway);
+    const float wellOver = puck::puckFrictionFraction(breakaway * 4.0F, breakaway);
+    check(justOver > 0.0F && justOver < 0.1F, "Just over the floor almost nothing gets through");
+    check(wellOver > justOver && wellOver < 1.0F, "And more push gets more through, never all");
+
+    // At zero the floor is gone and the world is the one it was before, which is
+    // what makes this a knob rather than a change of task.
+    check(closeTo(puck::puckBreakawayPush(settings.maximumSpeed, 0.0F), 0.0F) &&
+              closeTo(puck::puckFrictionFraction(speed, 0.0F), 1.0F),
+          "At a breakaway of zero one agent moves the puck exactly as before");
+
+    // And the work reward has to follow the puck rather than the pushing, or a
+    // lone agent leaning on a puck it cannot start collects all trial for moving
+    // nothing -- teaching the futile pushing the floor exists to rule out.
+    vkexp::AgentState pusher{};
+    pusher.pose = {0.0F, puckAt.y + contact, 0.0F, vkexp::agentBodyRadius};
+    pusher.motion = {0.0F, -speed, 0.0F, 1.0F};
+    pusher.penalties.y = puckAt.x;
+    pusher.penalties.z = puckAt.y;
+    pusher.target = {0.0F, 0.0F, 0.0F, 0.0F}; // the puck is stuck
+    vkexp::worlds::rewardPuckWork(pusher, settings);
+    check(closeTo(pusher.metrics.w, 0.0F), "Pushing a puck that is not moving earns nothing");
+    pusher.target.y = -settings.maximumSpeed * puck::PuckWorkMovingSpeed;
+    vkexp::worlds::rewardPuckWork(pusher, settings);
+    check(pusher.metrics.w > 0.0F, "And pushing one that is under way earns the work");
+
+    // Where the puck is placed. Off, the axis, agents on its side. On, scattered
+    // through a ring, and the point is that no one layout can be memorised: the
+    // same world gets a different puck every generation, and different worlds get
+    // different pucks within one.
+    const float arena = settings.worldRadius;
+    const std::uint32_t seed = 7U;
+    const puck::vec2 axis = puck::puckStartPositionFor(arena, 0U, 3U, seed, false);
+    check(closeTo(axis.x, puck::puckStartPosition(arena, 0U).x) &&
+              closeTo(axis.y, puck::puckStartPosition(arena, 0U).y),
+          "With the option off the puck is placed exactly where it always was");
+
+    bool differsBetweenWorlds = false;
+    bool differsBetweenGenerations = false;
+    for (std::uint32_t world = 0; world < 32U; ++world) {
+        const puck::vec2 here = puck::puckStartPositionFor(arena, 0U, world, seed, true);
+        const float span = std::hypot(here.x, here.y);
+        check(span > puck::PuckScatterInner * arena * 0.999F &&
+                  span < puck::PuckScatterOuter * arena * 1.001F,
+              "A scattered puck lands in the ring, clear of both the rim and the middle");
+        const puck::vec2 neighbour = puck::puckStartPositionFor(arena, 0U, world + 1U, seed, true);
+        const puck::vec2 later = puck::puckStartPositionFor(arena, 0U, world, seed + 1U, true);
+        if (!closeTo(here.x, neighbour.x) || !closeTo(here.y, neighbour.y)) {
+            differsBetweenWorlds = true;
+        }
+        if (!closeTo(here.x, later.x) || !closeTo(here.y, later.y)) {
+            differsBetweenGenerations = true;
+        }
+        const puck::vec2 again = puck::puckStartPositionFor(arena, 0U, world, seed, true);
+        check(closeTo(here.x, again.x) && closeTo(here.y, again.y),
+              "And it is the same puck every time the same generation is asked for");
+    }
+    check(differsBetweenWorlds, "Worlds in one generation get different pucks");
+    check(differsBetweenGenerations, "And one world gets a different puck the next generation");
+
+    // The whole point of the option is that the shaping opens against wherever
+    // the puck actually is. A spawn that placed the agents from one answer and
+    // the driver that placed the puck from another would score a journey that
+    // was never travelled -- which is the fault the axis version already had once.
+    const vkexp::ScenarioDefinition& puckScenario =
+        vkexp::scenarioDefinition(vkexp::BeaconScenario::PuckPush);
+    vkexp::SimulationStep scattered = settings;
+    scattered.puckRandomStart = true;
+    scattered.beaconMotionSeed = seed;
+    for (const std::uint32_t world : {0U, 5U, 11U}) {
+        vkexp::AgentState agent{};
+        agent.pose = {0.3F, 0.2F, 0.0F, vkexp::agentBodyRadius};
+        agent.penalties.w = static_cast<float>(world);
+        puckScenario.spawn(agent, scattered);
+        const puck::vec2 placed =
+            puck::puckStartPositionFor(arena, 0U, world, seed, true);
+        check(closeTo(puckScenario.targetDistance(agent, scattered),
+                      std::hypot(placed.x, placed.y)),
+              "A scattered trial opens measuring the puck the driver actually placed");
+    }
 }
 
 // The gate world. What has to hold is not that it is solvable -- that is what a

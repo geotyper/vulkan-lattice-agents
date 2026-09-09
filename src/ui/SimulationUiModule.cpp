@@ -241,6 +241,29 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                               "the journey the rungs are quarters of. Widen it to see whether the "
                               "task is being solved at all, narrow it to ask for the puck to be "
                               "placed rather than shoved.");
+        if (ImGui::SliderFloat("Breakaway push", &state_.physics.puckBreakawayPushes, 0.0F, 6.0F,
+                               "%.2f agents")) {
+            state_.controls.resetRequested = true;
+        }
+        ImGui::SetItemTooltip("How hard the whole world has to push before the puck moves at all, "
+                              "counted in agents at the speed limit. Below one, a single agent "
+                              "solves the world alone and a group is only a convenience. Above "
+                              "one it cannot start the puck however hard it tries, and two have "
+                              "to be touching at the same time and pushing the same way -- so "
+                              "this is what turns the world from one that permits cooperation "
+                              "into one that requires it. Pushes from opposite sides cancel "
+                              "before it is measured, and two agents pushing at an angle add up "
+                              "to less than two, so a threshold of 2.0 asks for more than exactly "
+                              "two bodies.");
+        if (ImGui::Checkbox("Scatter the puck", &state_.physics.puckRandomStart)) {
+            state_.controls.resetRequested = true;
+        }
+        ImGui::SetItemTooltip("Off, the puck starts on the arena's axis with the agents spawned "
+                              "on its side, so the first thing they do is reach it. On, it is "
+                              "placed anywhere in a ring each generation and the agents start "
+                              "where they always do, so finding it is part of the task and no "
+                              "one layout can be memorised. Off is what every measurement so far "
+                              "was taken on.");
     }
     if (scenario.tunables.gateLatch) {
         if (ImGui::SliderFloat("Gate latch (s)", &state_.physics.gateLatchSeconds, 0.0F, 8.0F,

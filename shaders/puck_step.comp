@@ -74,6 +74,13 @@ void main() {
         push += normal * approach;
     }
 
+    // The friction floor, applied to the world's total push and not to any one
+    // agent's: pushes from opposite sides cancel before it is measured, which is
+    // what makes "two agents" mean two agents pushing the same way.
+    const float breakaway =
+        puckBreakawayPush(params.maximumSpeed, params.scenario.floats0.z);
+    push *= puckFrictionFraction(length(push), breakaway);
+
     puck.motion.xy += push * PuckPushRate * params.deltaTime;
     puck.motion.xy *= exp(-PuckDrag * params.deltaTime);
     puck.pose.xy += puck.motion.xy * params.deltaTime;

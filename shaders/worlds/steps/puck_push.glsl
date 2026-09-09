@@ -17,5 +17,6 @@ void puckPushScenarioAfterStep(inout Agent agent) {
                        params.fitness.trackingReward;
     const float contribution = puckPushContribution(agent.pose.xy, agent.motion.xy, agent.pose.w,
                                                     agent.penalties.yz, agent.target.xy, radius);
-    agent.metrics.w += contribution * params.deltaTime * PuckWorkReward;
+    const float moving = puckWorkMovingFraction(length(agent.target.xy), params.maximumSpeed);
+    agent.metrics.w += contribution * moving * params.deltaTime * PuckWorkReward;
 }

@@ -61,6 +61,57 @@ const float PuckProximityShare = 0.25f;
 const float PuckPushRate = 2.0f;  // 1/s
 const float PuckDrag = 3.0f;      // 1/s, applied as exp(-drag * dt)
 
+// How hard the whole world has to push before the puck moves at all, counted in
+// agents: 1.0 is one agent at the speed limit shoving straight at it.
+//
+// This is the knob that decides whether the world asks for cooperation or only
+// permits it. Without it one agent moves the puck on its own, so a group is a
+// convenience and never a requirement, and the interesting question -- can
+// selection produce agents that push together -- is one the world never puts.
+// Above one, a single agent cannot start it however hard it tries, and two have
+// to be in contact at the same time and pushing the same way.
+//
+// Not a mass, deliberately. Mass makes one agent slower, not powerless: the puck
+// still creeps, the score still rises, and the population still learns to solve
+// it alone. A friction floor is a threshold, which is what "two or more" means.
+//
+// Subtracted from the push rather than switching it on and off, so a pair that
+// barely clears the floor moves the puck slowly instead of the world flipping
+// between nothing and everything. The same reason the journey is a fraction and
+// not a completion: selection needs an increment, not a cliff.
+const float PuckBreakawayPushes = 1.60f; // agents at full speed
+
+VKEXP_PUCK_FN float puckBreakawayPush(float maximumSpeed, float breakawayPushes) {
+    return maximumSpeed * max(breakawayPushes, 0.0f);
+}
+
+// What fraction of the world's push survives the friction floor. Zero below it,
+// rising from zero above, so the transition has a slope.
+VKEXP_PUCK_FN float puckFrictionFraction(float pushMagnitude, float breakaway) {
+    if (pushMagnitude <= breakaway) {
+        return 0.0f;
+    }
+    return (pushMagnitude - breakaway) / pushMagnitude;
+}
+
+// And how much of the work reward an agent collects, which has to follow the
+// puck rather than the pushing. With a friction floor a lone agent can lean on a
+// puck at full speed for a whole trial and move nothing, and paying for that
+// would teach exactly the futile behaviour the floor exists to rule out. The
+// reward therefore rides on the puck actually moving: nothing while it is stuck,
+// full once it is under way.
+//
+// The ramp is short -- a quarter of an agent's speed limit -- because this is
+// meant to separate stuck from moving, not to rank speeds. Speed is already paid
+// for by the journey.
+const float PuckWorkMovingSpeed = 0.25f; // fraction of the agent speed limit
+
+VKEXP_PUCK_FN float puckWorkMovingFraction(float puckSpeed, float maximumSpeed) {
+    const float full = max(maximumSpeed * PuckWorkMovingSpeed, 1.0e-4f);
+    const float fraction = puckSpeed / full;
+    return fraction < 0.0f ? 0.0f : (fraction > 1.0f ? 1.0f : fraction);
+}
+
 // What one agent's share of the pushing is, right now, in metres per second of
 // useful approach. This is the answer to the credit-assignment problem the world
 // created: the puck is one object, the outcome is joint, and every score derived
@@ -128,6 +179,47 @@ VKEXP_PUCK_FN float puckStartSide(uint trial) { return (trial & 1u) == 0u ? 1.0f
 
 VKEXP_PUCK_FN vec2 puckStartPosition(float worldRadius, uint trial) {
     return vec2(0.0f, puckStartSide(trial) * PuckStartOffset * worldRadius);
+}
+
+// The other placement: anywhere in the arena rather than in front of the agents
+// who have to move it. On the axis the puck is found by walking forward, and a
+// population can learn the world without ever learning to look for it; scattered,
+// finding it is part of the task and the journey is a different length every
+// generation, so nothing about one layout can be memorised.
+//
+// The placement has to be the same number on both sides of the language boundary
+// and the same number every time a generation is replayed, so it comes from
+// scenarioRandom01 -- the hash the scenario kernel already uses to place a
+// relocating home -- rather than from a second one written here. Seeded by the
+// world and the generation together, so worlds differ from each other within a
+// generation and every world differs from itself between them.
+//
+// Kept off both ends of the arena: too near the rim and there is no room to get
+// behind it, too near the middle and it starts most of the way home.
+const float PuckScatterInner = 0.35f; // fraction of the arena radius
+const float PuckScatterOuter = 0.78f;
+
+VKEXP_PUCK_FN vec2 puckScatteredPosition(float worldRadius, uint world, uint seed) {
+    const uint key = world * 0x9e3779b9u + seed;
+    const float angle = scenarioRandom01(key) * ScenarioTau;
+    // Square-rooted so the placement is uniform over the ring's area rather than
+    // over its radius, which would crowd the pucks toward the inner edge.
+    const float unit = scenarioRandom01(key ^ 0x68bc21ebu);
+    const float inner = PuckScatterInner * PuckScatterInner;
+    const float span = PuckScatterOuter * PuckScatterOuter - inner;
+    const float radius = worldRadius * sqrt(inner + unit * span);
+    return vec2(cos(angle) * radius, sin(angle) * radius);
+}
+
+// The one entry point both the driver and the scenario's spawn go through, so
+// the puck and the distance the shaping banks against cannot be placed from two
+// different answers.
+VKEXP_PUCK_FN vec2 puckStartPositionFor(float worldRadius, uint trial, uint world, uint seed,
+                                        bool scattered) {
+    if (scattered) {
+        return puckScatteredPosition(worldRadius, world, seed);
+    }
+    return puckStartPosition(worldRadius, trial);
 }
 
 // How far the puck got, in rungs, and why it is rungs on one journey rather than

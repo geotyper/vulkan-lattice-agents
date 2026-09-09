@@ -349,6 +349,20 @@ struct SimulationStep {
     // thing to find -- so it is the first knob to reach for when the world is
     // not being learned at all.
     float puckRadiusRatio{puck::kernel::PuckRadiusRatio};
+    // How hard the whole world has to push before the puck moves at all, counted
+    // in agents at the speed limit. Below one, a single agent solves the world
+    // alone and cooperation is never asked for; above one it cannot start the
+    // puck however hard it tries, and two have to be in contact at once and
+    // pushing the same way. This is the knob that turns the puck world from one
+    // that permits a group into one that requires it.
+    float puckBreakawayPushes{puck::kernel::PuckBreakawayPushes};
+    // Where the puck is placed. Off, it starts on the arena's axis with the
+    // agents spawned on its side, so the first thing they do is reach it. On, it
+    // is scattered anywhere in a ring and the agents start where the driver puts
+    // them, so finding it is part of the task and the journey is a different
+    // length every generation. An option and not the default: the axis version
+    // is the one every measurement so far was taken on.
+    bool puckRandomStart{false};
     // Gate world: how long the gate keeps running after the plate is released.
     // This is the difficulty of the world in one number. Above zero one agent
     // presses and runs, and nothing has to be shared; at zero the gate shuts the

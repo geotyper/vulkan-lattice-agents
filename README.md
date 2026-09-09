@@ -486,6 +486,40 @@ also what makes the sharing sweep below meaningful rather than circular.
 a wider contact arc for several agents to push at once, and a larger thing to
 find. Both sliders -- `Puck radius` and `Target radius` -- take effect on reset.
 
+**Whether one agent is enough is a slider.** `--puck-breakaway` (and `Breakaway
+push`) is a friction floor on the puck, counted in agents at the speed limit: how
+hard the *whole world* has to push before it moves at all. Below one, a single
+agent solves the world alone, a group is only a convenience, and the question
+this world exists to ask -- can selection produce agents that push together -- is
+one it never puts. Above one, no single agent can start it however hard it tries.
+
+Not a mass, deliberately. Mass makes one agent slower, not powerless: the puck
+still creeps, the score still rises, and the population still learns to solve it
+alone. A floor is a threshold, which is what "two or more" means. It is
+subtracted from the push rather than switching it on and off, so a pair that
+barely clears it moves the puck slowly instead of the world flipping between
+nothing and everything -- selection needs an increment here for the same reason
+the journey is a fraction rather than a completion.
+
+Pushes are summed as vectors before the floor is measured, so two agents on
+opposite faces cancel and move nothing however hard they try, and two pushing at
+an angle add up to less than two. A threshold of 2.0 therefore asks for more than
+exactly two bodies: it asks for two pushing the same way.
+
+The work reward follows the puck rather than the pushing, because with a floor in
+the world a lone agent can lean on a stuck puck at full speed for a whole trial.
+Paying for that would teach exactly the futile pushing the floor exists to rule
+out, so the reward is scaled by whether the puck is actually moving.
+
+**Where the puck starts is an option.** By default it is on the arena's axis with
+the agents spawned on its side, so the first thing they do is reach it -- and
+every measurement so far was taken that way. `--puck-scatter` (and `Scatter the
+puck`) instead places it anywhere in a ring, a different place for every world
+and a different place each generation, so finding it is part of the task and no
+one layout can be memorised. The placement comes from the same hash the
+relocating home already uses, seeded by the world and the generation, so a
+replayed generation is the same generation.
+
 **This is the world the sharing option was built for.** `--fitness-sharing`
 blends a genome's score with its world's average, which is meant to make helping
 a neighbour pay -- and until now every world scored an individual's own

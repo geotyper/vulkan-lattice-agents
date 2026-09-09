@@ -42,6 +42,8 @@ struct Options {
     bool uniformBeaconColor{false};
     bool blockedDoorPerGeneration{false};
     float gateLatchSeconds{4.0F};
+    float puckBreakawayPushes{vkexp::puck::kernel::PuckBreakawayPushes};
+    bool puckRandomStart{false};
     vkexp::FitnessWeights fitness{};
     // Optional physics overrides. Absent means "keep the default", which lets a
     // sweep change one term without restating the rest of SimulationStep.
@@ -101,6 +103,12 @@ void printHelp(const char* executable) {
                  "  --uniform-beacon-color   ablate hue: both ends emit the average colour\n"
                  "  --doors-by-generation    two doors: the dead end changes per generation,\n"
                  "                           not per trial\n"
+                 "  --puck-breakaway <n>     puck world: how hard the world has to push before\n"
+                 "                           the puck moves, in agents at the speed limit. Above\n"
+                 "                           1 no single agent can start it\n"
+                 "  --puck-scatter           puck world: place the puck anywhere in a ring each\n"
+                 "                           generation instead of on the axis in front of the\n"
+                 "                           agents, so finding it is part of the task\n"
                  "  --gate-latch <s>         gate world: seconds the gate keeps running after\n"
                  "                           the plate is released. 0 means somebody has to\n"
                  "                           stand on it, so the task needs two agents\n"
@@ -272,6 +280,10 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.uniformBeaconColor = true;
         } else if (argument == "--doors-by-generation") {
             options.blockedDoorPerGeneration = true;
+        } else if (argument == "--puck-breakaway") {
+            options.puckBreakawayPushes = parseNumber<float>(next(index, argument), argument);
+        } else if (argument == "--puck-scatter") {
+            options.puckRandomStart = true;
         } else if (argument == "--gate-latch") {
             options.gateLatchSeconds = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--quiet") {
@@ -315,6 +327,8 @@ int run(const Options& options) {
     state.physics.uniformBeaconColor = options.uniformBeaconColor;
     state.physics.blockedDoorPerGeneration = options.blockedDoorPerGeneration;
     state.physics.gateLatchSeconds = options.gateLatchSeconds;
+    state.physics.puckBreakawayPushes = options.puckBreakawayPushes;
+    state.physics.puckRandomStart = options.puckRandomStart;
     state.physics.fitness = options.fitness;
     if (options.beaconAngularSpeed) {
         state.physics.beaconAngularSpeed = *options.beaconAngularSpeed;
