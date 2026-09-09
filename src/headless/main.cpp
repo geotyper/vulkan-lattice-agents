@@ -31,7 +31,7 @@ struct Options {
     vkexp::WorldShape worldShape{vkexp::WorldShape::Circle};
     vkexp::WorldSize worldSize{vkexp::WorldSize::Small};
     std::uint64_t generations{20};
-    std::uint32_t stepsPerGeneration{900};
+    std::uint32_t stepsPerGeneration{};  // 0 means "whatever the scenario needs"
     std::uint32_t stepsPerBatch{128};
     std::uint32_t agentsPerWorld{12};
     std::size_t populationSize{512};
@@ -84,7 +84,8 @@ void printHelp(const char* executable) {
                  "Experiment:\n"
               << "  --scenario <name>        " << scenarioKeyList() << "\n"
               << "  --generations <n>        generations to run (default 20)\n"
-                 "  --steps <n>              steps per generation (default 900 = 15.0 s)\n"
+                 "  --steps <n>              steps per generation (default: what the scenario\n"
+                 "                           needs, usually 900 = 15.0 s)\n"
                  "  --population <n>         genomes (default 512)\n"
                  "  --agents-per-world <n>   agents sharing one logical world (default 12)\n"
                  "  --seed <n>               genetic algorithm seed (default 12648430)\n"
@@ -304,7 +305,7 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             fail("Unknown argument: " + std::string{argument});
         }
     }
-    if (options.generations == 0 || options.stepsPerGeneration == 0 || options.stepsPerBatch == 0) {
+    if (options.generations == 0 || options.stepsPerBatch == 0) {
         fail("Generations, steps and steps-per-batch must all be non-zero");
     }
     return options;
@@ -314,7 +315,13 @@ int run(const Options& options) {
     vkexp::HeadlessComputeContext context{{"vkneuro headless evolution"}};
 
     vkexp::SimulationState state;
-    state.controls.stepsPerGeneration = options.stepsPerGeneration;
+    // Unset means the scenario's own nominal, so a world that needs a longer
+    // trial than the usual one gets it without having to be remembered about.
+    // Naming --steps overrides it, including downwards.
+    state.controls.stepsPerGeneration =
+        options.stepsPerGeneration > 0
+            ? options.stepsPerGeneration
+            : vkexp::scenarioDefinition(options.scenario).nominalStepsPerGeneration;
     state.worlds.requestedAgentsPerWorld = options.agentsPerWorld;
     state.physics.beaconScenario = options.scenario;
     state.physics.worldShape = options.worldShape;

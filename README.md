@@ -576,8 +576,11 @@ world needs only its two beacons.
 **This world wants about 1800 steps per generation**, twice the default. A leg is
 2.1 m and a round trip about 840 steps at the speed limit, so the nominal two
 trips do not fit in 900 -- the reported ratio would flatten near half with
-nothing looking wrong. The unit test asserts both directions of that, because the
-geometry is what would quietly break it.
+nothing looking wrong. The scenario declares that number rather than leaving it
+in a comment: the window says so beside the trial-length slider and offers a
+button, and `vkneuro_headless` uses it when `--steps` is not given. The unit test
+asserts both directions of it, because the geometry is what would quietly break
+it.
 
 **The latch is the difficulty, and it is one number.** `--gate-latch` (and the
 `Gate latch (s)` slider) says how long the gate keeps running after the plate is

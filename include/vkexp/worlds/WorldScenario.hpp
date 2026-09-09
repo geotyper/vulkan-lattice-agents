@@ -104,6 +104,12 @@ struct ScenarioDefinition {
     ScenarioFitness fitness{};
     ScenarioObjectives achievedObjectives{};
     std::uint32_t objectivesPerAgent{1};
+    // How long a trial has to be for `objectivesPerAgent` to be reachable at all.
+    // A world whose nominal does not fit in the trial reports a ratio that
+    // flattens below one with nothing looking wrong, which is a slow thing to
+    // notice, so the scenario says the number and the UI and the headless runner
+    // both act on it instead of it living in a comment.
+    std::uint32_t nominalStepsPerGeneration{900};
 
     // Mirrored by shaders/worlds/steps/<scenario>.glsl.
     ScenarioBeforeStep beforeStep{};

@@ -171,6 +171,11 @@ const ScenarioDefinition& definition() {
         .fitness = fitness,
         .achievedObjectives = achievedObjectives,
         .objectivesPerAgent = nominalRoundTrips,
+        // A leg is 2.1 m and a round trip about 840 steps at the speed limit, so
+        // two of them want roughly 1800 -- twice what every other world here
+        // needs. The unit test asserts both that the nominal fits in this and
+        // that it does not fit in the default.
+        .nominalStepsPerGeneration = 1800,
         .beforeStep = nullptr,
         .afterStep = afterStep,
         .obstacleCount = kernel::GatePlateBoxCount,

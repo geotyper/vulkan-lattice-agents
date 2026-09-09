@@ -599,6 +599,14 @@ void testScenarioRegistryContract() {
         vkexp::stepAgentCpu(stepped, zeroWeights, settings);
         check(std::isfinite(stepped.pose.x) && std::isfinite(stepped.metrics.w),
               label + ": one step through the hooks stays finite");
+
+        // Every scenario says how long a trial has to be for its objectives to
+        // be reachable, because a world run in too short a trial reports a ratio
+        // that cannot reach one and nothing about the picture says so. The UI
+        // offers the number and the headless runner defaults to it, so a
+        // scenario that left it at zero would silently ask for no time at all.
+        check(scenario.nominalStepsPerGeneration >= 120U,
+              label + ": declares a trial length its objectives can be reached in");
     }
 }
 
@@ -2255,10 +2263,12 @@ void testGateWorld() {
         std::hypot(resource.x - plate.x, resource.y - plate.y) / settings.maximumSpeed;
     const float nominalSeconds =
         static_cast<float>(scenario.objectivesPerAgent) * 2.0F * legSeconds * 1.8F;
-    check(nominalSeconds <= vkexp::units::secondsForSteps(1800U, vkexp::units::fixedTimeStep),
-          "The nominal number of round trips fits in the 1800 steps this world wants");
-    check(nominalSeconds > vkexp::units::secondsForSteps(900U, vkexp::units::fixedTimeStep),
-          "And does not fit in the default 900, which is why the world says so out loud");
+    check(nominalSeconds <= vkexp::units::secondsForSteps(scenario.nominalStepsPerGeneration,
+                                                          vkexp::units::fixedTimeStep),
+          "The nominal number of round trips fits in the trial the world asks for");
+    check(nominalSeconds > vkexp::units::secondsForSteps(900U, vkexp::units::fixedTimeStep) &&
+              scenario.nominalStepsPerGeneration > 900U,
+          "And does not fit in the usual 900, which is why the world asks out loud");
 
     // Walking the cycle by hand, because the order is the whole task and every
     // step of it is a place the flags can be crossed. The distance handed to the

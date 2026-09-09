@@ -100,6 +100,23 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
         state_.controls.stepsPerGeneration = static_cast<std::uint32_t>(generationSteps);
         state_.controls.resetRequested = true;
     }
+    // A world that needs a longer trial than the one it is being run in reports a
+    // completion ratio that cannot reach one, and nothing about the picture says
+    // so. The scenario carries the number it needs; this is where it gets said.
+    const std::uint32_t nominalSteps =
+        scenarioDefinition(state_.physics.beaconScenario).nominalStepsPerGeneration;
+    if (state_.controls.stepsPerGeneration < nominalSteps) {
+        ImGui::TextColored(ImVec4(1.0F, 0.75F, 0.25F, 1.0F),
+                           "%s needs %u steps to complete its objectives",
+                           scenarioDefinition(state_.physics.beaconScenario).name, nominalSteps);
+        ImGui::SameLine();
+        char label[32];
+        std::snprintf(label, sizeof(label), "Use %u", nominalSteps);
+        if (ImGui::SmallButton(label)) {
+            state_.controls.stepsPerGeneration = nominalSteps;
+            state_.controls.resetRequested = true;
+        }
+    }
     // The step stays the control, because a replay is reproduced by step count.
     // Seconds are shown beside it so arena size, speed and trial length can be
     // read against each other in the units they are actually expressed in.
@@ -451,7 +468,11 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
         state_.controls.genomePath = genomePath.data();
     }
     ImGui::BeginDisabled(state_.controls.genomePath.empty());
-    if (ImGui::Button("Save champion")) {
+    ImGui::Checkbox("Whole population", &state_.controls.saveWholePopulation);
+    ImGui::SetItemTooltip("Off, the button writes the best genome alone -- a small file to load "
+                          "back and watch. On, it writes every genome, which is what a run is "
+                          "resumed from without carrying the agents and the world with it.");
+    if (ImGui::Button(state_.controls.saveWholePopulation ? "Save population" : "Save champion")) {
         state_.controls.saveGenomesRequested = true;
     }
     ImGui::SetItemTooltip("Writes the best genome of the last evaluated generation to a .vkng "

@@ -34,6 +34,8 @@ struct SimulationControls {
     std::string genomePath{"champion.vkng"};
     bool loadGenomesRequested{};
     bool saveGenomesRequested{};
+    // Whether that save is the whole population or the champion alone.
+    bool saveWholePopulation{};
 
     // Watching rather than training. The generation is still scored and
     // reported -- that is how loaded weights get judged -- but nothing is
