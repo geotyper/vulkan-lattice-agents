@@ -308,7 +308,11 @@ void AgentRenderer::onRender(AppContext& context, const FrameInfo&) {
     // it, so it goes under everything including the puck itself.
     const ScenarioDefinition& drawnScenario = scenarioDefinition(state_.physics.beaconScenario);
     if (drawnScenario.puck) {
-        draw(commands, scaleX, scaleY, state_.physics.worldRadius, 8, 0.55F, 48, 1);
+        // 48 segments of three vertices each. Passing the segment count as the
+        // vertex count drew a third of a disc -- a wedge that looked like a
+        // scenario shape rather than a target -- because circleVertex builds one
+        // triangle per segment rather than one vertex.
+        draw(commands, scaleX, scaleY, state_.physics.worldRadius, 8, 0.55F, 48 * 3, 1);
     }
     // Above the ground and under everything that moves: an obstacle is scenery
     // an agent collides with, not a thing that acts.

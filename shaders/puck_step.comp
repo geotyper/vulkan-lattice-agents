@@ -97,15 +97,10 @@ void main() {
 
     // Latched, and taken as a maximum: a puck nudged through the middle and out
     // again still got there, and the reported number stays monotone.
-    uint level = uint(max(puck.motion.z, 0.0) + 0.5);
-    if (puckCrossedLine(puck.pose.w, puck.pose.y)) {
-        level = max(level, PuckLevelCrossedLine);
-    }
-    if (puckInsideTarget(puck.pose.xy,
-                         puckTargetRadius(params.worldRadius, params.puckTargetRadiusRatio))) {
-        level = max(level, PuckLevelInsideTarget);
-    }
-    puck.motion.z = float(level);
+    const float covered =
+        puckJourneyFraction(length(puck.pose.xy), puck.pose.w,
+                            puckTargetRadius(params.worldRadius, params.puckTargetRadiusRatio));
+    puck.motion.z = float(max(uint(max(puck.motion.z, 0.0) + 0.5), puckLevelForJourney(covered)));
 
     pucks[world] = puck;
 }

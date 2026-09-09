@@ -1752,13 +1752,8 @@ void testPuckWorld() {
         check(closeTo(start.x, 0.0F), "The puck starts on the arena's axis");
         check(std::abs(start.y) < radius - puckSize,
               "The puck starts inside the arena, clear of the rim");
-        check(!puck::puckCrossedLine(puck::puckStartSide(trial), start.y),
-              "The puck has not crossed the line at the moment it is placed");
     }
 
-    // The two levels. The target disc straddles the line, so being inside it
-    // does not imply having crossed -- which is exactly why the level is taken
-    // as a maximum rather than as a count, and why this checks both directions.
     const float target = puck::puckTargetRadius(radius, settings.puckTargetRadiusRatio);
     check(target > puckSize * 2.0F, "The target disc is wider than the puck");
     check(puckSize > vkexp::agentBodyRadius * 2.0F,
@@ -1786,10 +1781,57 @@ void testPuckWorld() {
     check(puck::puckInsideTarget({0.0F, 0.0F}, target), "The middle is inside the target");
     check(!puck::puckInsideTarget({target * 1.01F, 0.0F}, target),
           "Just outside the target is outside it");
-    check(puck::puckCrossedLine(1.0F, -0.01F) && !puck::puckCrossedLine(1.0F, 0.01F),
-          "Crossing is measured against the side the puck started on");
-    check(puck::puckCrossedLine(-1.0F, 0.01F) && !puck::puckCrossedLine(-1.0F, -0.01F),
-          "And it is measured the other way for a puck starting on the other side");
+    // The ladder. It replaced two named goals -- cross the middle line, then
+    // reach the disc -- which the geometry would not put in that order: the disc
+    // is centred on the line and the puck comes from outside, so it enters the
+    // disc after 58 per cent of the journey and reaches the line only at the end.
+    // The minimum was the harder of the two and never fired first, so a world
+    // scored nothing until it scored everything, and the reported curve could
+    // only move in whole worlds. These assertions are what the ladder replaced it
+    // with: rungs on one journey, ordered by construction.
+    const float startDistance =
+        std::hypot(puck::puckStartPosition(radius, 0).x, puck::puckStartPosition(radius, 0).y);
+    const auto rungAt = [&](const float distance) {
+        return puck::puckLevelForJourney(puck::puckJourneyFraction(distance, startDistance, target));
+    };
+    check(rungAt(startDistance) == puck::PuckLevelNone, "A puck that has not moved is on no rung");
+    check(rungAt(target) == puck::PuckLevelCount, "A puck inside the disc is on the top rung");
+    check(rungAt(target * 0.5F) == puck::PuckLevelCount,
+          "And it stays on the top rung deeper inside, rather than climbing past it");
+    check(rungAt(startDistance * 1.5F) == puck::PuckLevelNone,
+          "A puck shoved backwards reports no rung rather than a negative one");
+
+    // Strictly ordered and strictly reachable: every rung needs the puck closer
+    // than the one below it, and no rung is skipped on the way in. This is the
+    // property the two named goals did not have.
+    float previous = startDistance;
+    for (std::uint32_t rung = 1; rung <= puck::PuckLevelCount; ++rung) {
+        const float span = startDistance - target;
+        const float reached =
+            target + span * (1.0F - static_cast<float>(rung) / static_cast<float>(
+                                                              puck::PuckLevelCount));
+        check(reached < previous, "Each rung asks the puck to come further in than the last");
+        check(rungAt(reached) == rung, "Reaching a rung's distance reports exactly that rung");
+        check(rungAt(reached + span * 0.01F) == rung - 1,
+              "And a hair short of it reports the rung below");
+        previous = reached;
+    }
+
+    // The ladder follows the target slider rather than a number written beside
+    // it: widen the disc and the same puck is further along its journey.
+    const float wideTarget = puck::puckTargetRadius(radius, settings.puckTargetRadiusRatio * 1.5F);
+    check(puck::puckJourneyFraction(startDistance * 0.6F, startDistance, wideTarget) >
+              puck::puckJourneyFraction(startDistance * 0.6F, startDistance, target),
+          "A wider target disc makes the same position further along the journey");
+
+    // The top rung and the disc are the same statement, which is what keeps the
+    // maximum the world was specified with intact.
+    check(puck::puckInsideTarget({target * 0.99F, 0.0F}, target) &&
+              rungAt(target * 0.99F) == puck::PuckLevelCount,
+          "Inside the disc and on the top rung are the same claim");
+    check(!puck::puckInsideTarget({target * 1.05F, 0.0F}, target) &&
+              rungAt(target * 1.05F) < puck::PuckLevelCount,
+          "And outside it is neither");
 
     // The shaping opens against the puck's own starting distance. This is the
     // assertion that catches a spawn which forgets to seed the mirror: with the
@@ -1848,8 +1890,6 @@ void testPuckWorld() {
                                       vkexp::units::fixedTimeStep);
     const float parked =
         trialSeconds * settings.fitness.trackingReward * puck::PuckProximityShare;
-    const float startDistance =
-        std::hypot(puck::puckStartPosition(radius, 0).x, puck::puckStartPosition(radius, 0).y);
 
     vkexp::AgentState loiterer{};
     loiterer.metrics = {startDistance, startDistance, 0.0F, parked};

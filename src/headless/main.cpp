@@ -292,19 +292,6 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
     return options;
 }
 
-vkexp::GenomeArchiveMetadata makeMetadata(const vkexp::SimulationState& state,
-                                          const vkexp::SimulationDriver& driver,
-                                          const vkexp::neuro::BrainShape& brain) {
-    return {driver.evolution().generation(),
-            static_cast<std::uint32_t>(state.physics.beaconScenario),
-            driver.evolution().settings().seed,
-            state.statistics.bestFitness,
-            state.statistics.meanFitness,
-            static_cast<std::uint32_t>(brain.inputCount),
-            static_cast<std::uint32_t>(brain.hiddenCount),
-            static_cast<std::uint32_t>(brain.outputCount)};
-}
-
 int run(const Options& options) {
     vkexp::HeadlessComputeContext context{{"vkneuro headless evolution"}};
 
@@ -480,7 +467,8 @@ int run(const Options& options) {
     // finishGeneration() has already produced the next population, whose first
     // eliteCount entries are the ranked survivors, champion first.
     const std::vector<vkexp::Genome>& population = driver.evolution().population();
-    const vkexp::GenomeArchiveMetadata metadata = makeMetadata(state, driver, scenario.brain);
+    const vkexp::GenomeArchiveMetadata metadata =
+        vkexp::genomeArchiveMetadata(state, driver, scenario.brain);
     if (!options.savePopulation.empty()) {
         vkexp::saveGenomeArchive(options.savePopulation, population, metadata);
         if (!options.quiet) {

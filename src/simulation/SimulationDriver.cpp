@@ -332,10 +332,13 @@ std::vector<PuckState> SimulationDriver::makeInitialPucks() const {
         const ::vkexp::puck::kernel::vec2 start =
             ::vkexp::puck::kernel::puckStartPosition(state_.physics.worldRadius, trial);
         PuckState& state = result[world];
+        // The fourth slot is how far from the middle it was placed, which is what
+        // the rungs are fractions of: a puck carries its own journey so the
+        // reported level does not depend on where the scenario chose to put it.
         state.pose = {start.x, start.y,
                       ::vkexp::puck::kernel::puckRadius(state_.physics.worldRadius,
                                                         state_.physics.puckRadiusRatio),
-                      ::vkexp::puck::kernel::puckStartSide(trial)};
+                      std::hypot(start.x, start.y)};
         state.motion = {};
     }
     return result;
@@ -902,6 +905,19 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
                      VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
     state_.statistics.step += stepCount;
     return stepCount;
+}
+
+GenomeArchiveMetadata genomeArchiveMetadata(const SimulationState& state,
+                                            const SimulationDriver& driver,
+                                            const neuro::BrainShape& brain) {
+    return {driver.evolution().generation(),
+            static_cast<std::uint32_t>(state.physics.beaconScenario),
+            driver.evolution().settings().seed,
+            state.statistics.bestFitness,
+            state.statistics.meanFitness,
+            static_cast<std::uint32_t>(brain.inputCount),
+            static_cast<std::uint32_t>(brain.hiddenCount),
+            static_cast<std::uint32_t>(brain.outputCount)};
 }
 
 } // namespace vkexp

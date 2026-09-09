@@ -416,6 +416,15 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
         state_.controls.genomePath = genomePath.data();
     }
     ImGui::BeginDisabled(state_.controls.genomePath.empty());
+    if (ImGui::Button("Save champion")) {
+        state_.controls.saveGenomesRequested = true;
+    }
+    ImGui::SetItemTooltip("Writes the best genome of the last evaluated generation to a .vkng "
+                          "archive. This is the only way a run in this window produces a file "
+                          "the loader below can read: a world snapshot carries the champion too, "
+                          "but only as one of a whole population, and it can be resumed only into "
+                          "a run of the same size.");
+    ImGui::SameLine();
     if (ImGui::Button("Load genomes")) {
         state_.controls.loadGenomesRequested = true;
     }

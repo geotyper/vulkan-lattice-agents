@@ -215,15 +215,19 @@ static_assert(offsetof(AgentState, hidden) == 176,
 // One puck per logical world -- shared state several agents act on at once, and
 // the first thing in this simulation they can change rather than only read.
 //
-// pose:   x, y, radius, the side of the centre line it started on
-// motion: vx, vy, the highest level reached so far, unused
+// pose:   x, y, radius, how far from the middle it was placed
+// motion: vx, vy, the highest rung reached so far, unused
 //
-// The level is latched into the record rather than recomputed at the end
-// because it is a milestone: "the puck got at least this far" is what the run
-// is measuring, and a puck nudged through the middle and out the other side
-// still got there. It is stored as a float beside the velocity for the same
-// reason the agent's cargo flag is: this is a std430 block the shaders read,
-// and a float keeps the four-lane layout the rest of the file uses.
+// The rung is latched into the record rather than recomputed at the end because
+// it is a milestone: "the puck got at least this far" is what the run is
+// measuring, and a puck nudged toward the middle and back out again still got
+// there. It is stored as a float beside the velocity for the same reason the
+// agent's cargo flag is: this is a std430 block the shaders read, and a float
+// keeps the four-lane layout the rest of the file uses.
+//
+// The starting distance travels with the puck for the same reason: the rungs are
+// equal fractions of the journey from where it was placed to the target disc, so
+// the reported level has to know where the journey began.
 struct PuckState {
     Float4 pose{};
     Float4 motion{};

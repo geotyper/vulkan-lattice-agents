@@ -366,19 +366,42 @@ and the first whose outcome belongs to a group rather than to an individual.
 ```text
         the side the puck starts on, by trial
    +-----------------------------+
-   |            ( o )            |   the puck
-   |  - - - - - -( * )- - - - -  |   the line, half the objective
-   |            (   )            |   the lit disc, the whole of it
+   |            ( o )            |   the puck, where it is placed
+   |            ( * )            |   the lit disc, the objective
+   |            (   )            |
    +-----------------------------+
 ```
 
 One puck per logical world, integrated by its own compute pass. Agents push it
 by touching it; the puck is a body they cannot walk through, reported through
 the same tactile channel a wall is, so no new sensor had to be found room for.
-The two objectives are levels rather than a count: crossing the line is one,
-sitting in the disc is two, and the reported ratio is read against both. They
-are latched and taken as a maximum, so the curve is monotone -- a puck nudged
-through the middle and out the other side still got there.
+
+**The objective is a ladder on one journey.** It began as the two goals the
+world was specified with -- a minimum, push the puck past the arena's middle
+line, and a maximum, push it into a disc around the centre -- and the geometry
+will not put those in that order. The disc straddles the line and the puck
+arrives from outside, so it enters the disc *before* it reaches the line: after
+0.64 m of a 1.10 m journey at the default sliders. The minimum was the harder of
+the two and never fired first, so the ladder had one rung where it looked like
+two. A world scored nothing at all until its puck was in, and then scored full
+marks; a puck brought fifty-seven per cent of the way counted the same as a puck
+nobody had touched, and the reported curve could only move in whole worlds.
+
+So the journey is what is measured and the disc is where it ends. The rungs are
+equal quarters of the distance from where the puck was placed to the disc's
+edge. The top rung and "inside the disc" are the same statement, so the maximum
+the world was specified with is intact; every rung below is strictly harder than
+the one under it by construction; and the ladder follows the target-radius
+slider without anything having to be retuned. Rungs are latched and taken as a
+maximum, so the curve stays monotone -- a puck nudged in and back out still got
+there.
+
+The reported ratio therefore reads as the average fraction of the journey a
+world's puck covered, not as the share of worlds that finished. It is not
+comparable with the number this world reported before the ladder: the old one
+counted deliveries, and this one counts distance. What a delivery is worth in
+*fitness* was deliberately held where it was, so a run before the change and a
+run after it are still comparable on the thing being selected for.
 
 **Why the push is a velocity and not an overlap.** The obvious model sums
 penetration depths and pushes the puck out of them. That cannot work here: the

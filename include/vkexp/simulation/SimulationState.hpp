@@ -33,6 +33,7 @@ struct SimulationControls {
     // brain is the one that was trained elsewhere.
     std::string genomePath{"champion.vkng"};
     bool loadGenomesRequested{};
+    bool saveGenomesRequested{};
 
     // Watching rather than training. The generation is still scored and
     // reported -- that is how loaded weights get judged -- but nothing is

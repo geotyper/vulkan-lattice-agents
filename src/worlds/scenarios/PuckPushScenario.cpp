@@ -39,14 +39,28 @@ constexpr Float4 puckColor{1.00F, 0.92F, 0.70F, 0.0F};
 // is cut to its share.
 constexpr float puckProgressReward = 12.0F;
 
-// Two levels, and the completion ratio is read against both: half means the
-// pucks reached the halfway line, full means they are sitting in the middle.
+// Rungs on one journey, and the completion ratio is read against all of them:
+// full means the pucks are sitting in the disc, and everything below it says how
+// far they got. See PuckLevelCount for why the two named goals became a ladder.
 constexpr std::uint32_t levelsPerWorld = puck::PuckLevelCount;
+
+// What a delivery is worth in objective bonuses, held at what it was worth when
+// the ladder had two rungs. The rungs are a reporting change: they gave the
+// curve a gradient it did not have, and paying four bonuses where two were paid
+// before would have moved the score at the same time and made the run before the
+// change incomparable with the run after it.
+constexpr float deliveryBonusLevels = 2.0F;
 
 // Every agent in a world is scored on the same puck, which is the point: the
 // outcome is joint, so an individual's contribution is worth something only if
 // what the world achieves is worth something. That is the condition group
 // fitness sharing was built for and has never been measured against.
+//
+// The reported ratio is this over levelsPerWorld, so it reads as the average
+// fraction of the journey a world's puck covered rather than as the share of
+// worlds that finished. That is the number that moves generation to generation;
+// the share that finished only moves in whole worlds, which is what made it look
+// flat when it was not.
 std::uint32_t achievedObjectives(const AgentState& agent) {
     return std::min(static_cast<std::uint32_t>(std::max(agent.target.w, 0.0F)), levelsPerWorld);
 }
@@ -57,7 +71,8 @@ float fitness(const AgentState& agent, const FitnessWeights& weights) {
     // reward. Everything else is the same shape as every other world's score.
     const float start = std::max(agent.metrics.x, 1.0e-4F);
     const float progress = std::clamp((agent.metrics.x - agent.metrics.y) / start, 0.0F, 1.0F);
-    const auto level = static_cast<float>(achievedObjectives(agent));
+    const float level = static_cast<float>(achievedObjectives(agent)) /
+                        static_cast<float>(levelsPerWorld) * deliveryBonusLevels;
     return agent.metrics.w + progress * puckProgressReward + level * weights.objectiveBonus -
            agent.metrics.z * weights.motorCostWeight - agent.penalties.x;
 }
@@ -134,7 +149,7 @@ const ScenarioDefinition& definition() {
                      .beaconAngularSpeed = false,
                      .beaconRandomMotion = false,
                      .forageCargoDecay = false},
-        .objectiveLabel = "Puck delivered",
+        .objectiveLabel = "Puck journey",
         .radiusLabel = "Orbit radius",
         .description = "Push a shared puck to the middle; the outcome belongs to the whole world",
         .beacons = beacons,

@@ -2,6 +2,7 @@
 
 #include "vkexp/compute/ComputeResources.hpp"
 #include "vkexp/evolution/GeneticAlgorithm.hpp"
+#include "vkexp/evolution/GenomeArchive.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
 #include "vkexp/simulation/WorldSnapshot.hpp"
 
@@ -142,5 +143,14 @@ private:
     bool hostUploadPending_{};
     bool trailClearPending_{true};
 };
+
+// Provenance for a genome archive, built from the run that produced it. Here
+// rather than in GenomeArchive.hpp because it reads a driver and a state, and
+// the evolution layer knows about neither; here rather than in each caller
+// because the interactive save and the headless one have to stamp their files
+// the same way, or two archives cannot be told apart after the fact.
+[[nodiscard]] GenomeArchiveMetadata genomeArchiveMetadata(const SimulationState& state,
+                                                          const SimulationDriver& driver,
+                                                          const neuro::BrainShape& brain);
 
 } // namespace vkexp

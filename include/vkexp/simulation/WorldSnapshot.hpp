@@ -49,7 +49,12 @@ struct WorldSnapshot {
 // bumps reject rather than fill in.
 // 4 replaced the neuron-memory flag with a three-valued model and grew the
 // genome by a gate block, so a version 3 file names a different network.
-inline constexpr std::uint32_t worldSnapshotVersion = 9;
+// 10 changed what a puck's fourth pose slot holds -- the side of the centre line
+// it started on became the distance it started from the middle -- and what its
+// latched level counts. The record is the same 32 bytes either way, so a version
+// 9 file would be read without complaint and report a puck that had travelled a
+// journey one metre long as having finished one of length 1.
+inline constexpr std::uint32_t worldSnapshotVersion = 10;
 
 // Versioned and little-endian, like the genome archive, and just as strict: a
 // file from another brain topology, another agent layout or another scenario

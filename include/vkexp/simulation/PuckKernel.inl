@@ -130,26 +130,59 @@ VKEXP_PUCK_FN vec2 puckStartPosition(float worldRadius, uint trial) {
     return vec2(0.0f, puckStartSide(trial) * PuckStartOffset * worldRadius);
 }
 
-// The two thresholds, in the order they are worth. Level 1 is the halfway line:
-// the puck reached the far side of the arena's middle, wherever along it. Level
-// 2 is the middle itself, a disc whose radius is a slider.
+// How far the puck got, in rungs, and why it is rungs on one journey rather than
+// the two named goals it started as.
 //
-// Reported as a maximum and not a sum, so the number is monotone: a puck that
-// is inside the disc counts 2 whether or not it happened to cross the line on
-// the way, and a curve that rises always means a puck that got further.
+// The world was specified with a minimum -- push the puck past the arena's
+// middle line -- and a maximum: push it into a disc around the centre. The
+// geometry does not allow that order. The disc straddles the line and the puck
+// arrives from outside, so it enters the disc *before* it reaches the line: with
+// the default sliders, after 0.64 m of a 1.10 m journey. The minimum was the
+// harder of the two, and never fired first, so the ladder had one rung where it
+// looked like two: a world scored nothing at all until the puck was in, and then
+// scored full marks. A puck brought fifty-seven per cent of the way counted the
+// same as a puck nobody had touched, and the reported curve could only move in
+// whole worlds.
+//
+// So the journey is the thing being measured, and the disc is where it ends. The
+// rungs are equal fractions of the distance from where the puck was placed to
+// the disc's edge, which makes the top rung mean exactly what the maximum always
+// meant, makes every rung strictly harder than the one below it by construction,
+// and follows the target-radius slider without anything having to be retuned.
+//
+// Four of them: enough that a population moving the puck at all shows up as a
+// rising curve, few enough that each rung is a real step and not noise.
 const uint PuckLevelNone = 0u;
-const uint PuckLevelCrossedLine = 1u;
-const uint PuckLevelInsideTarget = 2u;
-const uint PuckLevelCount = 2u;
+const uint PuckLevelCount = 4u;
 
-VKEXP_PUCK_FN bool puckCrossedLine(float startSide, float positionY) {
-    return startSide * positionY <= 0.0f;
+VKEXP_PUCK_FN float puckTargetRadius(float worldRadius, float targetRadiusRatio) {
+    return worldRadius * targetRadiusRatio;
 }
 
 VKEXP_PUCK_FN bool puckInsideTarget(vec2 position, float targetRadius) {
     return length(position) <= targetRadius;
 }
 
-VKEXP_PUCK_FN float puckTargetRadius(float worldRadius, float targetRadiusRatio) {
-    return worldRadius * targetRadiusRatio;
+// What fraction of its journey the puck has covered: 0 where it was placed, 1 at
+// the disc's edge, and clamped at both ends so a puck shoved backwards reports
+// nothing rather than a negative.
+VKEXP_PUCK_FN float puckJourneyFraction(float distance, float startDistance, float targetRadius) {
+    const float journey = max(startDistance - targetRadius, 1.0e-4f);
+    const float remaining = max(distance - targetRadius, 0.0f);
+    const float covered = 1.0f - remaining / journey;
+    return covered < 0.0f ? 0.0f : (covered > 1.0f ? 1.0f : covered);
+}
+
+// And which rung that is. The top rung is reached only at a fraction of exactly
+// one, which is the disc, so "level == PuckLevelCount" and "inside the target"
+// are the same statement -- the epsilon is there to make the boundary land on
+// the rung rather than a float ulp below it, and the clamp keeps it from landing
+// one above.
+VKEXP_PUCK_FN uint puckLevelForJourney(float covered) {
+    const float scaled = covered * float(PuckLevelCount) + 1.0e-4f;
+    if (scaled <= 0.0f) {
+        return PuckLevelNone;
+    }
+    const uint level = uint(scaled);
+    return level > PuckLevelCount ? PuckLevelCount : level;
 }
