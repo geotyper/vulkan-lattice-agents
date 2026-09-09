@@ -49,9 +49,10 @@ enum class BeaconScenario : std::uint32_t {
     Shuttle = 7,
     TwoGaps = 8,
     PuckPush = 9,
+    GatePlate = 10,
 };
 
-inline constexpr std::size_t beaconScenarioCount = 10;
+inline constexpr std::size_t beaconScenarioCount = 11;
 
 // Body radius in metres: a 4.4 cm disc, roughly an e-puck-class table robot.
 // Stored per agent in `pose.w`, so a scenario may vary it; this is the spawn
@@ -348,6 +349,13 @@ struct SimulationStep {
     // thing to find -- so it is the first knob to reach for when the world is
     // not being learned at all.
     float puckRadiusRatio{puck::kernel::PuckRadiusRatio};
+    // Gate world: how long the gate keeps running after the plate is released.
+    // This is the difficulty of the world in one number. Above zero one agent
+    // presses and runs, and nothing has to be shared; at zero the gate shuts the
+    // instant the plate is let go, only the far side scores, and somebody has to
+    // stay behind for nothing -- which is the condition group fitness sharing
+    // exists for, reached by moving a slider rather than by adding a scenario.
+    float gateLatchSeconds{4.0F}; // s
     // Trail field. The deposit is per second and the lifetime is a half-life in
     // seconds, so neither becomes a function of the step rate.
     // Deposit rates come from what a single pass has to leave behind, not from a

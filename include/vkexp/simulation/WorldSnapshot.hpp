@@ -54,7 +54,10 @@ struct WorldSnapshot {
 // latched level counts. The record is the same 32 bytes either way, so a version
 // 9 file would be read without complaint and report a puck that had travelled a
 // journey one metre long as having finished one of length 1.
-inline constexpr std::uint32_t worldSnapshotVersion = 10;
+// 11 added the gate world's latch setting to the physics block and an eleventh
+// scenario to the registry: a version 10 file carries neither, and a scenario
+// count is one of the things this format refuses to reinterpret.
+inline constexpr std::uint32_t worldSnapshotVersion = 11;
 
 // Versioned and little-endian, like the genome archive, and just as strict: a
 // file from another brain topology, another agent layout or another scenario

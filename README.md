@@ -84,7 +84,8 @@ only work from one spawn position or heading.
 | Beacon scenario | Scent relay | The same collect-and-deliver cycle, but home emits no light and lays no trail: it can only be found by dead reckoning or by a path the agents themselves marked. |
 | Beacon scenario | Two doors | The same cycle across a wall with two gaps, one of which is a dead end. Which one swaps every trial -- or every generation, as an option -- and from the home side they are identical. Retuned after it went unsolved for 450 generations; see Two gaps for the measurement. |
 | Beacon scenario | Shuttle | Fetch and carry back, over and over until the trial ends, around a short wall that closes the straight line between the two beacons. |
-| Beacon scenario | Puck push | A round puck shared by every agent in a logical world, starting on one side of the centre line. Push it at least across the line, and at best into the lit disc in the middle whose radius is a slider. |
+| Beacon scenario | Puck push | A round puck shared by every agent in a logical world, starting on one side of the centre line. Push it toward the lit disc in the middle; the objective is a ladder of quarters along that journey. |
+| Beacon scenario | Gate and plate | A wall with one opening, shut by a gate that runs only while somebody stands on the plate in front of it. Press, then cross. How long the gate keeps running after the plate is let go is a slider, and at zero it cannot be done alone. |
 | Beacon scenario | Two gaps | The same repeated cycle across a wall with two ways through, neither a dead end, with an option to make the two ends trade places every other generation. |
 
 Changing the world size, shape, or beacon scenario resets the evolution because
@@ -504,6 +505,70 @@ The puck is saved in world snapshots, unlike the trail field: the trail is
 derived and recovers in a few half-lives, the puck's position is the state of
 the experiment, and a resume that put it back at the start would read as a run
 that had lost ground it had not lost.
+
+## Gate and plate
+
+```
+              resource
+   +-----------------------------+
+   |              .              |
+   |#########  ###[]#############|   the wall, the gate in its opening
+   |                             |
+   |     (plate)                 |
+   |   o     o        o     o    |   everyone starts on this side
+   +-----------------------------+
+```
+
+Two things to do, in a fixed order, in two different places. The plate opens the
+gate; the resource is behind the gate; standing on the plate scores nothing.
+Nothing about "press, then go" can be read off the current sensor values, so a
+network that maps light to motors cannot do it -- "I have already opened it" has
+to be held. That is the same claim the two-door world makes, except that here it
+is held for seconds rather than latched once, and here somebody else can hold it
+for you.
+
+**The latch is the difficulty, and it is one number.** `--gate-latch` (and the
+`Gate latch (s)` slider) says how long the gate keeps running after the plate is
+released.
+
+- **Above zero** one agent presses and runs. Nothing has to be shared and no
+  cooperation is needed; this is the end to start at, and the end that says
+  whether the two-leg structure is learnable at all.
+- **At zero** the gate shuts the instant the plate is let go. Only the far side
+  scores, so somebody has to stay behind for nothing. That is the condition
+  group fitness sharing exists for, reached by moving a slider rather than by
+  adding a scenario.
+
+**Why several agents in one arena is the point rather than a problem.** With a
+dozen agents wandering, somebody stands on the plate by accident about an eighth
+of the time, and those accidents are the world's bootstrap: the first crossings
+happen because somebody happened to be standing in the right place. What
+selection does with that is the question. At a positive latch it can learn to
+press deliberately and go; at zero it has to keep somebody there, and the agent
+that stays cannot be paid for it out of its own score.
+
+**The reported number is the share of a world that got through.** One objective
+per agent, latched -- an agent that arrives and lingers has not arrived twice.
+At a latch of zero a world that solves the task perfectly reports every agent
+but one, and that missing fraction is the cost of the door being held.
+
+**Where it is unlike the puck.** The gate is not a body agents move; it is a
+fact about the room, computed fresh every step from where everybody is standing.
+There is no gate buffer, no gate pass and no shared record to keep in step: the
+spatial grid is already a per-world index of every agent, so each agent scans
+the cells over the plate and reaches the same answer as its neighbours. They
+cannot disagree because they are not communicating, they are recomputing. What
+does have to be carried is the latch countdown, and each agent carries its own
+copy in the slot this world does not use for a base beacon.
+
+**What the assertions cover.** That the plate is not in the doorway, so the two
+legs are two places. That a shut gate leaves the resource invisible from the
+side the agents start on, and an open one shows it from 19 per cent of that side
+-- the same figure as the two-gap wall that was learned, measured by the same
+sweep. That the latch reloads on a press, runs down on release, stops at zero,
+and at a latch of zero is open exactly during the step the plate is held. A gate
+leaf that never parks and a latch that never runs down each fail a different one
+of them.
 
 ## Group fitness sharing
 

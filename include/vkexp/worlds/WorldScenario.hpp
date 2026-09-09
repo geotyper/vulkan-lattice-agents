@@ -71,6 +71,8 @@ struct ScenarioTunables {
     bool swapDeliveryEnds{};
     // Whether this scenario reads SimulationStep::blockedDoorPerGeneration.
     bool blockedDoorPerGeneration{};
+    // Whether this scenario reads SimulationStep::gateLatchSeconds.
+    bool gateLatch{};
 };
 
 // The complete contract of one experiment. Everything the simulation, the

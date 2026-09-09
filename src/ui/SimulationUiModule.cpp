@@ -237,10 +237,22 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                                "%.2f of arena")) {
             state_.controls.resetRequested = true;
         }
-        ImGui::SetItemTooltip("The disc in the middle the puck has to end up in. Reaching the "
-                              "halfway line already counts for half; this is what the other half "
-                              "costs. Widen it to see whether the task is being solved at all, "
-                              "narrow it to ask for the puck to be placed rather than shoved.");
+        ImGui::SetItemTooltip("The disc in the middle the puck has to end up in, and the end of "
+                              "the journey the rungs are quarters of. Widen it to see whether the "
+                              "task is being solved at all, narrow it to ask for the puck to be "
+                              "placed rather than shoved.");
+    }
+    if (scenario.tunables.gateLatch) {
+        if (ImGui::SliderFloat("Gate latch (s)", &state_.physics.gateLatchSeconds, 0.0F, 8.0F,
+                               "%.1f s")) {
+            state_.controls.resetRequested = true;
+        }
+        ImGui::SetItemTooltip("How long the gate keeps running after the plate is released, and "
+                              "the whole difficulty of this world in one number. Above zero one "
+                              "agent presses and runs, and nothing has to be shared. At zero the "
+                              "gate shuts the instant the plate is let go: only the far side "
+                              "scores, so somebody has to stay behind for nothing, and whether "
+                              "that can be selected for is what group fitness sharing is about.");
     }
     if (scenario.tunables.blockedDoorPerGeneration) {
         if (ImGui::Checkbox("Dead end changes by generation",

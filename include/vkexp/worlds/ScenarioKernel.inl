@@ -324,6 +324,115 @@ VKEXP_KERNEL_FN vec2 twoGapsBoxHalfExtent(uint index, float worldRadius) {
     return vec2((reach - (gap + gapHalf)) * 0.5f, TwoGapsWallHalfThickness);
 }
 
+// ---------------------------------------------------------------------------
+// Gate and plate. A wall across the arena with one opening, and the opening is
+// shut unless somebody is standing on a plate in front of it. The resource is
+// behind the wall; the plate is not.
+//
+// What makes it a task rather than a longer walk: the two things an agent has to
+// do are in a fixed order and are in different places. Pressing does not score.
+// Nothing about "press, then go" can be read off the current sensor values, so a
+// network that maps light to motors cannot do it -- the state of "I have already
+// opened it" has to be held. That is the same claim the two-door world makes,
+// but here it is held for seconds rather than latched once, and here another
+// agent can hold it for you.
+//
+// The latch is what makes the difficulty a slider rather than a second scenario.
+// With it, one agent presses and runs, and no cooperation is needed at all. At
+// zero the gate shuts the instant the plate is released, and then the world
+// cannot be solved by an agent alone: somebody has to stay, and staying pays
+// nothing, because only the far side scores. That is the setting group fitness
+// sharing exists for, reached without rebuilding anything.
+const uint GatePlateBoxCount = 3u; // left wall, right wall, and the gate itself
+
+const float GateWallHalfThickness = ScenarioAgentBodyRadius;
+const float GateOpeningOffset = 0.34f;   // gap centre, fraction of the arena radius
+const float GateOpeningHalfWidth = 0.11f; // as wide as the two-door slot that learned
+const float GateArenaReach = 1.05f;      // walls run past the rim so nothing squeezes by
+
+// Where the plate sits: in front of the wall, on the far side of the opening
+// from the arena's axis, so the press and the crossing are not the same spot.
+// Standing on the plate is not standing in the doorway.
+const float GatePlateX = -0.34f; // fraction of the arena radius
+const float GatePlateY = -0.42f;
+const float GatePlateRadius = 0.11f; // fraction of the arena radius, ~20 cm
+
+const float GateResourceY = 0.52f; // fraction of the arena radius, behind the wall
+
+// What reaching the plate is worth against reaching the resource. The first leg
+// needs a gradient of its own: with the gate shut the resource is behind a wall
+// and invisible, so an agent that has never pressed anything has no reason to be
+// anywhere in particular. Small against the crossing, which is the thing that
+// actually has to be learned.
+const float GatePlateProgressReward = 3.0f;
+
+VKEXP_KERNEL_FN vec2 gatePlatePosition(float worldRadius) {
+    return vec2(GatePlateX * worldRadius, GatePlateY * worldRadius);
+}
+
+VKEXP_KERNEL_FN float gatePlateRadius(float worldRadius) {
+    return GatePlateRadius * worldRadius;
+}
+
+VKEXP_KERNEL_FN vec2 gateResourcePosition(float worldRadius) {
+    return vec2(GateOpeningOffset * worldRadius, GateResourceY * worldRadius);
+}
+
+VKEXP_KERNEL_FN bool gateOnPlate(vec2 position, float worldRadius) {
+    const vec2 plate = gatePlatePosition(worldRadius);
+    return length(vec2(position.x - plate.x, position.y - plate.y)) <=
+           gatePlateRadius(worldRadius);
+}
+
+// How long the gate still has to run, given where it was and whether the plate
+// is pressed right now. Pressed reloads it to the full latch; released runs it
+// down. At a latch of zero this is "open exactly while pressed", which is the
+// version of the world that needs two agents.
+VKEXP_KERNEL_FN float gateRemaining(float previous, bool pressed, float latchSeconds,
+                                    float deltaTime) {
+    if (pressed) {
+        return max(latchSeconds, deltaTime);
+    }
+    return max(previous - deltaTime, 0.0f);
+}
+
+VKEXP_KERNEL_FN bool gateIsOpen(float remaining) { return remaining > 0.0f; }
+
+// Box `index` as a centre. Index 2 is the gate leaf, and when the gate is open
+// it is parked far outside the arena rather than resized: the extent is asked
+// for without an agent to ask about, and moving it is the one degree of freedom
+// both sides already share. Parked, it stops nothing and blocks no light --
+// which is the point, because an open gate is how the resource behind the wall
+// becomes visible at all.
+VKEXP_KERNEL_FN vec2 gateBoxCentre(uint index, float worldRadius, bool open) {
+    const float gap = GateOpeningOffset * worldRadius;
+    const float gapHalf = GateOpeningHalfWidth * worldRadius;
+    const float reach = GateArenaReach * worldRadius;
+    if (index == 0u) { // everything left of the opening
+        return vec2((-reach + (gap - gapHalf)) * 0.5f, 0.0f);
+    }
+    if (index == 1u) { // everything right of it
+        return vec2((reach + (gap + gapHalf)) * 0.5f, 0.0f);
+    }
+    if (open) {
+        return vec2(0.0f, reach * 8.0f);
+    }
+    return vec2(gap, 0.0f);
+}
+
+VKEXP_KERNEL_FN vec2 gateBoxHalfExtent(uint index, float worldRadius) {
+    const float gap = GateOpeningOffset * worldRadius;
+    const float gapHalf = GateOpeningHalfWidth * worldRadius;
+    const float reach = GateArenaReach * worldRadius;
+    if (index == 0u) {
+        return vec2((reach + (gap - gapHalf)) * 0.5f, GateWallHalfThickness);
+    }
+    if (index == 1u) {
+        return vec2((reach - (gap + gapHalf)) * 0.5f, GateWallHalfThickness);
+    }
+    return vec2(gapHalf, GateWallHalfThickness);
+}
+
 // Does the segment from `start` to `finish` cross the box? The slab test, which
 // is the whole of light occlusion: a wall that stops a body but not its light is
 // a wall an agent can see through, and the light gradient then pulls it straight

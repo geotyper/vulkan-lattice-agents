@@ -67,15 +67,18 @@ float nearestBeaconDistance(Agent agent, vec2 position) {
                                   params.worldRadius, params.beaconCount, params.scenario);
 }
 
+// Above the step hooks, because one of them reads the grid: the gate world has
+// to answer "is anybody standing on the plate", which is a reduction over a
+// world and the grid is the only per-world index there is.
+ivec2 gridCoordinate(vec2 position) {
+    return clamp(ivec2(floor((position + vec2(params.worldRadius)) / params.gridCellSize)),
+                 ivec2(0), ivec2(int(params.gridWidth) - 1));
+}
+
 #include "worlds/scenario_steps.glsl"
 
 float rangeFalloff(float distanceToLight) {
     return brainRangeFalloff(distanceToLight, params.lightSensorRange);
-}
-
-ivec2 gridCoordinate(vec2 position) {
-    return clamp(ivec2(floor((position + vec2(params.worldRadius)) / params.gridCellSize)),
-                 ivec2(0), ivec2(int(params.gridWidth) - 1));
 }
 
 void recordTouch(inout Agent agent, uint sector, float strength, bool wall) {

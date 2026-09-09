@@ -41,6 +41,7 @@ struct Options {
     bool swapDeliveryEnds{false};
     bool uniformBeaconColor{false};
     bool blockedDoorPerGeneration{false};
+    float gateLatchSeconds{4.0F};
     vkexp::FitnessWeights fitness{};
     // Optional physics overrides. Absent means "keep the default", which lets a
     // sweep change one term without restating the rest of SimulationStep.
@@ -100,6 +101,9 @@ void printHelp(const char* executable) {
                  "  --uniform-beacon-color   ablate hue: both ends emit the average colour\n"
                  "  --doors-by-generation    two doors: the dead end changes per generation,\n"
                  "                           not per trial\n"
+                 "  --gate-latch <s>         gate world: seconds the gate keeps running after\n"
+                 "                           the plate is released. 0 means somebody has to\n"
+                 "                           stand on it, so the task needs two agents\n"
                  "  --no-trail               disable the ground trail field entirely\n"
                  "  --neuron-model <name>    reactive|time|gated: where a hidden neuron's "
                  "time\n"
@@ -268,6 +272,8 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.uniformBeaconColor = true;
         } else if (argument == "--doors-by-generation") {
             options.blockedDoorPerGeneration = true;
+        } else if (argument == "--gate-latch") {
+            options.gateLatchSeconds = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--quiet") {
             options.quiet = true;
         } else if (argument == "--save-population") {
@@ -308,6 +314,7 @@ int run(const Options& options) {
     state.physics.swapDeliveryEnds = options.swapDeliveryEnds;
     state.physics.uniformBeaconColor = options.uniformBeaconColor;
     state.physics.blockedDoorPerGeneration = options.blockedDoorPerGeneration;
+    state.physics.gateLatchSeconds = options.gateLatchSeconds;
     state.physics.fitness = options.fitness;
     if (options.beaconAngularSpeed) {
         state.physics.beaconAngularSpeed = *options.beaconAngularSpeed;

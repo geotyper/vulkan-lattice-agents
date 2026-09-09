@@ -9,6 +9,7 @@
 #include "vkexp/simulation/ExperimentSweep.hpp"
 #include "vkexp/simulation/Sensors.hpp"
 #include "vkexp/simulation/PuckKernel.hpp"
+#include "vkexp/worlds/scenarios/GatePlateScenario.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
 #include "vkexp/simulation/TrailKernel.hpp"
 #include "vkexp/simulation/Units.hpp"
@@ -796,6 +797,7 @@ void testWorldSnapshotRoundTrip() {
     snapshot.physics.swapDeliveryEnds = true;
     snapshot.physics.uniformBeaconColor = true;
     snapshot.physics.blockedDoorPerGeneration = true;
+    snapshot.physics.gateLatchSeconds = 2.75F;
 
     snapshot.genomes.resize(4);
     for (std::size_t index = 0; index < snapshot.genomes.size(); ++index) {
@@ -848,6 +850,8 @@ void testWorldSnapshotRoundTrip() {
     check(loaded.physics.swapDeliveryEnds && loaded.physics.uniformBeaconColor &&
               loaded.physics.blockedDoorPerGeneration,
           "Snapshot keeps the world options");
+    check(closeTo(loaded.physics.gateLatchSeconds, 2.75F),
+          "Snapshot keeps the gate latch, which is a whole world's difficulty");
 
     // Once more with every flag inverted, because one polarity proves nothing
     // about a bool. All four default to true, so a flag the loader forgets to
@@ -1157,7 +1161,8 @@ void testGatedNeurons() {
 // room there is to pick the signal up, and no single point answers that.
 template <typename BoxAt>
 float visibleFractionOfFarSide(const float radius, const vkexp::worlds::kernel::vec2 target,
-                               const std::uint32_t boxCount, BoxAt&& boxAt) {
+                               const std::uint32_t boxCount, BoxAt&& boxAt,
+                               const float sideSign = 1.0F) {
     namespace kernel = vkexp::worlds::kernel;
     vkexp::SimulationStep settings;
     settings.worldRadius = radius;
@@ -1170,8 +1175,10 @@ float visibleFractionOfFarSide(const float radius, const vkexp::worlds::kernel::
         for (int iy = 0; iy < samples; ++iy) {
             const float x = -radius + 2.0F * radius * (static_cast<float>(ix) + 0.5F) /
                                           static_cast<float>(samples);
-            // The far side is the half the target is not on.
-            const float y = radius * (static_cast<float>(iy) + 0.5F) / static_cast<float>(samples);
+            // The far side is the half the target is not on. `sideSign` flips
+            // which half that is, for a world whose target sits on the other one.
+            const float y = sideSign * radius * (static_cast<float>(iy) + 0.5F) /
+                            static_cast<float>(samples);
             if (std::hypot(x, y) > radius) {
                 continue;
             }
@@ -1995,6 +2002,113 @@ void testPuckPushCredit() {
     check(pushed > parked * 2.0F, "Pushing the puck home outearns a whole trial of leaning on it");
 }
 
+// The gate world. What has to hold is not that it is solvable -- that is what a
+// run answers -- but that the two legs it is made of are real: that the plate is
+// somewhere other than the doorway, that a shut gate actually hides what is
+// behind it, and that the latch does what its one number says.
+void testGateWorld() {
+    namespace kernel = vkexp::worlds::kernel;
+    const vkexp::ScenarioDefinition& scenario =
+        vkexp::scenarioDefinition(vkexp::BeaconScenario::GatePlate);
+    vkexp::SimulationStep settings;
+    settings.beaconScenario = vkexp::BeaconScenario::GatePlate;
+    const float radius = settings.worldRadius;
+    const kernel::vec2 plate = kernel::gatePlatePosition(radius);
+    const kernel::vec2 resource = kernel::gateResourcePosition(radius);
+
+    // The two things to do are in different places. If the plate sat in the
+    // doorway the task would collapse into one leg -- walk through, pressing on
+    // the way -- and nothing about it would need holding in mind.
+    check(plate.y < -kernel::GateWallHalfThickness && resource.y > kernel::GateWallHalfThickness,
+          "The plate is in front of the wall and the resource behind it");
+    const float plateToOpening =
+        std::hypot(plate.x - kernel::GateOpeningOffset * radius, plate.y);
+    check(plateToOpening > kernel::gatePlateRadius(radius) + kernel::GateOpeningHalfWidth * radius,
+          "Standing on the plate is not standing in the doorway");
+    check(kernel::gateOnPlate({plate.x, plate.y}, radius),
+          "The plate's own centre is on the plate");
+    check(!kernel::gateOnPlate({plate.x + kernel::gatePlateRadius(radius) * 1.05F, plate.y}, radius),
+          "And just outside its rim is not");
+
+    // A shut gate has to hide the resource, and an open one has to show it. That
+    // is the whole of what this world tells an agent it has done: press, and the
+    // far light appears. Measured the way the two-door and two-gap walls were --
+    // swept over the side the agents stand on rather than probed at a point --
+    // and asserted in both directions, because a wall that hides nothing and a
+    // wall with no way through are both wrong, and the same test has to fail for
+    // both.
+    const auto visibleWith = [&](const bool open) {
+        return visibleFractionOfFarSide(
+            radius, resource, kernel::GatePlateBoxCount,
+            [&](const kernel::uint index) {
+                return std::pair{kernel::gateBoxCentre(index, radius, open),
+                                 kernel::gateBoxHalfExtent(index, radius)};
+            },
+            -1.0F);
+    };
+    check(visibleWith(false) < 0.01F,
+          "A shut gate leaves the resource invisible from the side the agents start on");
+    check(visibleWith(true) > minimumTargetVisibility,
+          "An open one shows it from as much of that side as a gap that was learned");
+
+    // The latch, which is the difficulty of this world in one number. Pressed
+    // reloads it; released runs it down; and at zero it is open exactly while
+    // pressed -- one step and no more, which is the setting that needs a second
+    // agent.
+    const float dt = settings.deltaTime;
+    check(kernel::gateIsOpen(kernel::gateRemaining(0.0F, true, 4.0F, dt)),
+          "Pressing the plate opens the gate");
+    check(closeTo(kernel::gateRemaining(0.0F, true, 4.0F, dt), 4.0F),
+          "And reloads the latch to its full length");
+    check(closeTo(kernel::gateRemaining(4.0F, false, 4.0F, dt), 4.0F - dt),
+          "Letting go runs the latch down by one step");
+    check(!kernel::gateIsOpen(kernel::gateRemaining(dt * 0.5F, false, 4.0F, dt)),
+          "And it stops at zero rather than going negative");
+    check(kernel::gateIsOpen(kernel::gateRemaining(0.0F, true, 0.0F, dt)),
+          "At a latch of zero the gate is still open during the step it is pressed");
+    check(!kernel::gateIsOpen(kernel::gateRemaining(dt, false, 0.0F, dt)),
+          "And shut the step after it is released, so somebody has to stay");
+
+    // The gate leaf is geometry, and when it is open it must stop nothing. Parked
+    // outside the arena rather than resized, because the extent is asked for
+    // without an agent to ask about.
+    const kernel::vec2 shutLeaf = kernel::gateBoxCentre(2U, radius, false);
+    const kernel::vec2 openLeaf = kernel::gateBoxCentre(2U, radius, true);
+    check(std::hypot(shutLeaf.x, shutLeaf.y) < radius,
+          "A shut gate leaf stands in the arena, in the opening");
+    check(std::hypot(openLeaf.x, openLeaf.y) > radius * 4.0F,
+          "An open one is parked far enough out to stop nothing and block no light");
+    check(scenario.obstacleCount == kernel::GatePlateBoxCount && scenario.obstacle != nullptr,
+          "The gate world reports its three boxes and hands them out");
+
+    // Which leg is being shaped. Shut, the plate; open, the resource. This is
+    // read through the same internal.y convention the delivery worlds use, so a
+    // scenario that set it the other way round would be shaped toward the wrong
+    // beacon while every other assertion here still passed.
+    vkexp::AgentState agent{};
+    agent.pose = {plate.x, plate.y - 0.4F, 0.0F, vkexp::agentBodyRadius};
+    scenario.spawn(agent, settings);
+    check(!vkexp::worlds::gate_plate::gateOpen(agent), "A trial opens with the gate shut");
+    check(agent.pose.y < 0.0F, "And with every agent on the near side of the wall");
+    agent.pose = {plate.x, plate.y, 0.0F, vkexp::agentBodyRadius};
+    agent.internal.y = 1.0F;
+    check(closeTo(scenario.targetDistance(agent, settings), 0.0F),
+          "With the gate shut the shaping measures the way to the plate");
+    agent.target.x = 2.0F;
+    agent.internal.y = 0.0F;
+    check(closeTo(scenario.targetDistance(agent, settings),
+                  std::hypot(resource.x - agent.pose.x, resource.y - agent.pose.y)),
+          "With it open the shaping measures the way to the resource");
+
+    // Scored once. An agent that arrives and stays has not arrived twice, and
+    // the reported ratio is the share of a world that got through.
+    check(scenario.objectivesPerAgent == 1, "Getting through is the world's one objective");
+    vkexp::AgentState arrived{};
+    arrived.target.w = 4.0F;
+    check(scenario.achievedObjectives(arrived) == 1,
+          "A latch that was written more than once still counts one crossing");
+}
+
 void testExperimentSweep() {
     vkexp::SweepState sweep;
     sweep.values = {0.0F, 0.5F, 1.0F};
@@ -2094,6 +2208,7 @@ int main() {
     testBeaconColorAblation();
     testPuckWorld();
     testPuckPushCredit();
+    testGateWorld();
     testDeliveryCannotBeScoredTwice();
     testScenarioRegistryContract();
     testFitnessWeightsAreParameters();

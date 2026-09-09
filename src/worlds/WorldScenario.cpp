@@ -8,6 +8,7 @@
 #include "vkexp/worlds/scenarios/ShuttleScenario.hpp"
 #include "vkexp/worlds/scenarios/StationaryScenario.hpp"
 #include "vkexp/worlds/scenarios/TwoDoorsScenario.hpp"
+#include "vkexp/worlds/scenarios/GatePlateScenario.hpp"
 #include "vkexp/worlds/scenarios/PuckPushScenario.hpp"
 #include "vkexp/worlds/scenarios/TwoGapsScenario.hpp"
 
@@ -31,7 +32,8 @@ const std::array<const ScenarioDefinition*, beaconScenarioCount>& registry() {
             &worlds::rotating::definition(), &worlds::random_movement::definition(),
             &worlds::forage_home::definition(), &worlds::scent_relay::definition(),
             &worlds::two_doors::definition(), &worlds::shuttle::definition(),
-            &worlds::two_gaps::definition(), &worlds::puck_push::definition()};
+            &worlds::two_gaps::definition(), &worlds::puck_push::definition(),
+            &worlds::gate_plate::definition()};
         // A registry out of order would silently run the wrong world rules, so
         // the mismatch has to be fatal rather than merely wrong.
         for (std::size_t index = 0; index < entries.size(); ++index) {
