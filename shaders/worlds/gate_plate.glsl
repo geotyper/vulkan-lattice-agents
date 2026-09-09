@@ -22,12 +22,12 @@ vec3 gatePlateScenarioColor(uint beaconIndex) {
     return beaconIndex == 0u ? vec3(0.35, 1.00, 0.55) : vec3(0.95, 0.55, 0.15);
 }
 
-// Tinted by which leg the agent is on, so a population that has learned the
-// order is visible as two colours moving in two directions rather than as a
-// number.
+// Tinted by whether the agent is carrying, so a population that has learned the
+// cycle is visible as two colours moving in two directions rather than as a
+// number: green agents are on their way home and have somewhere to be.
 vec3 gatePlateScenarioBodyTint(Agent agent, vec3 bodyColor) {
-    if (agent.internal.y >= 0.5) {
+    if (agent.internal.x < 0.5) {
         return bodyColor;
     }
-    return mix(bodyColor, vec3(0.35, 1.00, 0.55), 0.45);
+    return mix(bodyColor, vec3(0.35, 1.00, 0.55), 0.55);
 }

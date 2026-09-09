@@ -2124,6 +2124,9 @@ void testPuckPushCredit() {
 // behind it, and that the latch does what its one number says.
 void testGateWorld() {
     namespace kernel = vkexp::worlds::kernel;
+    const auto completedTrips = [](const vkexp::AgentState& agent) {
+        return static_cast<std::uint32_t>(std::max(agent.target.w, 0.0F));
+    };
     const vkexp::ScenarioDefinition& scenario =
         vkexp::scenarioDefinition(vkexp::BeaconScenario::GatePlate);
     vkexp::SimulationStep settings;
@@ -2224,13 +2227,83 @@ void testGateWorld() {
                   std::hypot(resource.x - agent.pose.x, resource.y - agent.pose.y)),
           "With it open the shaping measures the way to the resource");
 
-    // Scored once. An agent that arrives and stays has not arrived twice, and
-    // the reported ratio is the share of a world that got through.
-    check(scenario.objectivesPerAgent == 1, "Getting through is the world's one objective");
-    vkexp::AgentState arrived{};
-    arrived.target.w = 4.0F;
-    check(scenario.achievedObjectives(arrived) == 1,
-          "A latch that was written more than once still counts one crossing");
+    // The cycle. Crossing is half a task -- an agent that is through is done, and
+    // the door being held is worth something exactly once. Coming back makes the
+    // gate a thing that has to be open twice, so whoever is holding it matters
+    // for as long as anybody is still out.
+    check(scenario.objectivesPerAgent > 1, "The world asks for round trips, not one crossing");
+    vkexp::AgentState busy{};
+    busy.target.w = static_cast<float>(scenario.objectivesPerAgent) + 2.0F;
+    check(scenario.achievedObjectives(busy) == scenario.objectivesPerAgent,
+          "The reported ratio is capped at what the trial has room for");
+    check(scenario.fitness(busy, settings.fitness) >
+              scenario.fitness([&] {
+                  vkexp::AgentState slower{};
+                  slower.target.w = static_cast<float>(scenario.objectivesPerAgent);
+                  return slower;
+              }(),
+                               settings.fitness),
+          "But the score is not, so extra trips still pay");
+
+    // What the trial has to be long enough for. A leg is the straight line from
+    // the plate to the resource; at the speed limit a round trip is about 840
+    // steps, so two of them want roughly 1800 -- twice the default. Asserted
+    // rather than noted, because the geometry is what would quietly break it: a
+    // plate moved further from the door makes the nominal unreachable and the
+    // reported ratio would flatten near half without anything looking wrong.
+    const float legSeconds =
+        std::hypot(resource.x - plate.x, resource.y - plate.y) / settings.maximumSpeed;
+    const float nominalSeconds =
+        static_cast<float>(scenario.objectivesPerAgent) * 2.0F * legSeconds * 1.8F;
+    check(nominalSeconds <= vkexp::units::secondsForSteps(1800U, vkexp::units::fixedTimeStep),
+          "The nominal number of round trips fits in the 1800 steps this world wants");
+    check(nominalSeconds > vkexp::units::secondsForSteps(900U, vkexp::units::fixedTimeStep),
+          "And does not fit in the default 900, which is why the world says so out loud");
+
+    // Walking the cycle by hand, because the order is the whole task and every
+    // step of it is a place the flags can be crossed. The distance handed to the
+    // hook is the distance to whatever the agent was heading for, which is what
+    // the step computes, so the walk has to recompute it the same way.
+    vkexp::AgentState walker{};
+    walker.pose = {plate.x, plate.y, 0.0F, vkexp::agentBodyRadius};
+    scenario.spawn(walker, settings);
+    walker.pose.x = plate.x;
+    walker.pose.y = plate.y;
+    const auto step = [&](const float x, const float y, const float latch) {
+        walker.pose.x = x;
+        walker.pose.y = y;
+        walker.target.x = latch;
+        scenario.afterStep(walker, settings, scenario.targetDistance(walker, settings));
+    };
+    // Standing on the plate opens the gate but closes no trip.
+    step(plate.x, plate.y, 2.0F);
+    check(completedTrips(walker) == 0 && walker.internal.x < 0.5F,
+          "Standing on the plate is not an arrival and starts no cargo");
+    check(walker.internal.y < 0.5F, "With the gate running the target becomes the resource");
+    // Out to the resource: that is the pickup.
+    step(resource.x, resource.y, 2.0F);
+    check(walker.internal.x >= 0.5F, "Reaching the resource picks it up");
+    check(walker.internal.y >= 0.5F, "And turns the agent back toward the plate");
+    check(completedTrips(walker) == 0, "Which is not yet a round trip");
+    // Sitting on the resource does not collect it twice.
+    step(resource.x, resource.y, 2.0F);
+    check(completedTrips(walker) == 0 && walker.internal.x >= 0.5F,
+          "Lingering on the resource collects it once");
+    // And home again.
+    step(plate.x, plate.y, 2.0F);
+    check(completedTrips(walker) == 1 && walker.internal.x < 0.5F,
+          "Coming back to the plate closes the round trip and empties the agent");
+
+    // The gate shutting mid-cycle sends an outbound agent back to the plate and
+    // leaves a carrying one where it was going, because a carrying agent was
+    // already heading there.
+    vkexp::AgentState outbound{};
+    outbound.pose = {0.0F, plate.y, 0.0F, vkexp::agentBodyRadius};
+    outbound.internal.y = 0.0F;
+    outbound.target.x = 0.0F; // the gate has just shut
+    scenario.afterStep(outbound, settings, scenario.targetDistance(outbound, settings));
+    check(outbound.internal.y >= 0.5F,
+          "A shut gate sends an agent that is not carrying back to the plate");
 }
 
 void testExperimentSweep() {

@@ -85,7 +85,7 @@ only work from one spawn position or heading.
 | Beacon scenario | Two doors | The same cycle across a wall with two gaps, one of which is a dead end. Which one swaps every trial -- or every generation, as an option -- and from the home side they are identical. Retuned after it went unsolved for 450 generations; see Two gaps for the measurement. |
 | Beacon scenario | Shuttle | Fetch and carry back, over and over until the trial ends, around a short wall that closes the straight line between the two beacons. |
 | Beacon scenario | Puck push | A round puck shared by every agent in a logical world, starting on one side of the centre line. Push it toward the lit disc in the middle; the objective is a ladder of quarters along that journey. |
-| Beacon scenario | Gate and plate | A wall with one opening, shut by a gate that runs only while somebody stands on the plate in front of it. Press, then cross. How long the gate keeps running after the plate is let go is a slider, and at zero it cannot be done alone. |
+| Beacon scenario | Gate and plate | A wall with one opening, shut by a gate that runs only while somebody stands on the plate in front of it. Press, cross, bring it back -- the gate has to be open both ways. How long it keeps running after the plate is let go is a slider, and at zero it cannot be done alone. |
 | Beacon scenario | Two gaps | The same repeated cycle across a wall with two ways through, neither a dead end, with an option to make the two ends trade places every other generation. |
 
 Changing the world size, shape, or beacon scenario resets the evolution because
@@ -553,13 +553,31 @@ that had lost ground it had not lost.
    +-----------------------------+
 ```
 
-Two things to do, in a fixed order, in two different places. The plate opens the
-gate; the resource is behind the gate; standing on the plate scores nothing.
+Three legs in a fixed order across two places. Press the plate, cross to the
+resource, bring it back to the plate. Standing on the plate scores nothing.
 Nothing about "press, then go" can be read off the current sensor values, so a
 network that maps light to motors cannot do it -- "I have already opened it" has
 to be held. That is the same claim the two-door world makes, except that here it
 is held for seconds rather than latched once, and here somebody else can hold it
 for you.
+
+**Why it is a round trip and not a crossing.** Getting through was the first
+version, and it is half a task: an agent that is through is done, the plate
+behind it stops mattering to it, and the door being held is worth something
+exactly once. Coming back makes the gate a thing that has to be open *twice*, so
+whoever is holding it is worth something for as long as anybody is still out.
+
+The plate is also home, which is what closes the cycle without a fourth
+landmark: pressing it on the way back is the same act as pressing it on the way
+out, and re-opens the gate for the next trip. Both reasons to head for the plate
+-- "I have to open it" and "I am coming home" -- point at the same place, so the
+world needs only its two beacons.
+
+**This world wants about 1800 steps per generation**, twice the default. A leg is
+2.1 m and a round trip about 840 steps at the speed limit, so the nominal two
+trips do not fit in 900 -- the reported ratio would flatten near half with
+nothing looking wrong. The unit test asserts both directions of that, because the
+geometry is what would quietly break it.
 
 **The latch is the difficulty, and it is one number.** `--gate-latch` (and the
 `Gate latch (s)` slider) says how long the gate keeps running after the plate is
@@ -581,10 +599,13 @@ selection does with that is the question. At a positive latch it can learn to
 press deliberately and go; at zero it has to keep somebody there, and the agent
 that stays cannot be paid for it out of its own score.
 
-**The reported number is the share of a world that got through.** One objective
-per agent, latched -- an agent that arrives and lingers has not arrived twice.
-At a latch of zero a world that solves the task perfectly reports every agent
-but one, and that missing fraction is the cost of the door being held.
+**The reported number is round trips against the two a trial has room for.**
+Uncapped in the score and capped in the report, the way every repeating world
+here does it, so a quicker agent still gains from the extra trips. Lingering on
+either end counts once: pressing the plate is positional and happens by standing
+there, so only a carrying agent closes a trip. At a latch of zero the agent
+holding the door completes none of its own, and that missing share is the cost of
+the door being held.
 
 **Where it is unlike the puck.** The gate is not a body agents move; it is a
 fact about the room, computed fresh every step from where everybody is standing.

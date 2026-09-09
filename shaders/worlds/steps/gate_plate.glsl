@@ -43,27 +43,41 @@ void gatePlateScenarioBeforeStep(inout Agent agent) {
                                    params.scenario.floats0.x, params.deltaTime);
 }
 
-// And the after-step hook, which is where the two legs are. The leg is a fact
-// about the room rather than about the agent: while the gate is shut the thing
-// to do is press the plate, and while it runs the thing to do is go through --
-// including for an agent whose neighbour opened it.
+// And the after-step hook, which is where the legs are. Two things decide which
+// one the agent is on, and they are different kinds of thing: whether it is
+// carrying, which is private to it, and whether the gate is running, which is a
+// fact about the room. Both reasons to head for the plate -- "I have to open it"
+// and "I am coming home" -- point at the same place.
 void gatePlateScenarioAfterStep(inout Agent agent, float distance) {
     const bool open = gatePlateScenarioOpen(agent);
-    const bool wasOpen = agent.internal.y < 0.5;
-    if (open != wasOpen) {
-        // Bank what the finished leg earned and rebank against the new target,
-        // exactly as the delivery cycle does at a pickup. Without it a gate
-        // opening would read as a metre and a half of free progress.
-        agent.metrics.w += max(agent.metrics.x - agent.metrics.y, 0.0) *
-                           (wasOpen ? 1.0 : GatePlateProgressReward);
-        agent.internal.y = open ? 0.0 : 1.0;
-        const float rebanked = nearestBeaconDistance(agent, agent.pose.xy);
-        agent.metrics.x = rebanked;
-        agent.metrics.y = rebanked;
+    const bool wasSeekingPlate = agent.internal.y >= 0.5;
+    const bool wasCarrying = agent.internal.x >= 0.5;
+
+    // Measured against whatever the agent was actually heading for. Reaching the
+    // plate while pressing it is not an arrival: pressing is positional, so only
+    // a carrying agent closes a trip.
+    if (distance < params.arrivalRadius) {
+        if (!wasSeekingPlate && !wasCarrying) {
+            agent.internal.x = 1.0;
+        } else if (wasSeekingPlate && wasCarrying) {
+            agent.internal.x = 0.0;
+            agent.target.w = floor(max(agent.target.w, 0.0) + 0.5) + 1.0;
+        }
+    }
+
+    const bool seekPlate = agent.internal.x >= 0.5 || !open;
+    if (seekPlate == wasSeekingPlate) {
         return;
     }
-    if (!open || distance >= params.arrivalRadius) {
-        return;
-    }
-    agent.target.w = 1.0;
+    // Bank what the finished leg earned and rebank against the new target,
+    // exactly as the delivery cycle does at a pickup. Without it a gate opening
+    // reads as a metre and a half of free progress. The leg that ended is
+    // weighted by what it was: walking to the plate to press it is the leg with
+    // no other signal, because the resource is invisible behind a shut gate.
+    const float weight = (wasCarrying || !wasSeekingPlate) ? 1.0 : GatePlateProgressReward;
+    agent.metrics.w += max(agent.metrics.x - agent.metrics.y, 0.0) * weight;
+    agent.internal.y = seekPlate ? 1.0 : 0.0;
+    const float rebanked = nearestBeaconDistance(agent, agent.pose.xy);
+    agent.metrics.x = rebanked;
+    agent.metrics.y = rebanked;
 }

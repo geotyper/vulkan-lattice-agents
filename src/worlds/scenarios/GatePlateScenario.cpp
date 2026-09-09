@@ -23,51 +23,81 @@ namespace kernel = worlds::kernel;
 constexpr Float4 plateColor{0.95F, 0.55F, 0.15F, 0.0F};
 constexpr Float4 resourceColor{0.35F, 1.00F, 0.55F, 0.0F};
 
-// One objective: get to the far side. Read against the whole world this is the
-// share of a world's agents that made it through, which is the number worth
-// watching -- with the latch at zero someone has to stay on the plate, so a
-// world that solves the task perfectly reports every agent but one.
-constexpr std::uint32_t objectivesPerAgent = 1;
+// A round trip, not a crossing. Getting through the gate was the first version
+// of this world and it is only half a task: an agent that is through is done,
+// the plate behind it stops mattering to it, and the door being held is worth
+// something exactly once. Coming back makes the gate a thing that has to be open
+// twice, so whoever is holding it is worth something for as long as anybody is
+// still out.
+//
+// The plate is also home, which is what makes the cycle close on itself rather
+// than needing a fourth landmark: pressing it on the way back is the same act as
+// pressing it on the way out, and re-opens the gate for the next trip.
+constexpr std::uint32_t nominalRoundTrips = 2;
+
+std::uint32_t completedRoundTrips(const AgentState& agent) {
+    return static_cast<std::uint32_t>(std::max(agent.target.w, 0.0F));
+}
 
 std::uint32_t achievedObjectives(const AgentState& agent) {
-    return std::min(static_cast<std::uint32_t>(std::max(agent.target.w, 0.0F)),
-                    objectivesPerAgent);
+    return std::min(completedRoundTrips(agent), nominalRoundTrips);
 }
 
+// Uncapped in the score and capped in the report, the way every repeating world
+// here does it: a quicker agent still gains from the extra trips, and the
+// published ratio stays a fraction of what the trial has room for.
 float fitness(const AgentState& agent, const FitnessWeights& weights) {
-    return objectiveFitness(agent, achievedObjectives(agent), weights);
+    return objectiveFitness(agent, completedRoundTrips(agent), weights);
 }
 
-// Which leg the agent is on, and it is the world that says so rather than the
-// agent: while the gate is shut the thing to do is press the plate, and while it
-// runs the thing to do is go through. An agent whose neighbour opened the gate
-// is on the second leg too, which is correct -- the door being open is a fact
-// about the room, not a private state.
+// Which leg the agent is on. Two things decide it, and they are different kinds
+// of thing: whether the agent is carrying the resource, which is private to it,
+// and whether the gate is running, which is a fact about the room. An agent whose
+// neighbour opened the gate is on the outbound leg too.
+//
+// Both reasons to head for the plate -- "I have to open it" and "I am coming
+// home" -- point at the same place, which is why the cycle needs only the two
+// beacons it has.
 void afterStep(AgentState& agent, const SimulationStep& settings, const float distance) {
     const bool open = gateOpen(agent);
     // internal.y is "the target is the second beacon", the same meaning the
     // delivery worlds give it, so the shared target-distance dispatcher needs no
-    // case of its own: shut gate, second beacon, which here is the plate.
-    const bool wasOpen = agent.internal.y < 0.5F;
-    if (open != wasOpen) {
-        // The leg changed under the agent, so the distance progress is banked
-        // against has to change with it, exactly as the delivery cycle rebanks
-        // at a pickup. Without this a gate opening would read as a jump of a
-        // metre and a half of free progress.
-        agent.metrics.w += std::max(agent.metrics.x - agent.metrics.y, 0.0F) *
-                           (wasOpen ? 1.0F : kernel::GatePlateProgressReward);
-        agent.internal.y = open ? 0.0F : 1.0F;
-        const float rebanked = targetDistance(agent, settings);
-        agent.metrics.x = rebanked;
-        agent.metrics.y = rebanked;
+    // case of its own: the second beacon here is the plate. internal.x is the
+    // carrying flag, the slot the delivery worlds use for cargo.
+    const bool wasSeekingPlate = agent.internal.y >= 0.5F;
+    const bool wasCarrying = agent.internal.x >= 0.5F;
+
+    // Arrivals, measured against whatever the agent was actually heading for.
+    // Reaching the plate while pressing it is not an arrival: pressing is
+    // positional and happens by standing there, so only a carrying agent closes
+    // a trip.
+    if (distance < beaconArrivalRadius(settings)) {
+        if (!wasSeekingPlate && !wasCarrying) {
+            agent.internal.x = 1.0F;
+        } else if (wasSeekingPlate && wasCarrying) {
+            agent.internal.x = 0.0F;
+            agent.target.w = std::floor(std::max(agent.target.w, 0.0F) + 0.5F) + 1.0F;
+        }
+    }
+
+    const bool seekPlate = agent.internal.x >= 0.5F || !open;
+    if (seekPlate == wasSeekingPlate) {
         return;
     }
-    if (!open || distance >= beaconArrivalRadius(settings)) {
-        return;
-    }
-    // Through, and scored once. Latched in target.w rather than counted, because
-    // an agent that arrives and lingers has not arrived twice.
-    agent.target.w = 1.0F;
+    // The leg changed, so the distance progress is banked against has to change
+    // with it, exactly as the delivery cycle rebanks at a pickup. Without this a
+    // gate opening reads as a metre and a half of free progress.
+    //
+    // The leg that ended is weighted by what it was. Walking to the plate to
+    // press it is the leg with no other signal -- the resource is behind a shut
+    // gate and invisible -- so it is worth more than a leg walked toward
+    // something the agent can see.
+    const float weight = wasCarrying || !wasSeekingPlate ? 1.0F : kernel::GatePlateProgressReward;
+    agent.metrics.w += std::max(agent.metrics.x - agent.metrics.y, 0.0F) * weight;
+    agent.internal.y = seekPlate ? 1.0F : 0.0F;
+    const float rebanked = targetDistance(agent, settings);
+    agent.metrics.x = rebanked;
+    agent.metrics.y = rebanked;
 }
 
 // Two: the plate in front of the wall and the resource behind it. The gate leaf
@@ -95,6 +125,7 @@ ObstacleBox obstacle(const std::uint32_t index, const AgentState& agent,
 void spawn(AgentState& agent, const SimulationStep& settings) {
     agent.pose.x *= 0.75F;
     agent.pose.y = -std::abs(agent.pose.y) * 0.45F - settings.worldRadius * 0.45F;
+    agent.internal.x = 0.0F; // carrying nothing
     agent.internal.y = 1.0F; // the plate first, because the gate starts shut
     agent.target.x = 0.0F;
 }
@@ -129,16 +160,17 @@ const ScenarioDefinition& definition() {
                      .swapDeliveryEnds = false,
                      .blockedDoorPerGeneration = false,
                      .gateLatch = true},
-        .objectiveLabel = "Through the gate",
+        .objectiveLabel = "Round trips",
         .radiusLabel = "Orbit radius",
-        .description = "A gate that opens only while an agent stands on the plate in front of it",
+        .description = "Press the plate, cross the gate, bring it back -- and the gate has to be "
+                       "open both ways",
         .beacons = beacons,
         .beaconCount = 2,
         .targetDistance = targetDistance,
         .phaseForStep = nullptr,
         .fitness = fitness,
         .achievedObjectives = achievedObjectives,
-        .objectivesPerAgent = objectivesPerAgent,
+        .objectivesPerAgent = nominalRoundTrips,
         .beforeStep = nullptr,
         .afterStep = afterStep,
         .obstacleCount = kernel::GatePlateBoxCount,
@@ -153,12 +185,18 @@ ActiveBeacons beacons(const AgentState&, const SimulationStep& settings) {
     return activeBeacons(settings);
 }
 
-// The plate while the gate is shut, the resource while it runs. This is the
-// whole of what the world tells an agent about the order of the two legs: it
-// shapes the leg that is currently the task and says nothing about how to do it.
+// The leg the agent is currently on: the plate while the gate is shut or while it
+// is carrying, the resource otherwise. This is the whole of what the world tells
+// an agent about the order of the legs -- it shapes the one that is the task now
+// and says nothing about how to do it.
 float targetDistance(const AgentState& agent, const SimulationStep& settings) {
     const ActiveBeacons active = beacons(agent, settings);
-    const std::size_t targetIndex = gateOpen(agent) ? 0 : 1;
+    // internal.y and not the expression that derives it. The shared GLSL
+    // dispatcher reads this slot, so deriving the leg here instead would give the
+    // two sides different answers for the part of a step between the gate
+    // changing and the hook noticing -- which is exactly the step whose distance
+    // decides whether an arrival counts.
+    const std::size_t targetIndex = agent.internal.y >= 0.5F ? 1 : 0;
     const float dx = active.values[targetIndex].position.x - agent.pose.x;
     const float dy = active.values[targetIndex].position.y - agent.pose.y;
     return std::sqrt(dx * dx + dy * dy);
