@@ -2,6 +2,7 @@
 
 #include "vkexp/compute/ComputeResources.hpp"
 #include "vkexp/evolution/GeneticAlgorithm.hpp"
+#include "vkexp/evolution/GenomeArchive.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
 #include "vkexp/simulation/WorldSnapshot.hpp"
 
@@ -96,6 +97,7 @@ private:
     void updateTrailDimensions();
     [[nodiscard]] GpuStepParameters stepParameters(std::uint32_t generationStep) const;
     [[nodiscard]] std::vector<AgentState> makeInitialAgents() const;
+    [[nodiscard]] std::vector<PuckState> makeInitialPucks() const;
 
     SimulationState& state_;
     GeneticAlgorithm evolution_;
@@ -110,23 +112,28 @@ private:
     BufferResource gridHeads_;
     BufferResource gridNext_;
     BufferResource trailField_;
+    BufferResource puckField_;
     UniqueDescriptorSetLayout stepDescriptorSetLayout_;
     UniqueDescriptorSetLayout gridClearDescriptorSetLayout_;
     UniqueDescriptorSetLayout gridBuildDescriptorSetLayout_;
     UniqueDescriptorSetLayout trailDecayDescriptorSetLayout_;
     UniqueDescriptorSetLayout trailDepositDescriptorSetLayout_;
+    UniqueDescriptorSetLayout puckStepDescriptorSetLayout_;
     DescriptorAllocator descriptorAllocator_;
     std::array<VkDescriptorSet, 2> stepDescriptorSets_{};
     VkDescriptorSet gridClearDescriptorSet_{};
     std::array<VkDescriptorSet, 2> gridBuildDescriptorSets_{};
     VkDescriptorSet trailDecayDescriptorSet_{};
     std::array<VkDescriptorSet, 2> trailDepositDescriptorSets_{};
+    std::array<VkDescriptorSet, 2> puckStepDescriptorSets_{};
     ComputePipeline stepPipeline_;
     ComputePipeline gridClearPipeline_;
     ComputePipeline gridBuildPipeline_;
     ComputePipeline trailDecayPipeline_;
     ComputePipeline trailDepositPipeline_;
+    ComputePipeline puckStepPipeline_;
     std::vector<AgentState> agents_;
+    std::vector<PuckState> pucks_;
     std::vector<GpuStepParameters> stepParameterStaging_;
     std::uint32_t gridWidth_{};
     std::uint32_t gridCellsPerWorld_{};
@@ -136,5 +143,14 @@ private:
     bool hostUploadPending_{};
     bool trailClearPending_{true};
 };
+
+// Provenance for a genome archive, built from the run that produced it. Here
+// rather than in GenomeArchive.hpp because it reads a driver and a state, and
+// the evolution layer knows about neither; here rather than in each caller
+// because the interactive save and the headless one have to stamp their files
+// the same way, or two archives cannot be told apart after the fact.
+[[nodiscard]] GenomeArchiveMetadata genomeArchiveMetadata(const SimulationState& state,
+                                                          const SimulationDriver& driver,
+                                                          const neuro::BrainShape& brain);
 
 } // namespace vkexp

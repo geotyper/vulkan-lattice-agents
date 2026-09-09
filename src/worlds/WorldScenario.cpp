@@ -8,6 +8,7 @@
 #include "vkexp/worlds/scenarios/ShuttleScenario.hpp"
 #include "vkexp/worlds/scenarios/StationaryScenario.hpp"
 #include "vkexp/worlds/scenarios/TwoDoorsScenario.hpp"
+#include "vkexp/worlds/scenarios/PuckPushScenario.hpp"
 #include "vkexp/worlds/scenarios/TwoGapsScenario.hpp"
 
 #include <algorithm>
@@ -30,7 +31,7 @@ const std::array<const ScenarioDefinition*, beaconScenarioCount>& registry() {
             &worlds::rotating::definition(), &worlds::random_movement::definition(),
             &worlds::forage_home::definition(), &worlds::scent_relay::definition(),
             &worlds::two_doors::definition(), &worlds::shuttle::definition(),
-            &worlds::two_gaps::definition()};
+            &worlds::two_gaps::definition(), &worlds::puck_push::definition()};
         // A registry out of order would silently run the wrong world rules, so
         // the mismatch has to be fatal rather than merely wrong.
         for (std::size_t index = 0; index < entries.size(); ++index) {
@@ -41,10 +42,16 @@ const std::array<const ScenarioDefinition*, beaconScenarioCount>& registry() {
             if (entries[index]->key == nullptr || entries[index]->beacons == nullptr ||
                 entries[index]->fitness == nullptr ||
                 entries[index]->achievedObjectives == nullptr ||
-                entries[index]->afterStep == nullptr || entries[index]->gpuParameters == nullptr ||
+                entries[index]->gpuParameters == nullptr ||
                 entries[index]->objectivesPerAgent == 0 || entries[index]->beaconCount == 0 ||
                 entries[index]->beaconCount > std::tuple_size_v<decltype(ActiveBeacons::values)> ||
-                (entries[index]->obstacleCount > 0) != (entries[index]->obstacle != nullptr)) {
+                (entries[index]->obstacleCount > 0) != (entries[index]->obstacle != nullptr) ||
+                // A world scores from something. Either it has a step hook that
+                // notices arrivals, or it has a puck, whose level is latched by
+                // the puck pass and mirrored onto every agent in the world.
+                // Requiring an afterStep of every scenario was right until one
+                // of them kept its score somewhere no per-agent hook could see.
+                (entries[index]->afterStep == nullptr && !entries[index]->puck)) {
                 throw std::logic_error(std::string{"Scenario '"} + entries[index]->name +
                                        "' does not implement the full scenario contract");
             }

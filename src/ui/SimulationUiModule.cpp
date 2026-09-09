@@ -224,6 +224,24 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                               "a solution reads the colour at all -- one that does not will score "
                               "the same with this on.");
     }
+    if (scenario.puck) {
+        if (ImGui::SliderFloat("Puck radius", &state_.physics.puckRadiusRatio, 0.02F, 0.20F,
+                               "%.3f of arena")) {
+            state_.controls.resetRequested = true;
+        }
+        ImGui::SetItemTooltip("How big the puck is. Bigger is easier twice over: a wider contact "
+                              "arc for several agents to push at once, and a larger thing to find "
+                              "in the first place. The first knob to reach for when nothing is "
+                              "being learned at all.");
+        if (ImGui::SliderFloat("Target radius", &state_.physics.puckTargetRadiusRatio, 0.05F, 0.60F,
+                               "%.2f of arena")) {
+            state_.controls.resetRequested = true;
+        }
+        ImGui::SetItemTooltip("The disc in the middle the puck has to end up in. Reaching the "
+                              "halfway line already counts for half; this is what the other half "
+                              "costs. Widen it to see whether the task is being solved at all, "
+                              "narrow it to ask for the puck to be placed rather than shoved.");
+    }
     if (scenario.tunables.blockedDoorPerGeneration) {
         if (ImGui::Checkbox("Dead end changes by generation",
                             &state_.physics.blockedDoorPerGeneration)) {
@@ -259,7 +277,8 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                            0.02F, "%.4f")) {
         state_.controls.resetRequested = true;
     }
-    if (scenario.tunables.beaconAngularSpeed || scenario.tunables.beaconRandomMotion) {
+    if (scenario.tunables.beaconAngularSpeed || scenario.tunables.beaconRandomMotion ||
+        scenario.puck) {
         if (ImGui::SliderFloat("Tracking reward", &state_.physics.fitness.trackingReward, 0.0F,
                                1.0F, "%.3f")) {
             state_.controls.resetRequested = true;
@@ -397,6 +416,15 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
         state_.controls.genomePath = genomePath.data();
     }
     ImGui::BeginDisabled(state_.controls.genomePath.empty());
+    if (ImGui::Button("Save champion")) {
+        state_.controls.saveGenomesRequested = true;
+    }
+    ImGui::SetItemTooltip("Writes the best genome of the last evaluated generation to a .vkng "
+                          "archive. This is the only way a run in this window produces a file "
+                          "the loader below can read: a world snapshot carries the champion too, "
+                          "but only as one of a whole population, and it can be resumed only into "
+                          "a run of the same size.");
+    ImGui::SameLine();
     if (ImGui::Button("Load genomes")) {
         state_.controls.loadGenomesRequested = true;
     }

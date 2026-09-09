@@ -89,6 +89,50 @@ inline void deliveryCycleAfterStep(AgentState& agent, const SimulationStep& sett
     agent.metrics.y = agent.metrics.x;
 }
 
+// Shaping for the puck world, and the reason it needs any. The objective is the
+// puck's distance to the middle, which is a fine gradient once the puck is being
+// pushed and no gradient at all before that: an untrained population barely
+// touches the puck -- one world in sixteen over a four-second trial, measured --
+// so every genome scores the same and there is nothing for selection to climb.
+//
+// This pays for being near the puck, per second, so finding it is worth
+// something before moving it is. It uses trackingReward, the weight that already
+// exists for exactly this job on moving beacons, rather than adding a second
+// knob that means the same thing.
+//
+// It pays a fraction of that weight and not all of it, because it is a search
+// reward and not the task: see PuckProximityShare for what the full rate bought.
+//
+// Mirrored by puckPushScenarioAfterStep in shaders/worlds/steps/puck_push.glsl.
+inline void rewardPuckProximity(AgentState& agent, const SimulationStep& settings) {
+    const float distance =
+        std::hypot(agent.penalties.y - agent.pose.x, agent.penalties.z - agent.pose.y);
+    const float reach =
+        puck::kernel::PuckApproachReach *
+        puck::kernel::puckRadius(settings.worldRadius, settings.puckRadiusRatio);
+    const float closeness = std::clamp(1.0F - distance / std::max(reach, 1.0e-4F), 0.0F, 1.0F);
+    agent.metrics.w += closeness * closeness * puck::kernel::PuckProximityShare *
+                       settings.deltaTime * settings.fitness.trackingReward;
+}
+
+// And what the agent did to the puck, which is the part of the score that is
+// its own. Every other term in this world is derived from the puck's position
+// and is therefore the same number for all twelve agents sharing it; this one
+// separates them, so selection can tell a pusher from a passenger.
+//
+// The puck's velocity rides on the agent in target.xy for the same reason its
+// position rides in penalties.yz: the hook sees one agent and the puck is world
+// state. Both are written by the agent step, before this runs.
+//
+// Mirrored by puckPushScenarioAfterStep in shaders/worlds/steps/puck_push.glsl.
+inline void rewardPuckWork(AgentState& agent, const SimulationStep& settings) {
+    const float contribution = puck::kernel::puckPushContribution(
+        {agent.pose.x, agent.pose.y}, {agent.motion.x, agent.motion.y}, agent.pose.w,
+        {agent.penalties.y, agent.penalties.z}, {agent.target.x, agent.target.y},
+        puck::kernel::puckRadius(settings.worldRadius, settings.puckRadiusRatio));
+    agent.metrics.w += contribution * settings.deltaTime * puck::kernel::PuckWorkReward;
+}
+
 // Continuous shaping for scenarios whose beacon keeps moving: without it a
 // tracking agent scores nothing between arrivals.
 inline void rewardVisibleTracking(AgentState& agent, const SimulationStep& settings,

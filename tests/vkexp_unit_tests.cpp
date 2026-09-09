@@ -8,6 +8,7 @@
 #include "vkexp/simulation/CpuSimulation.hpp"
 #include "vkexp/simulation/ExperimentSweep.hpp"
 #include "vkexp/simulation/Sensors.hpp"
+#include "vkexp/simulation/PuckKernel.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
 #include "vkexp/simulation/TrailKernel.hpp"
 #include "vkexp/simulation/Units.hpp"
@@ -1731,6 +1732,269 @@ void testDeliveryCannotBeScoredTwice() {
           "The resource is available again after a delivery");
 }
 
+void testPuckWorld() {
+    namespace puck = vkexp::puck::kernel;
+    const vkexp::ScenarioDefinition& scenario =
+        vkexp::scenarioDefinition(vkexp::BeaconScenario::PuckPush);
+    vkexp::SimulationStep settings;
+    settings.beaconScenario = vkexp::BeaconScenario::PuckPush;
+    const float radius = settings.worldRadius;
+    const float puckSize = puck::puckRadius(radius, settings.puckRadiusRatio);
+
+    // Which side the puck starts on alternates by trial, so one genome meets
+    // both and pushing always the same way cannot stand in for perceiving where
+    // the puck is.
+    check(puck::puckStartSide(0) == -puck::puckStartSide(1) &&
+              puck::puckStartSide(0) == puck::puckStartSide(2),
+          "The puck starts on alternating sides by trial");
+    for (const std::uint32_t trial : {0U, 1U, 2U, 3U}) {
+        const auto start = puck::puckStartPosition(radius, trial);
+        check(closeTo(start.x, 0.0F), "The puck starts on the arena's axis");
+        check(std::abs(start.y) < radius - puckSize,
+              "The puck starts inside the arena, clear of the rim");
+    }
+
+    const float target = puck::puckTargetRadius(radius, settings.puckTargetRadiusRatio);
+    check(target > puckSize * 2.0F, "The target disc is wider than the puck");
+    check(puckSize > vkexp::agentBodyRadius * 2.0F,
+          "The puck is wider than the agents pushing it, so a group can share its contact arc");
+
+    // The puck has to be perceivable, not merely present. It was not at first:
+    // the receptors see beacons and other agents' light and nothing else, so a
+    // puck that was neither could only be discovered by walking into it, and a
+    // fitness that paid for approaching it was paying for something no agent had
+    // a sense of. It is a beacon now, at the position every agent mirrors.
+    vkexp::AgentState lookout{};
+    lookout.penalties.y = 0.4F;
+    lookout.penalties.z = -0.3F;
+    const vkexp::ActiveBeacons lit = scenario.beacons(lookout, settings);
+    check(lit.count == 2, "The puck world lights both the middle and the puck");
+    bool puckIsLit = false;
+    for (std::size_t index = 0; index < lit.count; ++index) {
+        if (closeTo(lit.values[index].position.x, lookout.penalties.y) &&
+            closeTo(lit.values[index].position.y, lookout.penalties.z)) {
+            puckIsLit = true;
+        }
+    }
+    check(puckIsLit, "One of the lights is the puck, wherever the puck is");
+    check(target < radius * 0.5F, "The target disc is a target and not most of the arena");
+    check(puck::puckInsideTarget({0.0F, 0.0F}, target), "The middle is inside the target");
+    check(!puck::puckInsideTarget({target * 1.01F, 0.0F}, target),
+          "Just outside the target is outside it");
+    // The ladder. It replaced two named goals -- cross the middle line, then
+    // reach the disc -- which the geometry would not put in that order: the disc
+    // is centred on the line and the puck comes from outside, so it enters the
+    // disc after 58 per cent of the journey and reaches the line only at the end.
+    // The minimum was the harder of the two and never fired first, so a world
+    // scored nothing until it scored everything, and the reported curve could
+    // only move in whole worlds. These assertions are what the ladder replaced it
+    // with: rungs on one journey, ordered by construction.
+    const float startDistance =
+        std::hypot(puck::puckStartPosition(radius, 0).x, puck::puckStartPosition(radius, 0).y);
+    const auto rungAt = [&](const float distance) {
+        return puck::puckLevelForJourney(puck::puckJourneyFraction(distance, startDistance, target));
+    };
+    check(rungAt(startDistance) == puck::PuckLevelNone, "A puck that has not moved is on no rung");
+    check(rungAt(target) == puck::PuckLevelCount, "A puck inside the disc is on the top rung");
+    check(rungAt(target * 0.5F) == puck::PuckLevelCount,
+          "And it stays on the top rung deeper inside, rather than climbing past it");
+    check(rungAt(startDistance * 1.5F) == puck::PuckLevelNone,
+          "A puck shoved backwards reports no rung rather than a negative one");
+
+    // Strictly ordered and strictly reachable: every rung needs the puck closer
+    // than the one below it, and no rung is skipped on the way in. This is the
+    // property the two named goals did not have.
+    float previous = startDistance;
+    for (std::uint32_t rung = 1; rung <= puck::PuckLevelCount; ++rung) {
+        const float span = startDistance - target;
+        const float reached =
+            target + span * (1.0F - static_cast<float>(rung) / static_cast<float>(
+                                                              puck::PuckLevelCount));
+        check(reached < previous, "Each rung asks the puck to come further in than the last");
+        check(rungAt(reached) == rung, "Reaching a rung's distance reports exactly that rung");
+        check(rungAt(reached + span * 0.01F) == rung - 1,
+              "And a hair short of it reports the rung below");
+        previous = reached;
+    }
+
+    // The ladder follows the target slider rather than a number written beside
+    // it: widen the disc and the same puck is further along its journey.
+    const float wideTarget = puck::puckTargetRadius(radius, settings.puckTargetRadiusRatio * 1.5F);
+    check(puck::puckJourneyFraction(startDistance * 0.6F, startDistance, wideTarget) >
+              puck::puckJourneyFraction(startDistance * 0.6F, startDistance, target),
+          "A wider target disc makes the same position further along the journey");
+
+    // The top rung and the disc are the same statement, which is what keeps the
+    // maximum the world was specified with intact.
+    check(puck::puckInsideTarget({target * 0.99F, 0.0F}, target) &&
+              rungAt(target * 0.99F) == puck::PuckLevelCount,
+          "Inside the disc and on the top rung are the same claim");
+    check(!puck::puckInsideTarget({target * 1.05F, 0.0F}, target) &&
+              rungAt(target * 1.05F) < puck::PuckLevelCount,
+          "And outside it is neither");
+
+    // The shaping opens against the puck's own starting distance. This is the
+    // assertion that catches a spawn which forgets to seed the mirror: with the
+    // mirror at zero the trial opens believing the puck is already in the
+    // middle, every genome banks the same nothing, and the world scores as a
+    // hard task rather than as a broken one. No device test sees it, because the
+    // puck still moves exactly as before.
+    check(scenario.spawn != nullptr && scenario.targetDistance != nullptr,
+          "The puck world places its own agents and measures its own target");
+    for (const std::uint32_t trial : {0U, 1U}) {
+        vkexp::AgentState agent{};
+        agent.pose = {0.3F, 0.2F, 0.0F, vkexp::agentBodyRadius};
+        agent.target.z = static_cast<float>(trial);
+        scenario.spawn(agent, settings);
+        const auto start = puck::puckStartPosition(radius, trial);
+        check(closeTo(scenario.targetDistance(agent, settings), std::hypot(start.x, start.y)),
+              "A trial opens measuring the puck's distance to the middle, not zero");
+        // And the agents are put on the puck's side, so the first thing they
+        // have to do is reach it rather than already be behind it.
+        check(agent.pose.y * puck::puckStartSide(trial) > 0.0F,
+              "Agents spawn on the side the puck starts on");
+    }
+
+    // Scoring reads the level the puck pass latched, and is capped at the two
+    // levels the world has: a number above that would report more than complete.
+    for (float level = 0.0F; level <= 4.0F; level += 1.0F) {
+        vkexp::AgentState agent{};
+        agent.target.w = level;
+        check(scenario.achievedObjectives(agent) ==
+                  std::min(static_cast<std::uint32_t>(level), puck::PuckLevelCount),
+              "Objectives are the puck's level, capped at the levels that exist");
+    }
+    check(scenario.objectivesPerAgent == puck::PuckLevelCount,
+          "The reported ratio is read against both levels");
+
+    // The journey has to outweigh loitering *on its own*, before any objective
+    // completes. This is the other half of why nothing was learned at first, and
+    // the arithmetic is worth stating exactly, because the obvious version of
+    // the claim is wrong: raw progress in metres did beat loitering once the
+    // objective bonus landed, 8.85 against 3.75.
+    //
+    // What it did not do was leave a gradient to get there. The whole journey to
+    // the middle is 1.1 m, so moving the puck a hand's width was worth 0.1
+    // against the 3.75 an agent collects by parking beside it for the trial --
+    // under three per cent. Evolution improves by increments, and there was no
+    // increment: only the completion, which nothing was going to stumble into.
+    // Normalising the journey to a fraction and weighting it puts that same
+    // push at 29 per cent instead.
+    //
+    // So the assertion is on the progress term alone, with the objective bonus
+    // deliberately withheld from the deliverer, and the loiterer given the same
+    // proximity reward it could not really have earned while moving. Both make
+    // the check pessimistic.
+    const float trialSeconds =
+        vkexp::units::secondsForSteps(vkexp::SimulationControls{}.stepsPerGeneration,
+                                      vkexp::units::fixedTimeStep);
+    const float parked =
+        trialSeconds * settings.fitness.trackingReward * puck::PuckProximityShare;
+
+    vkexp::AgentState loiterer{};
+    loiterer.metrics = {startDistance, startDistance, 0.0F, parked};
+    loiterer.target.w = 0.0F;
+
+    vkexp::AgentState deliverer{};
+    deliverer.metrics = {startDistance, 0.0F, 0.0F, parked};
+    deliverer.target.w = 0.0F; // no objective bonus: the journey has to carry it
+
+    const float loiteringScore = scenario.fitness(loiterer, settings.fitness);
+    const float deliveringScore = scenario.fitness(deliverer, settings.fitness);
+    check(deliveringScore > loiteringScore * 2.0F,
+          "Moving the puck home outweighs parking beside it before any objective lands");
+
+    // And the increment is what matters, not the endpoint: a small push has to
+    // be worth a real fraction of what standing still pays, or there is no path
+    // from one behaviour to the other for selection to walk.
+    vkexp::AgentState nudged{};
+    nudged.metrics = {startDistance, startDistance * 0.9F, 0.0F, parked};
+    const float nudge = scenario.fitness(nudged, settings.fitness) - loiteringScore;
+    check(nudge > parked * 0.2F,
+          "A tenth of the journey is worth a fifth of a whole trial's loitering");
+    check(scenario.puck, "The puck world says it has a puck, which is what runs the puck pass");
+}
+
+// Who gets paid for moving the puck, which is the one thing in this world that
+// is not shared. Every other term in the score is derived from the puck's
+// position, so it is the same number for every agent in the world -- and with
+// only those terms a population settled on leaning against the near face of the
+// puck and blocking it, which collected the proximity reward and cost nothing.
+void testPuckPushCredit() {
+    namespace puck = vkexp::puck::kernel;
+    vkexp::SimulationStep settings;
+    settings.beaconScenario = vkexp::BeaconScenario::PuckPush;
+    const float radius = puck::puckRadius(settings.worldRadius, settings.puckRadiusRatio);
+    const float contact = radius + vkexp::agentBodyRadius;
+    // A puck on the axis, above the middle, so "toward the middle" is straight
+    // down and the two sides of it are unambiguous.
+    const puck::vec2 puckAt{0.0F, 0.6F};
+    const puck::vec2 still{0.0F, 0.0F};
+    const float speed = settings.maximumSpeed;
+
+    // Behind it, pushing down: the whole approach is useful.
+    const float behind = puck::puckPushContribution({0.0F, puckAt.y + contact}, {0.0F, -speed},
+                                                    vkexp::agentBodyRadius, puckAt, still, radius);
+    check(closeTo(behind, speed), "An agent pushing straight toward the middle is paid its approach");
+
+    // In the way, pushing up with exactly the same effort. It is in contact, it
+    // is approaching, and it moves the puck the wrong way -- so it earns nothing.
+    // Nothing here names a correct side; the projection does the work.
+    const float blocking = puck::puckPushContribution({0.0F, puckAt.y - contact}, {0.0F, speed},
+                                                      vkexp::agentBodyRadius, puckAt, still, radius);
+    // Zero and not negative: blocking stops being paid for, it does not become
+    // a thing to avoid. An agent taught to keep clear of the puck is worse than
+    // one that leans on it.
+    check(closeTo(blocking, 0.0F), "An agent wedged between the puck and the middle earns nothing");
+
+    // Sideways: in contact and approaching, but the push is perpendicular to the
+    // journey, so it is worth nothing without being wrong.
+    const float sideways = puck::puckPushContribution({contact, puckAt.y}, {-speed, 0.0F},
+                                                      vkexp::agentBodyRadius, puckAt, still, radius);
+    check(closeTo(sideways, 0.0F), "A push across the puck's path is worth nothing");
+
+    // Half a turn off the line: paid, but less. This is the part that makes it a
+    // gradient rather than a switch -- getting further round the puck pays more.
+    const float diagonal = puck::puckPushContribution(
+        {contact * 0.7071F, puckAt.y + contact * 0.7071F}, {-speed * 0.7071F, -speed * 0.7071F},
+        vkexp::agentBodyRadius, puckAt, still, radius);
+    check(diagonal > 0.0F && diagonal < behind,
+          "Pushing at an angle pays, and pays less than pushing straight");
+
+    // Touching and not pushing, and near but not touching: neither is work.
+    check(closeTo(puck::puckPushContribution({0.0F, puckAt.y + contact}, still,
+                                             vkexp::agentBodyRadius, puckAt, still, radius),
+                  0.0F),
+          "Resting against the puck is not pushing it");
+    check(closeTo(puck::puckPushContribution({0.0F, puckAt.y + contact * 3.0F}, {0.0F, -speed},
+                                             vkexp::agentBodyRadius, puckAt, still, radius),
+                  0.0F),
+          "An agent that has not reached the puck is not moving it");
+
+    // Measured against the puck, the same way the push in puck_step.comp is: an
+    // agent trailing a puck already outrunning it is not pushing it. This is the
+    // assertion that fails if the mirrored velocity is dropped from target.xy.
+    check(closeTo(puck::puckPushContribution({0.0F, puckAt.y + contact}, {0.0F, -speed},
+                                             vkexp::agentBodyRadius, puckAt, {0.0F, -speed * 2.0F},
+                                             radius),
+                  0.0F),
+          "An agent slower than the puck it follows is not pushing it");
+
+    // And the balance: a delivery's worth of pushing has to beat a whole trial
+    // of leaning on the puck, or the behaviour that is cheaper still wins. The
+    // journey is 1.1 m at the puck's settled speed, and the pusher is credited
+    // only the approach behind it.
+    const float trialSeconds =
+        vkexp::units::secondsForSteps(vkexp::SimulationControls{}.stepsPerGeneration,
+                                      vkexp::units::fixedTimeStep);
+    const float parked = trialSeconds * settings.fitness.trackingReward * puck::PuckProximityShare;
+    const float puckSpeed = speed * puck::PuckPushRate / (puck::PuckPushRate + puck::PuckDrag);
+    const float journey = std::hypot(puck::puckStartPosition(settings.worldRadius, 0).x,
+                                     puck::puckStartPosition(settings.worldRadius, 0).y);
+    const float pushed = (speed - puckSpeed) * (journey / puckSpeed) * puck::PuckWorkReward;
+    check(pushed > parked * 2.0F, "Pushing the puck home outearns a whole trial of leaning on it");
+}
+
 void testExperimentSweep() {
     vkexp::SweepState sweep;
     sweep.values = {0.0F, 0.5F, 1.0F};
@@ -1828,6 +2092,8 @@ int main() {
     testShuttleGeometry();
     testTwoGapsGeometry();
     testBeaconColorAblation();
+    testPuckWorld();
+    testPuckPushCredit();
     testDeliveryCannotBeScoredTwice();
     testScenarioRegistryContract();
     testFitnessWeightsAreParameters();

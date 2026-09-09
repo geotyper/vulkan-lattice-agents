@@ -17,6 +17,7 @@ struct StepParameterLayout {
     std::uint32_t gridCellsPerWorld{};
     std::uint32_t trailWidth{1};
     std::uint32_t trailCellsPerWorld{1};
+    std::uint32_t worldCount{1};
 };
 
 // The one place a GpuStepParameters is built.

@@ -1,0 +1,106 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// The agent layout is declared in terms of the brain preset's hidden capacity,
+// so that has to come first even though nothing here touches a network.
+#include "neuro/brain_kernel.glsl"
+#include "simulation/step_parameters.glsl"
+#include "simulation/agent_layout.glsl"
+#include "simulation/puck_layout.glsl"
+#include "simulation/puck_kernel.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer InputAgents {
+    Agent inputAgents[];
+};
+layout(std430, set = 0, binding = 1) buffer Pucks {
+    Puck pucks[];
+};
+layout(std430, set = 0, binding = 2) readonly buffer StepParameterBlocks {
+    StepParameters stepParameters[];
+};
+
+layout(push_constant) uniform StepSelector {
+    uint stepIndex;
+} selector;
+
+StepParameters params;
+
+// The same mapping trail_deposit uses, and for the same reason: a world's
+// agents are a strided run through the agent buffer, not a contiguous one.
+uint firstAgentOfWorld(uint world) {
+    const uint trials = max(params.trialsPerGenome, 1u);
+    const uint group = world / trials;
+    return (group * params.agentsPerWorld) * trials + (world % trials);
+}
+
+// One thread per world, looping its own agents. No atomics and no accumulator
+// buffer: the loop is a fixed range in a fixed order, so the sum is the same
+// every run without anything having to be made order-independent. That is worth
+// more here than the parallelism it gives up -- a world holds a dozen agents.
+void main() {
+    const uint world = gl_GlobalInvocationID.x;
+    params = stepParameters[selector.stepIndex];
+    if (world >= params.worldCount) {
+        return;
+    }
+
+    Puck puck = pucks[world];
+    const uint trials = max(params.trialsPerGenome, 1u);
+    const uint first = firstAgentOfWorld(world);
+    const float contact = puck.pose.z + PuckContactSkin;
+
+    vec2 push = vec2(0.0);
+    for (uint index = 0u; index < params.agentsPerWorld; ++index) {
+        const uint agentIndex = first + index * trials;
+        if (agentIndex >= params.agentCount) {
+            break;
+        }
+        const Agent agent = inputAgents[agentIndex];
+        const vec2 offset = puck.pose.xy - agent.pose.xy;
+        const float distance = length(offset);
+        if (distance <= 1.0e-6 || distance > contact + agent.pose.w) {
+            continue;
+        }
+        const vec2 normal = offset / distance;
+        // Relative to the puck, so an agent cannot push something already
+        // moving away from it faster than it can follow, and only pushing --
+        // never pulling -- so an agent leaving contact does not drag the puck.
+        const float approach = dot(agent.motion.xy - puck.motion.xy, normal);
+        if (approach <= 0.0) {
+            continue;
+        }
+        push += normal * approach;
+    }
+
+    puck.motion.xy += push * PuckPushRate * params.deltaTime;
+    puck.motion.xy *= exp(-PuckDrag * params.deltaTime);
+    puck.pose.xy += puck.motion.xy * params.deltaTime;
+
+    // The arena has the last word on containment, exactly as it does for an
+    // agent, and a puck that reaches the rim stops rather than bouncing: it is
+    // being pushed, not thrown.
+    const float reach = max(params.worldRadius - puck.pose.z, 0.0);
+    if (params.worldShape == 0) {
+        const float centreDistance = length(puck.pose.xy);
+        if (centreDistance > reach) {
+            puck.pose.xy *= reach / centreDistance;
+            puck.motion.xy = vec2(0.0);
+        }
+    } else {
+        if (abs(puck.pose.x) > reach || abs(puck.pose.y) > reach) {
+            puck.pose.xy = clamp(puck.pose.xy, vec2(-reach), vec2(reach));
+            puck.motion.xy = vec2(0.0);
+        }
+    }
+
+    // Latched, and taken as a maximum: a puck nudged through the middle and out
+    // again still got there, and the reported number stays monotone.
+    const float covered =
+        puckJourneyFraction(length(puck.pose.xy), puck.pose.w,
+                            puckTargetRadius(params.worldRadius, params.puckTargetRadiusRatio));
+    puck.motion.z = float(max(uint(max(puck.motion.z, 0.0) + 0.5), puckLevelForJourney(covered)));
+
+    pucks[world] = puck;
+}

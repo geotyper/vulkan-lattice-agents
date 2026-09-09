@@ -3,8 +3,11 @@
 #include "vkexp/core/VulkanContext.hpp"
 #include "vkexp/evolution/GenomeArchive.hpp"
 #include "vkexp/profiling/Profiler.hpp"
+#include "vkexp/worlds/WorldScenario.hpp"
 
 #include <exception>
+#include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -43,6 +46,34 @@ void SimulationModule::onUpdate(AppContext& context, const FrameInfo&) {
                 state_.controls.snapshotStatus = "Loaded " + state_.controls.snapshotPath;
                 finishPending_ = false;
             }
+        } catch (const std::exception& error) {
+            state_.controls.snapshotStatus = error.what();
+        }
+        return;
+    }
+    // Saving the champion, which for a long time the window could not do at all:
+    // it could read a .vkng archive and never write one, so the only file an
+    // interactive run produced was a world snapshot -- the whole population plus
+    // the agents and the pucks, resumable only into a run of the same size. The
+    // champion was in there, and there was no way to get it out.
+    if (state_.controls.saveGenomesRequested) {
+        state_.controls.saveGenomesRequested = false;
+        try {
+            const std::span<const Genome> population = driver_.evolution().population();
+            if (population.empty()) {
+                throw std::runtime_error("There is no population to save yet");
+            }
+            // The first entry: evolve() writes the ranked survivors to the front
+            // of the next population, champion first, which is the same genome
+            // the headless runner's --save-champion writes.
+            saveGenomeArchive(
+                state_.controls.genomePath, population.first(1),
+                genomeArchiveMetadata(state_, driver_,
+                                      scenarioDefinition(state_.physics.beaconScenario).brain));
+            state_.controls.snapshotStatus =
+                "Saved the champion of generation " +
+                std::to_string(driver_.evolution().generation()) + " to " +
+                state_.controls.genomePath;
         } catch (const std::exception& error) {
             state_.controls.snapshotStatus = error.what();
         }

@@ -84,6 +84,7 @@ only work from one spawn position or heading.
 | Beacon scenario | Scent relay | The same collect-and-deliver cycle, but home emits no light and lays no trail: it can only be found by dead reckoning or by a path the agents themselves marked. |
 | Beacon scenario | Two doors | The same cycle across a wall with two gaps, one of which is a dead end. Which one swaps every trial -- or every generation, as an option -- and from the home side they are identical. Retuned after it went unsolved for 450 generations; see Two gaps for the measurement. |
 | Beacon scenario | Shuttle | Fetch and carry back, over and over until the trial ends, around a short wall that closes the straight line between the two beacons. |
+| Beacon scenario | Puck push | A round puck shared by every agent in a logical world, starting on one side of the centre line. Push it at least across the line, and at best into the lit disc in the middle whose radius is a slider. |
 | Beacon scenario | Two gaps | The same repeated cycle across a wall with two ways through, neither a dead end, with an option to make the two ends trade places every other generation. |
 
 Changing the world size, shape, or beacon scenario resets the evolution because
@@ -356,6 +357,153 @@ carrying the task.
 Forcing colour to matter is a further step and not yet taken: it needs the two
 ends to stop being distinguishable by "the one I am not at" -- a third beacon,
 or a home that appears in one of two places after each pickup.
+
+## Puck push
+
+The first world where agents change something rather than only move through it,
+and the first whose outcome belongs to a group rather than to an individual.
+
+```text
+        the side the puck starts on, by trial
+   +-----------------------------+
+   |            ( o )            |   the puck, where it is placed
+   |            ( * )            |   the lit disc, the objective
+   |            (   )            |
+   +-----------------------------+
+```
+
+One puck per logical world, integrated by its own compute pass. Agents push it
+by touching it; the puck is a body they cannot walk through, reported through
+the same tactile channel a wall is, so no new sensor had to be found room for.
+
+**The objective is a ladder on one journey.** It began as the two goals the
+world was specified with -- a minimum, push the puck past the arena's middle
+line, and a maximum, push it into a disc around the centre -- and the geometry
+will not put those in that order. The disc straddles the line and the puck
+arrives from outside, so it enters the disc *before* it reaches the line: after
+0.64 m of a 1.10 m journey at the default sliders. The minimum was the harder of
+the two and never fired first, so the ladder had one rung where it looked like
+two. A world scored nothing at all until its puck was in, and then scored full
+marks; a puck brought fifty-seven per cent of the way counted the same as a puck
+nobody had touched, and the reported curve could only move in whole worlds.
+
+So the journey is what is measured and the disc is where it ends. The rungs are
+equal quarters of the distance from where the puck was placed to the disc's
+edge. The top rung and "inside the disc" are the same statement, so the maximum
+the world was specified with is intact; every rung below is strictly harder than
+the one under it by construction; and the ladder follows the target-radius
+slider without anything having to be retuned. Rungs are latched and taken as a
+maximum, so the curve stays monotone -- a puck nudged in and back out still got
+there.
+
+The reported ratio therefore reads as the average fraction of the journey a
+world's puck covered, not as the share of worlds that finished. It is not
+comparable with the number this world reported before the ladder: the old one
+counted deliveries, and this one counts distance. What a delivery is worth in
+*fitness* was deliberately held where it was, so a run before the change and a
+run after it are still comparable on the thing being selected for.
+
+**Why the push is a velocity and not an overlap.** The obvious model sums
+penetration depths and pushes the puck out of them. That cannot work here: the
+agent step resolves its own overlap first, so by the time the puck is integrated
+there is no penetration left to read. The push is taken from the approach speed
+along the contact normal instead -- which is what a push is -- and measured
+*relative to the puck*, so an agent cannot push something already outrunning it.
+That relative term is what bounds the puck's speed by the agents' own, and the
+smoke test asserts the bound rather than the formula.
+
+**Why the puck emits light.** The first version of this world did not learn at
+all, and the reason is worth keeping: the photoreceptors see beacons and other
+agents' signals and nothing else, so a puck that was neither was *invisible*. An
+agent could only discover it by walking into it. The fitness paid for
+approaching the puck and for moving it, and both rewards were real -- but a
+population cannot climb a gradient it has no sense of. The reward existed and
+the handle on it did not. The puck is a beacon now, at the position every agent
+already mirrors, so reaching it is phototaxis, which is the one thing these
+agents reliably evolve.
+
+**Why the journey outweighs loitering.** The second reason, and the arithmetic
+matters because the obvious version of the claim is wrong. Being near the puck
+pays `trackingReward` per second, 3.75 over a fifteen-second trial for an agent
+that simply parks on it. Pushing the puck all the way in and completing both
+levels paid 8.85 -- more, so the endpoint was never the problem.
+
+What was missing was the increment. The whole journey to the middle is 1.1 m, so
+moving the puck a hand's width was worth 0.10 against that 3.75: under three per
+cent. Evolution improves by increments, and there was none to find -- only the
+completion, which nothing was going to stumble into. Progress is now a fraction
+of the journey rather than a number of metres, weighted so the same push is
+worth 29 per cent instead. The unit test asserts the increment, not the
+endpoint, because the endpoint was never what failed.
+
+**And the approach reward is tied to the puck, not to the light range.** At
+light range it is a broad haze over most of the arena and loitering in the
+general area collects most of what pushing would pay. Six puck radii pays for
+being *at* it, which is where pushing starts.
+
+**Why pushing is priced per agent.** The third reason, and the one the world
+itself created. With the two fixes above a population does improve, slowly, and
+it improves into the wrong shape: agents lean against whichever face of the puck
+they arrive at, several of them on the side facing the middle, and hold it still.
+
+That is not evolution failing to find the answer. It is the score paying for it.
+Every term derived from the puck -- progress, level, the approach reward -- is
+read off one object twelve agents share, so it is the *same number* for all
+twelve. The agent that shoved the puck home and the agent standing in its way
+were scored identically, and selection cannot separate behaviours it cannot see
+apart. What it could see was that being near the puck pays and that moving costs
+motor effort, and it evolved accordingly.
+
+The fix is deliberately not "reward the agents pushing from the correct side".
+That hands over the answer, and this world exists to ask the question. It is to
+pay each agent for the work it actually did, which is a physical quantity rather
+than an opinion: the same approach speed `puck_step.comp` integrates, projected
+onto the direction the puck still has to travel. An agent wedged between the
+puck and the middle projects negative and earns nothing -- but nothing told it
+that side was wrong, only that its pushing does not move the puck where the puck
+has to go. Pushing at an angle pays less than pushing straight, so getting
+further round the puck is a gradient and not a switch.
+
+Zero, and not a penalty. Blocking should stop being paid for; it should not
+become a thing to actively avoid, or an agent learns to keep clear of the puck
+rather than to get behind it.
+
+The approach reward is cut to a quarter of `trackingReward` at the same time.
+The weight means "per second for being near the thing you are meant to track",
+which is the right rate in a world where being near the beacon *is* the task;
+here it is only how pushing starts, and at the full rate a trial spent leaning
+on the puck out-earned a trial spent delivering it. A parked agent now collects
+0.94 against the 12-plus-bonuses a delivery pays. The slider still scales it,
+and setting it to zero still turns the search reward off without touching what
+pushing pays -- which is the experiment worth running once the world moves.
+
+So the score now has two parts that answer different questions: the joint part
+says the puck arrived, and the per-agent part says who moved it. That split is
+also what makes the sharing sweep below meaningful rather than circular.
+
+**The first knob to reach for** is the puck's size. Bigger is easier twice over:
+a wider contact arc for several agents to push at once, and a larger thing to
+find. Both sliders -- `Puck radius` and `Target radius` -- take effect on reset.
+
+**This is the world the sharing option was built for.** `--fitness-sharing`
+blends a genome's score with its world's average, which is meant to make helping
+a neighbour pay -- and until now every world scored an individual's own
+journey, so there was little to share. Here the outcome is joint by
+construction: one puck, one result, twelve agents. Whether sharing helps is the
+measurement this world exists to make.
+
+```sh
+vkneuro_headless --scenario puck --generations 300 --seed 5 --csv runs/puck.csv
+for share in 0.0 0.5 1.0; do
+  vkneuro_headless --scenario puck --generations 300 --seed 5 \
+                   --fitness-sharing "$share" --csv "runs/puck-share-$share.csv"
+done
+```
+
+The puck is saved in world snapshots, unlike the trail field: the trail is
+derived and recovers in a few half-lives, the puck's position is the state of
+the experiment, and a resume that put it back at the start would read as a run
+that had lost ground it had not lost.
 
 ## Group fitness sharing
 

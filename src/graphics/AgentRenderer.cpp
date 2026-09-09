@@ -59,9 +59,10 @@ void AgentRenderer::createPipeline(AppContext& context) {
         throw std::logic_error("AgentRenderer requires SimulationModule to be attached first");
     }
     const VkDevice device = context.vulkan.device();
-    // 0: the agent state being displayed, 1: the trail field. Both are read in
-    // the vertex stage, which keeps every draw on the same procedural path.
-    std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
+    // 0: the agent state being displayed, 1: the trail field, 2: the pucks. All
+    // read in the vertex stage, which keeps every draw on the same procedural
+    // path -- nothing here is uploaded as geometry.
+    std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
     for (std::uint32_t index = 0; index < bindings.size(); ++index) {
         bindings[index].binding = index;
         bindings[index].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -76,7 +77,7 @@ void AgentRenderer::createPipeline(AppContext& context) {
                                     descriptorSetLayout_.put(device)) != VK_SUCCESS) {
         throw std::runtime_error("Unable to create agent renderer descriptor layout");
     }
-    descriptorAllocator_.create(device, {2, {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4}}});
+    descriptorAllocator_.create(device, {2, {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6}}});
     for (std::size_t index = 0; index < descriptorSets_.size(); ++index) {
         descriptorSets_[index] = descriptorAllocator_.allocate(descriptorSetLayout_.get());
         DescriptorSetWriter{}
@@ -84,6 +85,8 @@ void AgentRenderer::createPipeline(AppContext& context) {
                          state_.agents.size)
             .writeBuffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, state_.trail.buffer, 0,
                          state_.trail.size)
+            .writeBuffer(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, state_.puck.buffer, 0,
+                         state_.puck.size)
             .update(device, descriptorSets_[index]);
     }
     boundTrailBuffer_ = state_.trail.buffer;
@@ -301,12 +304,26 @@ void AgentRenderer::onRender(AppContext& context, const FrameInfo&) {
         draw(commands, scaleX, scaleY, state_.physics.worldRadius, 5, 0.85F, markVertices,
              state_.trail.cellsPerWorld);
     }
+    // The target disc is ground: the puck has to reach it, nothing collides with
+    // it, so it goes under everything including the puck itself.
+    const ScenarioDefinition& drawnScenario = scenarioDefinition(state_.physics.beaconScenario);
+    if (drawnScenario.puck) {
+        // 48 segments of three vertices each. Passing the segment count as the
+        // vertex count drew a third of a disc -- a wedge that looked like a
+        // scenario shape rather than a target -- because circleVertex builds one
+        // triangle per segment rather than one vertex.
+        draw(commands, scaleX, scaleY, state_.physics.worldRadius, 8, 0.55F, 48 * 3, 1);
+    }
     // Above the ground and under everything that moves: an obstacle is scenery
     // an agent collides with, not a thing that acts.
-    const std::uint32_t obstacleCount =
-        scenarioDefinition(state_.physics.beaconScenario).obstacleCount;
+    const std::uint32_t obstacleCount = drawnScenario.obstacleCount;
     if (obstacleCount > 0) {
         draw(commands, scaleX, scaleY, state_.physics.worldRadius, 6, 1.0F, 6, obstacleCount);
+    }
+    // The puck moves and is pushed, so it belongs with the agents rather than
+    // with the scenery -- but under them, so a crowd around it stays readable.
+    if (drawnScenario.puck) {
+        draw(commands, scaleX, scaleY, state_.physics.worldRadius, 7, 0.95F, 24 * 3, 1);
     }
     if (state_.display.agents) {
         draw(commands, scaleX, scaleY, state_.physics.worldRadius, 2, 0.14F, 48, visibleAgentCount);
