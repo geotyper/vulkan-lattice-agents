@@ -2029,6 +2029,14 @@ void testGateWorld() {
           "The plate's own centre is on the plate");
     check(!kernel::gateOnPlate({plate.x + kernel::gatePlateRadius(radius) * 1.05F, plate.y}, radius),
           "And just outside its rim is not");
+    check(kernel::gatePlateRadius(radius) > vkexp::agentBodyRadius * 4.0F,
+          "The plate is wide enough for several agents to be standing on it at once");
+    // Which is also why it is drawn as its own disc rather than as the beacon
+    // that lights it: a beacon is drawn at one fixed visual radius, and at that
+    // radius the picture would show a dot a third the size of the floor the
+    // press test actually reads.
+    check(kernel::gatePlateRadius(radius) > vkexp::beaconVisualRadius * 2.0F,
+          "And wider than the beacon marking it, so the two cannot be drawn as one thing");
 
     // A shut gate has to hide the resource, and an open one has to show it. That
     // is the whole of what this world tells an agent it has done: press, and the

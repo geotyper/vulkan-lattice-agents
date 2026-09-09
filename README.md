@@ -561,6 +561,13 @@ cannot disagree because they are not communicating, they are recomputing. What
 does have to be carried is the latch countdown, and each agent carries its own
 copy in the slot this world does not use for a base beacon.
 
+**What is on screen.** The plate is drawn as a disc at the radius the press test
+actually reads, and lights up while the gate is running. It is a beacon as well,
+because agents have to be able to find it -- but a beacon is drawn at the one
+fixed visual radius every beacon uses, six centimetres against the plate's
+twenty, so left at that the picture showed a dot where the rule tests a disc and
+standing beside the dot looked like standing on the plate.
+
 **What the assertions cover.** That the plate is not in the doorway, so the two
 legs are two places. That a shut gate leaves the resource invisible from the
 side the agents start on, and an open one shows it from 19 per cent of that side

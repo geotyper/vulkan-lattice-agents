@@ -146,6 +146,21 @@ void main() {
         // reading of the score rather than of the position.
         const float level = clamp(puck.motion.z / 2.0, 0.0, 1.0);
         color = vec4(mix(vec3(0.85, 0.85, 0.90), vec3(0.35, 1.00, 0.55), level), params.opacity);
+    } else if (params.mode == 9) {
+        // The plate, drawn at the radius that actually counts. It is lit as a
+        // beacon so agents can find it, and a beacon is drawn at the fixed
+        // visual radius every beacon uses -- six centimetres against the plate's
+        // twenty. Left at that, the picture showed a dot where the rule tests a
+        // disc, and standing next to the dot looked like standing on the plate.
+        //
+        // Lit while the gate is running, so pressing it is visible as a change
+        // in the room. The state is read off the visible world's first agent:
+        // every agent in a world recomputes it from the same grid, so any of
+        // them carries the same answer.
+        const vec2 plate = gatePlatePosition(params.worldRadius);
+        world = plate + circleVertex(gl_VertexIndex, gatePlateRadius(params.worldRadius), 32);
+        const float lit = gatePlateScenarioOpen(agent) ? 1.0 : 0.0;
+        color = vec4(mix(vec3(0.38, 0.24, 0.10), vec3(0.95, 0.55, 0.15), lit), params.opacity);
     } else if (params.mode == 8) {
         // The target disc, drawn as ground under everything: it is a region the
         // puck has to reach, not a body anything collides with.

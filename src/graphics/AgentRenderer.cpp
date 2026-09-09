@@ -314,6 +314,13 @@ void AgentRenderer::onRender(AppContext& context, const FrameInfo&) {
         // triangle per segment rather than one vertex.
         draw(commands, scaleX, scaleY, state_.physics.worldRadius, 8, 0.55F, 48 * 3, 1);
     }
+    // The plate is ground too: it is a place to stand on, not a body to walk
+    // into. Drawn at the radius the press test uses rather than at the fixed
+    // beacon radius, because the beacon marks where its light comes from and
+    // this marks how much of the floor counts.
+    if (drawnScenario.tunables.gateLatch) {
+        draw(commands, scaleX, scaleY, state_.physics.worldRadius, 9, 0.75F, 32 * 3, 1);
+    }
     // Above the ground and under everything that moves: an obstacle is scenery
     // an agent collides with, not a thing that acts.
     const std::uint32_t obstacleCount = drawnScenario.obstacleCount;
