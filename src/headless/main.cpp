@@ -4,6 +4,7 @@
 
 #include "vkexp/compute/HeadlessComputeContext.hpp"
 #include "vkexp/evolution/GenomeArchive.hpp"
+#include "vkexp/neuro/BrainDescription.hpp"
 #include "vkexp/simulation/Locomotion.hpp"
 #include "vkexp/simulation/SimulationDriver.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
@@ -64,6 +65,7 @@ struct Options {
     bool quiet{};
     std::string savePopulation;
     std::string saveChampion;
+    std::string describeBrain;
     std::string loadPopulation;
     std::string saveWorld;
     std::string loadWorld;
@@ -237,6 +239,19 @@ vkexp::BeaconScenario parseScenario(const std::string_view name) {
     fail("Unknown neuron model '" + std::string{name} + "'; expected reactive, time or gated");
 }
 
+// The short form, for files rather than for reading.
+[[nodiscard]] const char* neuronModelKey(const vkexp::NeuronModel model) {
+    switch (model) {
+    case vkexp::NeuronModel::Reactive:
+        return "reactive";
+    case vkexp::NeuronModel::TimeConstant:
+        return "time";
+    case vkexp::NeuronModel::Gated:
+        return "gated";
+    }
+    return "time";
+}
+
 [[nodiscard]] const char* neuronModelName(const vkexp::NeuronModel model) {
     switch (model) {
     case vkexp::NeuronModel::Reactive:
@@ -350,6 +365,8 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.savePopulation = next(index, argument);
         } else if (argument == "--save-champion") {
             options.saveChampion = next(index, argument);
+        } else if (argument == "--describe-brain") {
+            options.describeBrain = next(index, argument);
         } else if (argument == "--load-population") {
             options.loadPopulation = next(index, argument);
         } else if (argument == "--save-world") {
@@ -366,6 +383,26 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
         fail("Generations, steps and steps-per-batch must all be non-zero");
     }
     return options;
+}
+
+// Writing down the structure is not a run: it follows from the scenario and the
+// neuron model alone, needs no device, and answers a question about the build
+// rather than about an experiment. So it is its own action, like --help, and the
+// run options around it are not even validated.
+void describeBrainAndExit(const Options& options) {
+    const vkexp::neuro::BrainDescription description = vkexp::neuro::describeBrain(
+        vkexp::scenarioDefinition(options.scenario).brain, neuronModelKey(options.neuronModel));
+    std::ofstream stream{options.describeBrain, std::ios::trunc};
+    if (!stream) {
+        fail("Unable to write the brain description to " + options.describeBrain);
+    }
+    stream << vkexp::neuro::brainDescriptionToJson(description);
+    if (!stream) {
+        fail("Failed while writing " + options.describeBrain);
+    }
+    if (!options.quiet) {
+        std::cout << "Wrote the network's structure to " << options.describeBrain << '\n';
+    }
 }
 
 int run(const Options& options) {
@@ -463,6 +500,15 @@ int run(const Options& options) {
         if (!options.quiet) {
             std::cout << "Resumed " << archive.genomes.size() << " genomes from "
                       << options.loadPopulation << " at generation " << archive.metadata.generation
+                      << '\n';
+            // Whether anything about the layout was actually checked, rather
+            // than only the number of weights. A version 1 file cannot say what
+            // its weights mean, and a resumed run that quietly reinterprets them
+            // still produces a plausible curve.
+            std::cout << "Structure:  "
+                      << (archive.describedStructure
+                              ? "checked against the file"
+                              : "NOT STATED by the file -- only the weight count matched")
                       << '\n';
         }
     }
@@ -596,6 +642,10 @@ int main(const int argc, char** argv) {
         const Options options = parseOptions(argc, argv, helpRequested);
         if (helpRequested) {
             printHelp(argv[0]);
+            return 0;
+        }
+        if (!options.describeBrain.empty()) {
+            describeBrainAndExit(options);
             return 0;
         }
         return run(options);

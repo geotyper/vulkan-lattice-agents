@@ -1,6 +1,8 @@
 #include "vkexp/evolution/GenomeArchive.hpp"
 
 #include <array>
+#include <numeric>
+#include <string>
 #include <bit>
 #include <cstring>
 #include <fstream>
@@ -27,7 +29,10 @@ struct ArchiveHeader {
     std::uint32_t seed{};
     float bestFitness{};
     float meanFitness{};
-    std::uint32_t reserved{};
+    // Was a reserved word in version 1, which always wrote zero. It is the
+    // length of the JSON structure block that follows the header in version 2,
+    // so a version 1 file reads as "no structure stated" without a special case.
+    std::uint32_t descriptionBytes{};
 };
 
 static_assert(sizeof(ArchiveHeader) == 56);
@@ -48,6 +53,9 @@ void saveGenomeArchive(const std::filesystem::path& path, const std::span<const 
     if (!stream) {
         throw GenomeArchiveError("Unable to open genome archive for writing: " + path.string());
     }
+    const neuro::BrainDescription description = neuro::describeBrain(
+        {metadata.brainInputCount, metadata.brainHiddenCount, metadata.brainOutputCount});
+    const std::string structure = neuro::brainDescriptionToJson(description);
     const ArchiveHeader header{archiveMagic,
                                genomeArchiveVersion,
                                static_cast<std::uint32_t>(genomes.size()),
@@ -60,8 +68,9 @@ void saveGenomeArchive(const std::filesystem::path& path, const std::span<const 
                                metadata.seed,
                                metadata.bestFitness,
                                metadata.meanFitness,
-                               0U};
+                               static_cast<std::uint32_t>(structure.size())};
     stream.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    stream.write(structure.data(), static_cast<std::streamsize>(structure.size()));
     for (const Genome& genome : genomes) {
         stream.write(reinterpret_cast<const char*>(genome.weights.data()),
                      static_cast<std::streamsize>(genome.weights.size() * sizeof(float)));
@@ -85,7 +94,7 @@ GenomeArchive loadGenomeArchive(const std::filesystem::path& path) {
     if (header.magic != archiveMagic) {
         throw GenomeArchiveError("Not a genome archive: " + path.string());
     }
-    if (header.version != genomeArchiveVersion) {
+    if (header.version < genomeArchiveOldestVersion || header.version > genomeArchiveVersion) {
         throw GenomeArchiveError("Unsupported genome archive version " +
                                  std::to_string(header.version) + " in " + path.string());
     }
@@ -102,6 +111,39 @@ GenomeArchive loadGenomeArchive(const std::filesystem::path& path) {
     archive.metadata = {header.generation,       header.scenario,        header.seed,
                         header.bestFitness,      header.meanFitness,     header.brainInputCount,
                         header.brainHiddenCount, header.brainOutputCount};
+
+    // What this build would lay out for the shape the file records. Everything
+    // below is a comparison against this, so the message can name the block that
+    // moved rather than the number that no longer matches.
+    const neuro::BrainDescription expected = neuro::describeBrain(
+        {header.brainInputCount, header.brainHiddenCount, header.brainOutputCount});
+    archive.description = expected;
+    archive.describedStructure = header.descriptionBytes != 0;
+    if (archive.describedStructure) {
+        std::string structure(header.descriptionBytes, '\0');
+        stream.read(structure.data(), static_cast<std::streamsize>(structure.size()));
+        if (!stream || stream.gcount() != static_cast<std::streamsize>(structure.size())) {
+            throw GenomeArchiveError("Genome archive is truncated: " + path.string());
+        }
+        neuro::BrainDescription stored;
+        try {
+            stored = neuro::parseBrainDescription(structure);
+        } catch (const neuro::BrainDescriptionError& error) {
+            throw GenomeArchiveError("Genome archive " + path.string() +
+                                     " has an unreadable structure block: " + error.what());
+        }
+        const std::vector<std::string> differences =
+            neuro::compareBrainDescriptions(expected, stored);
+        if (!differences.empty()) {
+            std::string message = "Genome archive " + path.string() +
+                                  " describes a different network than this build:";
+            for (const std::string& difference : differences) {
+                message += "\n  - " + difference;
+            }
+            throw GenomeArchiveError(message);
+        }
+        archive.description = stored;
+    }
     archive.genomes.resize(header.genomeCount);
     for (Genome& genome : archive.genomes) {
         stream.read(reinterpret_cast<char*>(genome.weights.data()),

@@ -36,6 +36,10 @@ struct SimulationControls {
     bool saveGenomesRequested{};
     // Whether that save is the whole population or the champion alone.
     bool saveWholePopulation{};
+    // Writes what the weights *mean* rather than the weights: which slot of the
+    // input vector is which sensor, which span of the genome is which weight
+    // block. Goes next to the archive with a .json extension.
+    bool saveBrainStructureRequested{};
 
     // Watching rather than training. The generation is still scored and
     // reported -- that is how loaded weights get judged -- but nothing is

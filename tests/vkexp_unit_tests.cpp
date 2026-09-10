@@ -1,6 +1,7 @@
 #include "vkexp/compute/ComputeResources.hpp"
 #include "vkexp/evolution/GeneticAlgorithm.hpp"
 #include "vkexp/evolution/GenomeArchive.hpp"
+#include "vkexp/neuro/BrainDescription.hpp"
 #include "vkexp/neuro/BrainKernel.hpp"
 #include "vkexp/neuro/NeuralNetwork.hpp"
 #include "vkexp/profiling/CpuProfiler.hpp"
@@ -22,11 +23,13 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <exception>
 #include <numeric>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -672,6 +675,152 @@ void testSharedScenarioKernel() {
           "Alternating beacons sit on opposite sides");
 }
 
+// The network written down as structure, and whether that writing-down is
+// trustworthy. A description that merely looks right is worse than none: the
+// whole point of putting it in a file is that a loader can act on it.
+void testBrainDescription() {
+    namespace bk = vkexp::neuro::kernel;
+    const vkexp::neuro::BrainShape shape = vkexp::neuro::maximumBrainShape;
+    const vkexp::neuro::BrainDescription description = vkexp::neuro::describeBrain(shape);
+
+    check(description.inputCount == shape.inputCount &&
+              description.hiddenCount == shape.hiddenCount &&
+              description.outputCount == shape.outputCount &&
+              description.weightCount == shape.weightCount(),
+          "The description reports the shape it was asked for");
+
+    // Every block tiles its vector: consecutive, no gap, no overlap, ending
+    // exactly at the count. A gap is a slot nothing names -- a sensor that would
+    // be silently unreachable -- and an overlap is two names for one number.
+    const auto tiles = [](const std::vector<vkexp::neuro::BrainBlock>& blocks,
+                          const std::uint32_t total) {
+        std::uint32_t cursor = 0;
+        for (const vkexp::neuro::BrainBlock& block : blocks) {
+            if (block.offset != cursor || block.count == 0) {
+                return false;
+            }
+            cursor += block.count;
+        }
+        return cursor == total;
+    };
+    check(tiles(description.inputs, description.inputCount),
+          "The sensor blocks tile the input vector exactly");
+    check(tiles(description.outputs, description.outputCount),
+          "The actuator blocks tile the output vector exactly");
+    check(tiles(description.weights, description.weightCount),
+          "The weight blocks tile the genome exactly");
+
+    // And a matrix block's shape has to account for its own size, or "20x61"
+    // is decoration rather than a claim.
+    bool shapesAgree = true;
+    for (const vkexp::neuro::BrainBlock& block : description.weights) {
+        if (block.isMatrix()) {
+            shapesAgree = shapesAgree && block.rows * block.columns == block.count;
+        }
+    }
+    check(shapesAgree, "A matrix block's rows times columns is its own size");
+
+    // The claim that makes the description usable rather than decorative: every
+    // index the shader computes lands inside the block that names it. Checked at
+    // the corners, which is where an off-by-one lands.
+    const auto inputs = static_cast<bk::uint>(shape.inputCount);
+    const auto hidden = static_cast<bk::uint>(shape.hiddenCount);
+    const auto outputs = static_cast<bk::uint>(shape.outputCount);
+    const auto inside = [&](const char* name, const bk::uint index) {
+        const vkexp::neuro::BrainBlock* const block = description.block(name);
+        return block != nullptr && index >= block->offset && index < block->offset + block->count;
+    };
+    check(inside("hidden_weights", bk::brainHiddenWeightIndex(0u, inputs, 0u, 0u)) &&
+              inside("hidden_weights",
+                     bk::brainHiddenWeightIndex(0u, inputs, hidden - 1u, inputs - 1u)),
+          "Both corners of the input-to-hidden matrix fall in its block");
+    check(inside("hidden_bias", bk::brainHiddenBiasIndex(0u, inputs, hidden, 0u)) &&
+              inside("hidden_bias", bk::brainHiddenBiasIndex(0u, inputs, hidden, hidden - 1u)),
+          "Both ends of the hidden bias fall in its block");
+    check(inside("output_weights", bk::brainOutputWeightIndex(0u, inputs, hidden, 0u, 0u)) &&
+              inside("output_weights",
+                     bk::brainOutputWeightIndex(0u, inputs, hidden, outputs - 1u, hidden - 1u)),
+          "Both corners of the hidden-to-output matrix fall in its block");
+    check(inside("output_bias", bk::brainOutputBiasIndex(0u, inputs, hidden, outputs, 0u)) &&
+              inside("output_bias",
+                     bk::brainOutputBiasIndex(0u, inputs, hidden, outputs, outputs - 1u)),
+          "Both ends of the output bias fall in its block");
+    check(inside("time_constants",
+                 bk::brainTimeConstantGeneIndex(0u, inputs, hidden, outputs, 0u)) &&
+              inside("time_constants",
+                     bk::brainTimeConstantGeneIndex(0u, inputs, hidden, outputs, hidden - 1u)),
+          "Both ends of the time constants fall in their block");
+    check(inside("gate_weights", bk::brainGateWeightIndex(0u, inputs, hidden, outputs, 0u, 0u)) &&
+              inside("gate_weights", bk::brainGateWeightIndex(0u, inputs, hidden, outputs,
+                                                              hidden - 1u, inputs - 1u)),
+          "Both corners of the gate matrix fall in its block");
+    check(inside("gate_bias", bk::brainGateBiasIndex(0u, inputs, hidden, outputs, 0u)) &&
+              inside("gate_bias",
+                     bk::brainGateBiasIndex(0u, inputs, hidden, outputs, hidden - 1u)),
+          "Both ends of the gate bias fall in their block");
+
+    // And the sensor blocks against the sensor index functions, which is the
+    // half a weight-block check cannot reach.
+    check(inside("light", bk::brainLightChannelIndex(0u, 0u)) &&
+              inside("light", bk::brainLightChannelIndex(bk::BrainLightReceptorCount - 1u,
+                                                         bk::BrainLightChannels - 1u)),
+          "The light block covers every receptor channel");
+    check(inside("tactile", bk::brainTactileChannelIndex(0u, 0u)) &&
+              inside("tactile", bk::brainTactileChannelIndex(bk::BrainTactileSectorCount - 1u,
+                                                             bk::BrainTactileChannels - 1u)),
+          "The tactile block covers every sector channel");
+    check(inside("antennae", bk::brainAntennaChannelIndex(0u, 0u)) &&
+              inside("antennae", bk::brainAntennaChannelIndex(bk::BrainAntennaCount - 1u,
+                                                              bk::BrainAntennaChannels - 1u)),
+          "The antenna block covers every tip channel");
+    check(inside("motor_left", bk::BrainMotorLeftOutput) &&
+              inside("motor_right", bk::BrainMotorRightOutput) &&
+              inside("signal_color", bk::BrainSignalColorOutput) &&
+              inside("signal_intensity", bk::BrainSignalIntensityOutput) &&
+              inside("memory_out", bk::BrainRecurrentOutputOffset),
+          "Every named output slot falls in the block that claims it");
+
+    // Through JSON and back unchanged. This is what an archive carries, so a
+    // round trip that loses a field would lose it silently in every file.
+    const std::string json = vkexp::neuro::brainDescriptionToJson(description);
+    const vkexp::neuro::BrainDescription parsed = vkexp::neuro::parseBrainDescription(json);
+    check(vkexp::neuro::compareBrainDescriptions(description, parsed).empty(),
+          "A description survives JSON in both directions");
+    check(vkexp::neuro::brainDescriptionToJson(parsed) == json,
+          "and writing it again produces the same document");
+
+    // A trimmed scenario describes a smaller network, not a broken one.
+    const vkexp::neuro::BrainDescription trimmed =
+        vkexp::neuro::describeBrain({52, 20, 8});
+    check(tiles(trimmed.inputs, 52) && tiles(trimmed.weights, trimmed.weightCount),
+          "A trimmed shape still tiles both vectors");
+    check(!vkexp::neuro::compareBrainDescriptions(description, trimmed).empty(),
+          "and is reported as different from the full one");
+
+    // The parser is strict, because a structure file that is quietly half-read
+    // describes a network nobody has.
+    const auto rejects = [](const std::string& text) {
+        try {
+            (void)vkexp::neuro::parseBrainDescription(text);
+        } catch (const vkexp::neuro::BrainDescriptionError&) {
+            return true;
+        }
+        return false;
+    };
+    check(rejects("{ \"hidden_count\": 20 }"), "A description missing its counts is rejected");
+    check(rejects("{ \"mystery\": 1 }"), "An unknown field is rejected rather than ignored");
+    check(rejects(json.substr(0, json.size() / 2)), "A truncated document is rejected");
+    check(rejects(json + "{}"), "Trailing content is rejected");
+
+    // And a difference is reported by name, since "block 4 moved" helps nobody.
+    vkexp::neuro::BrainDescription moved = description;
+    moved.inputs.front().count += 1;
+    const std::vector<std::string> differences =
+        vkexp::neuro::compareBrainDescriptions(description, moved);
+    check(!differences.empty() && differences.front().find("light") != std::string::npos,
+          "A moved block is reported by its own name");
+}
+
 void testGenomeArchiveRoundTrip() {
     const std::filesystem::path path =
         std::filesystem::temp_directory_path() / "vkexp_archive_test" / "population.vkng";
@@ -697,6 +846,63 @@ void testGenomeArchiveRoundTrip() {
         identical = identical && loaded.genomes[index].weights == genomes[index].weights;
     }
     check(identical, "Archive weights round-trip bit-exactly");
+    check(loaded.describedStructure, "An archive states the structure its weights are laid out in");
+    check(loaded.description.inputCount == 52 && loaded.description.hiddenCount == 20 &&
+              loaded.description.outputCount == 8,
+          "and states it for the shape the run actually used");
+
+    // The whole reason the structure is in the file: a file whose weights mean
+    // something else has to fail, and fail by naming what moved. Patched in
+    // place and byte for byte -- "antennae" becomes "antennaX", same length, so
+    // the header's byte count still matches and nothing but the meaning changes.
+    const std::filesystem::path renamed = path.parent_path() / "renamed.vkng";
+    std::filesystem::copy_file(path, renamed, std::filesystem::copy_options::overwrite_existing);
+    {
+        std::fstream stream{renamed, std::ios::binary | std::ios::in | std::ios::out};
+        std::string contents{std::istreambuf_iterator<char>{stream},
+                             std::istreambuf_iterator<char>{}};
+        const std::size_t at = contents.find("antennae");
+        check(at != std::string::npos, "The structure block is really in the file as text");
+        stream.clear();
+        stream.seekp(static_cast<std::streamoff>(at));
+        stream.write("antennaX", 8);
+    }
+    std::string complaint;
+    try {
+        (void)vkexp::loadGenomeArchive(renamed);
+    } catch (const vkexp::GenomeArchiveError& error) {
+        complaint = error.what();
+    }
+    check(complaint.find("antennae") != std::string::npos &&
+              complaint.find("antennaX") != std::string::npos,
+          "A file describing a different network is refused, and both names are said");
+
+    // Version 1 files predate the structure block and still load: the weights
+    // were laid out the same way, the file simply does not say so. Built by
+    // surgery on a version 2 file, because there is no writer for the old format
+    // any more -- version at byte 4, structure length at byte 52, header 56.
+    const std::filesystem::path legacy = path.parent_path() / "legacy.vkng";
+    {
+        std::ifstream input{path, std::ios::binary};
+        std::string contents{std::istreambuf_iterator<char>{input},
+                             std::istreambuf_iterator<char>{}};
+        std::uint32_t structureBytes = 0;
+        std::memcpy(&structureBytes, contents.data() + 52, sizeof(structureBytes));
+        check(structureBytes > 0, "A version 2 file records how long its structure block is");
+        const std::uint32_t one = 1;
+        std::memcpy(contents.data() + 4, &one, sizeof(one));
+        const std::uint32_t none = 0;
+        std::memcpy(contents.data() + 52, &none, sizeof(none));
+        contents.erase(56, structureBytes);
+        std::ofstream output{legacy, std::ios::binary | std::ios::trunc};
+        output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    }
+    const vkexp::GenomeArchive old = vkexp::loadGenomeArchive(legacy);
+    check(old.genomes.size() == genomes.size() &&
+              old.genomes.front().weights == genomes.front().weights,
+          "A version 1 archive still loads its weights");
+    check(!old.describedStructure,
+          "and says plainly that nothing about its structure was checked");
 
     // A corrupted magic must fail loudly rather than load noise as a population.
     const std::filesystem::path corrupted = path.parent_path() / "corrupted.vkng";
@@ -2551,6 +2757,7 @@ int main() {
     testScenarioRegistryContract();
     testFitnessWeightsAreParameters();
     testSharedScenarioKernel();
+    testBrainDescription();
     testGenomeArchiveRoundTrip();
     testGroupFitnessSharing();
     testWorldSnapshotRoundTrip();

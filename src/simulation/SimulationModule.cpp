@@ -2,16 +2,37 @@
 
 #include "vkexp/core/VulkanContext.hpp"
 #include "vkexp/evolution/GenomeArchive.hpp"
+#include "vkexp/neuro/BrainDescription.hpp"
 #include "vkexp/profiling/Profiler.hpp"
 #include "vkexp/worlds/WorldScenario.hpp"
 
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace vkexp {
+namespace {
+
+// The short form, for files rather than for reading; the headless runner writes
+// the same three words.
+[[nodiscard]] const char* neuronModelKey(const NeuronModel model) {
+    switch (model) {
+    case NeuronModel::Reactive:
+        return "reactive";
+    case NeuronModel::TimeConstant:
+        return "time";
+    case NeuronModel::Gated:
+        return "gated";
+    }
+    return "time";
+}
+
+} // namespace
+
 
 // The driver writes per-step parameters into host-visible memory during
 // onRender. That is only safe because VulkanContext waits on the frame fence in
@@ -75,6 +96,30 @@ void SimulationModule::onUpdate(AppContext& context, const FrameInfo&) {
                 "Saved " + std::to_string(saved) + " genome(s) from generation " +
                 std::to_string(driver_.evolution().generation()) + " to " +
                 state_.controls.genomePath;
+        } catch (const std::exception& error) {
+            state_.controls.snapshotStatus = error.what();
+        }
+        return;
+    }
+    // The structure the weights are laid out under, on its own. An archive
+    // already carries it, but a file nobody can open is a poor way to answer
+    // "which input is the left antenna" while looking at a champion.
+    if (state_.controls.saveBrainStructureRequested) {
+        state_.controls.saveBrainStructureRequested = false;
+        try {
+            std::filesystem::path path{state_.controls.genomePath};
+            path.replace_extension(".json");
+            std::ofstream stream{path, std::ios::trunc};
+            if (!stream) {
+                throw std::runtime_error("Unable to write " + path.string());
+            }
+            stream << neuro::brainDescriptionToJson(neuro::describeBrain(
+                scenarioDefinition(state_.physics.beaconScenario).brain,
+                neuronModelKey(state_.physics.neuronModel)));
+            if (!stream) {
+                throw std::runtime_error("Failed while writing " + path.string());
+            }
+            state_.controls.snapshotStatus = "Wrote the network's structure to " + path.string();
         } catch (const std::exception& error) {
             state_.controls.snapshotStatus = error.what();
         }

@@ -918,10 +918,68 @@ harness. It is zero at the start of a generation, which is the whole of the
 reset semantics. The gate needs no state of its own: what it needs is the state
 the neuron already has.
 
-Both file formats notice a brain that changed shape. A genome archive from an
-older brain is rejected by the weight count it already records, with a message
-naming both counts, which is more use than a version number would be; world
-snapshots carry a version of their own, currently 7.
+### The same structure, written down
+
+The two tables above are hand-written, and every offset in them is really a
+function call: the input vector is addressed by `brainLightChannelIndex` and its
+siblings, the genome by `brainHiddenWeightIndex` and its siblings, and both
+languages compile those from the one preset. That makes the layout impossible to
+get *wrong* -- and impossible to *state*. Nothing could hand a file, or a
+reader, the sentence "slots 44 to 52 are the ground antennae".
+
+`describeBrain` produces exactly that sentence, as a structure of named blocks,
+and it produces it by asking the same index functions where each block begins.
+It is derived, never restated, which is rule 3c applied to the layout itself.
+
+```sh
+vkneuro_headless --scenario scent --neuron-model gated --describe-brain brain.json
+```
+
+```json
+{
+  "inputs_count": 61, "hidden_count": 20, "outputs_count": 8,
+  "weight_count": 2668, "neuron_model": "gated",
+  "inputs": [
+    { "name": "light", "offset": 0, "count": 28, "rows": 7, "columns": 4 },
+    { "name": "tactile", "offset": 28, "count": 16, "rows": 8, "columns": 2 },
+    { "name": "antennae", "offset": 44, "count": 9, "rows": 3, "columns": 3 },
+    ...
+  ],
+  "weights": [
+    { "name": "hidden_weights", "offset": 0, "count": 1220,
+      "from": "inputs", "to": "hidden", "rows": 20, "columns": 61 },
+    ...
+  ]
+}
+```
+
+The window writes the same document with `Save structure`, next to the archive.
+A scenario that trims its input vector describes the smaller network it actually
+runs -- `--scenario stationary` reports 57 inputs and 6 outputs, with no task and
+no memory blocks -- so the file says what that run's weights mean rather than
+what the build is capable of.
+
+**The test is what makes it worth having.** `testBrainDescription` asserts that
+the blocks tile the input vector, the output vector and the genome exactly --
+no gap, which would be a slot nothing names, and no overlap, which would be two
+names for one number -- and that both corners of every weight block are where
+the kernel's own index function puts them. A description that merely looked
+right would be worse than none, because the loader below acts on it.
+
+**Both file formats notice a brain that changed shape**, and one of them can now
+say how. A genome archive carries this document, and refuses to load into a build
+whose network differs, naming the block: *"input block 'antennae' is missing"*
+rather than *"2668 weights, expected 2530"*. Archives are version 2 for that;
+version 1 files still load, and say plainly that nothing but their weight count
+was checked. World snapshots carry a version of their own, currently 13.
+
+**What this is not, yet.** It describes the structure; it does not choose it.
+GLSL sizes its arrays with compile-time constants, so capacity stays in
+`BrainKernel.inl` and a file cannot invent a sensor. What a file can already
+carry is the active shape inside that capacity, which is a runtime parameter the
+GPU already reads. Making the connections themselves data -- a genome with its
+own topology -- is a different change: it takes the arithmetic away from the
+shader, and needs structural mutation and speciation to go with it.
 
 ## Replay
 

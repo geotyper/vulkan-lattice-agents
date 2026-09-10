@@ -579,6 +579,16 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                           "but only as one of a whole population, and it can be resumed only into "
                           "a run of the same size.");
     ImGui::SameLine();
+    if (ImGui::Button("Save structure")) {
+        state_.controls.saveBrainStructureRequested = true;
+    }
+    ImGui::SetItemTooltip("Writes what the weights *mean*, as JSON next to the archive: which "
+                          "slot of the input vector is which sensor, which span of the genome is "
+                          "which weight block, and what connects to what. An archive already "
+                          "carries this and refuses to load into a build whose network differs, "
+                          "naming the block that moved -- this is the same document on its own, "
+                          "to read.");
+    ImGui::SameLine();
     if (ImGui::Button("Load genomes")) {
         state_.controls.loadGenomesRequested = true;
     }
