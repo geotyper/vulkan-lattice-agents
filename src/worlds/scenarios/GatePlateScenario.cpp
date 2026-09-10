@@ -137,7 +137,7 @@ ScenarioParameterBlock gpuParameters(const SimulationStep& settings) {
     return {{settings.gateLatchSeconds, 0.0F, 0.0F, 0.0F}, {}, {}};
 }
 
-constexpr neuro::BrainShape brain = neuro::maximumBrainShape;
+constexpr neuro::BrainShape brain = neuro::defaultBrainShape;
 static_assert(brain.fitsCapacity());
 
 } // namespace

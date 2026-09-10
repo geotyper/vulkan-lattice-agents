@@ -65,6 +65,23 @@ SimulationDriver::SimulationDriver(SimulationState& state, EvolutionSettings evo
         config_.gridCellSize <= 0.0F) {
         throw std::invalid_argument("Invalid simulation driver configuration");
     }
+    adoptBrainPlan();
+    state_.evolution = evolution_.settings();
+}
+
+// The genome is as long as the plan reading it, so the plan settles the length
+// once and everything after -- the population, the GPU buffer, the files --
+// reads it from the settings rather than from a compiled-in constant.
+void SimulationDriver::adoptBrainPlan() {
+    const std::size_t weights =
+        resolvedBrain(scenarioDefinition(state_.physics.beaconScenario), state_.physics)
+            .weightCount();
+    if (evolution_.settings().weightCount == weights) {
+        return;
+    }
+    EvolutionSettings settings = evolution_.settings();
+    settings.weightCount = weights;
+    evolution_ = GeneticAlgorithm{settings};
     state_.evolution = evolution_.settings();
 }
 
@@ -80,7 +97,8 @@ void SimulationDriver::createStepResources() {
     const auto genomeCount = static_cast<std::uint32_t>(evolution_.population().size());
     const std::uint32_t agentCount = genomeCount * config_.trialsPerGenome;
     const VkDeviceSize agentBytes = sizeof(AgentState) * agentCount;
-    const VkDeviceSize genomeBytes = sizeof(float) * neuro::Topology::weightCount * genomeCount;
+    const VkDeviceSize genomeBytes =
+        sizeof(float) * evolution_.settings().weightCount * genomeCount;
     const VkDeviceSize stepParameterBytes =
         sizeof(GpuStepParameters) * config_.maximumStepsPerBatch;
     agentBuffers_.create(physicalDevice_, device_,
@@ -350,7 +368,7 @@ std::vector<PuckState> SimulationDriver::makeInitialPucks() const {
 
 void SimulationDriver::uploadPopulation() {
     std::vector<float> flattened;
-    flattened.reserve(evolution_.population().size() * neuro::Topology::weightCount);
+    flattened.reserve(evolution_.population().size() * evolution_.settings().weightCount);
     for (const Genome& genome : evolution_.population()) {
         flattened.insert(flattened.end(), genome.weights.begin(), genome.weights.end());
     }
@@ -378,7 +396,14 @@ void SimulationDriver::resetGeneration() {
 }
 
 void SimulationDriver::restart() {
+    // A restart is where a new brain plan takes hold: it changes how long a
+    // genome is, so the population and the buffer holding it are both remade.
+    const std::size_t previous = evolution_.settings().weightCount;
+    adoptBrainPlan();
     evolution_.reset();
+    if (evolution_.settings().weightCount != previous && device_ != VK_NULL_HANDLE) {
+        createStepResources();
+    }
     state_.statistics = {};
     state_.history.bestFitness.clear();
     state_.history.medianFitness.clear();
@@ -442,6 +467,16 @@ void SimulationDriver::restoreSnapshot(const WorldSnapshot& snapshot) {
     state_.controls.stepsPerGeneration = snapshot.stepsPerGeneration;
     state_.worlds.requestedAgentsPerWorld = snapshot.requestedAgentsPerWorld;
 
+    // The settings that just went in decide how long a genome is -- the world's
+    // scenario and its brain plan are both in the file -- so the run adopts that
+    // before the population is handed over. A snapshot of a different world is a
+    // resumable thing; population size and trial count are the two that are not,
+    // because they are buffer dimensions fixed at launch.
+    const std::size_t previousWeights = evolution_.settings().weightCount;
+    adoptBrainPlan();
+    if (evolution_.settings().weightCount != previousWeights && device_ != VK_NULL_HANDLE) {
+        createStepResources();
+    }
     evolution_.setPopulation(snapshot.genomes, snapshot.generation);
     updateWorldLayout();
     refreshGridForWorldSize();
@@ -920,8 +955,9 @@ GenomeArchiveMetadata genomeArchiveMetadata(const SimulationState& state,
             state.statistics.bestFitness,
             state.statistics.meanFitness,
             static_cast<std::uint32_t>(brain.inputCount),
-            static_cast<std::uint32_t>(brain.hiddenCount),
-            static_cast<std::uint32_t>(brain.outputCount)};
+            static_cast<std::uint32_t>(brain.hiddenTotal()),
+            static_cast<std::uint32_t>(brain.outputCount),
+            brain.packedLayers()};
 }
 
 } // namespace vkexp

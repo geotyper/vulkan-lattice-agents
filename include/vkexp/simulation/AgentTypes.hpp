@@ -186,9 +186,11 @@ clampAgentsPerWorld(const std::uint32_t genomeCount, const std::uint32_t request
 }
 
 // One vector per four hidden neurons, so the block follows the brain preset
-// instead of being resized by hand when the hidden layer changes width.
+// instead of being resized by hand when the hidden layers change width. Every
+// layer's states live end to end in here, so a plan with three layers needs no
+// storage a plan with one does not: only a different division of the same block.
 inline constexpr std::size_t agentHiddenVectorCount =
-    (neuro::kernel::BrainHiddenCapacity + 3U) / 4U;
+    (neuro::kernel::BrainHiddenNeuronCapacity + 3U) / 4U;
 
 struct alignas(16) Float4 {
     float x{};
@@ -229,7 +231,10 @@ struct alignas(16) AgentState {
 };
 
 static_assert(std::is_trivially_copyable_v<AgentState>);
-static_assert(sizeof(AgentState) == 256);
+// 176 bytes of everything else plus the hidden block. It grew when the neuron
+// capacity did -- the block is last precisely so that growth costs nothing but
+// its own bytes.
+static_assert(sizeof(AgentState) == 304);
 static_assert(offsetof(AgentState, metrics) == 64);
 static_assert(offsetof(AgentState, penalties) == 80);
 static_assert(offsetof(AgentState, internal) == 96);
@@ -415,6 +420,17 @@ struct SimulationStep {
     float trailRenderWidth{1.0F};
     float trailCellSize{trailCellSizeForBodyFraction(trailCellFractionCoarsest)};
     TrailMode trailMode{TrailMode::Sensed};
+    // The hidden layers to run, widest question first: how many, and how wide.
+    // All three zero means "whatever the scenario declares", which is what every
+    // run did before the plan was a setting -- so a world keeps the brain it was
+    // tuned with unless someone says otherwise. Layers are dense from the front;
+    // a hole is refused rather than closed up, because {20, 0, 8} could mean two
+    // readings and guessing between them is worse than saying no.
+    //
+    // Only the hidden layers, deliberately. The two ends are the scenario's own
+    // business: how many sensors a world offers and how many actuators it needs
+    // are statements about the world, not about how much brain to spend on it.
+    std::array<std::uint32_t, neuro::kernel::BrainHiddenLayerCapacity> hiddenLayers{};
     FitnessWeights fitness{};
     std::uint32_t beaconMotionSeed{};
     WorldShape worldShape{WorldShape::Circle};
@@ -517,7 +533,7 @@ struct alignas(16) GpuStepParameters {
     float gridCellSize{};
     float wallCollisionPenalty{};
     std::uint32_t agentCount{};
-    std::uint32_t brainLayout{}; // packed genome stride and active input/hidden/output counts
+    std::uint32_t brainLayout{}; // packed active input and output counts
     std::uint32_t trialsPerGenome{};
     std::uint32_t worldShape{};
     std::uint32_t gridWidth{};
@@ -549,8 +565,12 @@ struct alignas(16) GpuStepParameters {
     std::uint32_t worldCount{};
     float puckTargetRadiusRatio{};
     std::uint32_t puckEnabled{};
-    std::uint32_t reserved3{};
-    std::uint32_t reserved4{};
+    // The three hidden layer widths, six bits each, and the genome stride. The
+    // stride used to share the layout word in twelve bits; three layers of the
+    // neuron capacity put it past 4095, and a stride that wrapped would address
+    // another genome's weights and still produce numbers.
+    std::uint32_t brainHiddenLayers{};
+    std::uint32_t brainGenomeStride{};
 };
 
 static_assert(sizeof(GpuStepParameters) == 256);

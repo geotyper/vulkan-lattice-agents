@@ -21,6 +21,7 @@
 
 #include "vkexp/compute/HeadlessComputeContext.hpp"
 #include "vkexp/neuro/BrainKernel.hpp"
+#include "vkexp/worlds/WorldScenario.hpp"
 #include "vkexp/simulation/PuckKernel.hpp"
 #include "vkexp/simulation/SimulationDriver.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
@@ -48,15 +49,15 @@ void require(const bool condition, const std::string& message) {
 // motor outputs pinned by their biases, every other weight zero. Staging a drive
 // into the agent record does not work, because the agent step recomputes it from
 // the brain every step -- so the brain has to be the thing that says "forward".
-vkexp::Genome forwardDrivingGenome() {
-    namespace brain = vkexp::neuro::kernel;
-    vkexp::Genome genome{};
-    genome.weights.fill(0.0F);
-    const auto inputs = static_cast<std::uint32_t>(vkexp::neuro::Topology::inputCount);
-    const auto hidden = static_cast<std::uint32_t>(vkexp::neuro::Topology::hiddenCount);
-    const auto outputs = static_cast<std::uint32_t>(vkexp::neuro::Topology::outputCount);
+namespace brain = vkexp::neuro::kernel;
+
+vkexp::Genome forwardDrivingGenome(const vkexp::neuro::BrainShape& shape) {
+    vkexp::Genome genome{vkexp::neuro::makeWeights(shape)};
+    const auto inputs = static_cast<std::uint32_t>(shape.inputCount);
+    const auto outputs = static_cast<std::uint32_t>(shape.outputCount);
     for (const std::uint32_t motor : {brain::BrainMotorLeftOutput, brain::BrainMotorRightOutput}) {
-        genome.weights[brain::brainOutputBiasIndex(0U, inputs, hidden, outputs, motor)] = 8.0F;
+        genome.weights[brain::brainOutputBiasIndex(0U, inputs, shape.packedLayers(), outputs,
+                                                   motor)] = 8.0F;
     }
     return genome;
 }
@@ -158,7 +159,9 @@ int run() {
             puck.motion = {};
         }
         for (vkexp::Genome& genome : staged.genomes) {
-            genome = forwardDrivingGenome();
+            genome = forwardDrivingGenome(
+                vkexp::resolvedBrain(vkexp::scenarioDefinition(state.physics.beaconScenario),
+                                     state.physics));
         }
         for (std::size_t index = 0; index < staged.agents.size(); ++index) {
             const std::uint32_t world = vkexp::logicalWorldForAgent(
@@ -280,7 +283,9 @@ int run() {
             puck.motion = {};
         }
         for (vkexp::Genome& genome : staged.genomes) {
-            genome = forwardDrivingGenome();
+            genome = forwardDrivingGenome(
+                vkexp::resolvedBrain(vkexp::scenarioDefinition(state.physics.beaconScenario),
+                                     state.physics));
         }
         // Spread over a short arc behind the puck: far enough apart not to
         // overlap, close enough that their pushes still add rather than cancel.

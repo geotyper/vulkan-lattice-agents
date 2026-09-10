@@ -153,6 +153,25 @@ float beaconRotationAngleForStep(const float angularSpeed, const float deltaTime
     return worlds::rotating::angleForStep(angularSpeed, deltaTime, step);
 }
 
+neuro::BrainShape resolvedBrain(const ScenarioDefinition& scenario,
+                                const SimulationStep& settings) {
+    const bool asked = settings.hiddenLayers[0] != 0 || settings.hiddenLayers[1] != 0 ||
+                       settings.hiddenLayers[2] != 0;
+    if (!asked) {
+        return scenario.brain;
+    }
+    neuro::BrainShape shape = scenario.brain;
+    shape.hiddenCount = settings.hiddenLayers[0];
+    shape.secondHiddenCount = settings.hiddenLayers[1];
+    shape.thirdHiddenCount = settings.hiddenLayers[2];
+    // A plan the genome cannot hold, or one with a hole in it, is refused rather
+    // than trimmed to fit: the scenario's own brain is a working answer, and a
+    // silently altered plan would be a run nobody asked for reported under the
+    // name of one they did. The window will not offer such a plan; a command
+    // line and a resumed snapshot can still name one.
+    return shape.fitsCapacity() ? shape : scenario.brain;
+}
+
 SimulationStep resolveStepSettings(const SimulationStep& base, const std::uint32_t step,
                                    const std::uint32_t stepsPerGeneration) {
     SimulationStep resolved = base;

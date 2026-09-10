@@ -18,11 +18,23 @@ struct EvolutionSettings {
     float mutationProbability{0.08F};
     float mutationStrength{0.18F};
     std::uint32_t seed{0xC0FFEEU};
+    // How long one genome is. It follows from the brain plan the run is set up
+    // with, so it is settled once at reset and never guessed at afterwards --
+    // the population, the GPU buffer and every file all read it from here.
+    std::size_t weightCount{neuro::maximumBrainShape.weightCount()};
 };
 
 struct Genome {
     neuro::Weights weights{};
 };
+
+// Whether two genomes can be exchanged at all. A population is interchangeable
+// when it is as long as the plan reading it -- which is a question a file can
+// now answer about itself, rather than one settled by everything sharing a
+// single compiled-in length.
+[[nodiscard]] inline bool genomeFits(const Genome& genome, const std::size_t weightCount) {
+    return genome.weights.size() == weightCount;
+}
 
 // Blends each genome's score toward the mean of the group it was evaluated with.
 // Groups are contiguous blocks of `groupSize` genomes -- the same blocks the

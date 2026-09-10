@@ -19,7 +19,7 @@ ScenarioParameterBlock gpuParameters(const SimulationStep&) { return {}; }
 
 constexpr neuro::BrainShape brain{neuro::Topology::inputCount - neuro::Topology::taskInputCount -
                                       neuro::Topology::recurrentMemoryCount,
-                                  neuro::Topology::hiddenCount,
+                                  neuro::Topology::defaultHiddenCount,
                                   neuro::Topology::actuatorOutputCount};
 static_assert(brain.fitsCapacity());
 

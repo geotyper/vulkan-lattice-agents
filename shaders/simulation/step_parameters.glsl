@@ -63,8 +63,10 @@ struct StepParameters {
     uint worldCount;
     float puckTargetRadiusRatio;
     uint puckEnabled;
-    uint reserved3;
-    uint reserved4;
+    // Three hidden layer widths packed six bits each, and the genome stride,
+    // which outgrew the twelve bits it used to share with the layout word.
+    uint brainHiddenLayers;
+    uint brainGenomeStride;
 };
 
 #endif

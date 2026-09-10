@@ -9,11 +9,11 @@
 // below would have had to be added to all four by hand, and a shader that missed
 // it would not fail to compile, it would read the wrong fields.
 //
-// Needs neuro/brain_kernel.glsl included first, for BrainHiddenCapacity.
+// Needs neuro/brain_kernel.glsl included first, for BrainHiddenNeuronCapacity.
 
 // One vec4 per four neurons. Derived, so the block follows the preset rather
 // than being resized by hand when the hidden layer changes width.
-const uint AgentHiddenVectorCount = (BrainHiddenCapacity + 3u) / 4u;
+const uint AgentHiddenVectorCount = (BrainHiddenNeuronCapacity + 3u) / 4u;
 
 struct Agent {
     vec4 pose;

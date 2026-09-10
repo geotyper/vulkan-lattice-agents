@@ -25,7 +25,9 @@ replay by step count -- while every physical quantity is expressed per second.
 - 8 full-body tactile sectors distinguishing walls from agents;
 - 3 ground antennae reading the RGB of a decaying trail field, switchable
   between off, drawn-but-unsmelled and drawn-and-smelled;
-- `61 inputs -> 20 tanh neurons -> 8 outputs`;
+- `61 inputs -> 20 tanh neurons -> 8 outputs` by default, with the hidden
+  layers configurable from the Brain window: up to three of them, 32 neurons
+  in total, evaluated identically on the CPU and the GPU;
 - every hidden neuron holds its own state and a time constant that is either
   evolved or recomputed from the inputs each step, so a memory is measured in
   seconds and can be held until something says to let go;
@@ -892,17 +894,23 @@ inputs 61                            hidden 20            outputs 8
   2 recurrent cells fed back           =  2
 ```
 
-The genome is one flat vector of 2668 floats in seven blocks:
+The genome is one flat vector, as long as the plan needs. Under the default plan
+-- one hidden layer of twenty -- that is 2668 floats in seven blocks:
 
 | Block | Size | Read by |
 | --- | --- | --- |
-| input -> hidden | 61 x 20 = 1220 | every model |
-| hidden bias | 20 | every model |
-| hidden -> output | 20 x 8 = 160 | every model |
+| inputs -> hidden 0 | 61 x 20 = 1220 | every model |
+| hidden 0 bias | 20 | every model |
+| hidden 0 -> output | 20 x 8 = 160 | every model |
 | output bias | 8 | every model |
 | time constants | 20 | `time` |
-| gate weights | 20 x 61 = 1220 | `gated` |
-| gate biases | 20 | `gated` |
+| gate 0 weights | 20 x 61 = 1220 | `gated` |
+| gate 0 biases | 20 | `gated` |
+
+A deeper plan has one weights-and-bias pair per layer, and one gate pair to
+mirror it; the output layer always reads the last hidden layer. `12,8,8` comes to
+1940 weights in fifteen blocks -- *fewer* than the flat default, because the
+first matrix is what dominates.
 
 Every model carries every block, whichever one is selected. That is deliberate:
 it makes switching a parameter change rather than a reinterpretation of the
@@ -918,10 +926,126 @@ harness. It is zero at the start of a generation, which is the whole of the
 reset semantics. The gate needs no state of its own: what it needs is the state
 the neuron already has.
 
-Both file formats notice a brain that changed shape. A genome archive from an
-older brain is rejected by the weight count it already records, with a message
-naming both counts, which is more use than a version number would be; world
-snapshots carry a version of their own, currently 7.
+### Choosing the structure
+
+The hidden layers are a plan now, not a constant. The **Brain** window sets how
+many there are and how wide, `--hidden 12,8,8` says the same from a command
+line, and both the CPU evaluator and the compute shader walk whatever is chosen:
+
+| | |
+| --- | --- |
+| Layers | up to 3, dense from the front |
+| Neurons | 32 in total, spent however the plan likes |
+| Default | one layer of 20 -- what every world was tuned with |
+
+**Only the hidden layers, and that is the design rather than a limitation.** How
+many sensors a world offers and how many actuators it needs are statements about
+the world, so the two ends stay the scenario's own. How much brain to spend on
+the world is the question worth asking, and it is the only one the window asks.
+
+**The capacity is compiled in; the plan is not.** GLSL sizes its arrays with
+compile-time constants, so how many neurons there may be at most, and how many
+layers, live in `BrainKernel.inl`. Everything inside that -- how many layers this
+run uses, how wide each one is, where every weight of every layer lives -- is
+computed at runtime by shared kernel functions that walk the plan, so the two
+languages cannot walk it differently. `compute_smoke` runs the trajectory parity
+cases at `12,8,8` and at `16,6` precisely because every other case in the file
+runs the single layer the network always had: a shader that read the plan even
+slightly differently would drift there and nowhere else.
+
+**The genome is exactly as long as its plan.** There is no fixed stride and no
+tail: the flat default is 2668 weights, `12,8,8` is 1940, and a single 32-wide
+layer is 4264. Interchangeability comes from the file saying which network it
+holds, not from every run sharing one length -- an archive records the plan in
+its header and the structure block beside it, and refuses to load into a build
+that lays that network out differently, naming the block that moved.
+
+A deeper plan is usually *cheaper* than a flat one, which is worth knowing before
+reaching for it: the first matrix dominates, so a narrow first layer shrinks the
+whole network even as it makes it deeper.
+
+**The default width and the capacity are separate numbers**, and a test says so.
+Sharing one constant would mean that raising how many neurons there *may* be
+widens every world's brain behind its back -- which is exactly what happened once
+while this was being built. Every scenario declares one layer of twenty; the
+capacity is thirty-two and nothing runs it unless asked.
+
+**Each layer holds its own state.** The time constants are per neuron, numbered
+across all layers end to end, so a deep plan is not just a longer path but a path
+with different memories along it -- a fast layer in front of a slow one is now
+something a run can be. Whether that helps is exactly the experiment the plan
+exists to make possible, and it has not been run yet.
+
+**A plan takes effect on a reset**, because it is a different layout of the same
+genome: the population evolving under the old one does not carry over
+meaningfully. The window says "not applied yet" rather than pretending
+otherwise, and offers the world's own plan back in one button.
+
+### The same structure, written down
+
+The two tables above are hand-written, and every offset in them is really a
+function call: the input vector is addressed by `brainLightChannelIndex` and its
+siblings, the genome by `brainHiddenWeightIndex` and its siblings, and both
+languages compile those from the one preset. That makes the layout impossible to
+get *wrong* -- and impossible to *state*. Nothing could hand a file, or a
+reader, the sentence "slots 44 to 52 are the ground antennae".
+
+`describeBrain` produces exactly that sentence, as a structure of named blocks,
+and it produces it by asking the same index functions where each block begins.
+It is derived, never restated, which is rule 3c applied to the layout itself.
+
+```sh
+vkneuro_headless --scenario scent --neuron-model gated --describe-brain brain.json
+```
+
+```json
+{
+  "inputs_count": 61, "hidden_count": 20, "outputs_count": 8,
+  "weight_count": 2668, "neuron_model": "gated",
+  "inputs": [
+    { "name": "light", "offset": 0, "count": 28, "rows": 7, "columns": 4 },
+    { "name": "tactile", "offset": 28, "count": 16, "rows": 8, "columns": 2 },
+    { "name": "antennae", "offset": 44, "count": 9, "rows": 3, "columns": 3 },
+    ...
+  ],
+  "weights": [
+    { "name": "hidden_weights", "offset": 0, "count": 1220,
+      "from": "inputs", "to": "hidden", "rows": 20, "columns": 61 },
+    ...
+  ]
+}
+```
+
+The window writes the same document with `Save structure`, next to the archive.
+A scenario that trims its input vector describes the smaller network it actually
+runs -- `--scenario stationary` reports 57 inputs and 6 outputs, with no task and
+no memory blocks -- so the file says what that run's weights mean rather than
+what the build is capable of.
+
+**The test is what makes it worth having.** `testBrainDescription` asserts that
+the blocks tile the input vector, the output vector and the genome exactly --
+no gap, which would be a slot nothing names, and no overlap, which would be two
+names for one number -- and that both corners of every weight block are where
+the kernel's own index function puts them. A description that merely looked
+right would be worse than none, because the loader below acts on it.
+
+**Both file formats notice a brain that changed shape**, and one of them can now
+say how. A genome archive carries this document plus the layer plan in its
+header, so a file states which network it holds; it refuses to load into a build
+that lays that network out differently, naming the block: *"input block
+'antennae' is missing"* rather than *"2668 weights, expected 2530"*. Archives are
+version 3 for that; version 1 files still load and say plainly that nothing but
+their length was checked. World snapshots carry a version of their own, currently
+14.
+
+**What this is not, yet.** The layers are chosen; the *connections* are not. A
+plan says how many layers and how wide, and every layer is still fully connected
+to the one before it. A genome with its own topology -- connections as data,
+added and removed by mutation -- is a different change: it takes the arithmetic
+away from the shader, and needs structural mutation and speciation to go with
+it. Capacity also stays compiled in, because GLSL sizes its arrays with
+compile-time constants, so a file cannot invent a sensor or a thirty-third
+neuron.
 
 ## Replay
 

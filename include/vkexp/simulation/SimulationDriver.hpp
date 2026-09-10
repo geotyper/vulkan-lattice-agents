@@ -85,6 +85,7 @@ public:
     [[nodiscard]] const SimulationDriverConfig& config() const { return config_; }
 
 private:
+    void adoptBrainPlan();
     void createStepResources();
     void resetGeneration();
     void uploadPopulation();

@@ -4,6 +4,7 @@
 
 #include "vkexp/compute/HeadlessComputeContext.hpp"
 #include "vkexp/evolution/GenomeArchive.hpp"
+#include "vkexp/neuro/BrainDescription.hpp"
 #include "vkexp/simulation/Locomotion.hpp"
 #include "vkexp/simulation/SimulationDriver.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
@@ -64,6 +65,9 @@ struct Options {
     bool quiet{};
     std::string savePopulation;
     std::string saveChampion;
+    std::string describeBrain;
+    // Empty means the scenario's own hidden layers.
+    std::vector<std::uint32_t> hiddenLayers;
     std::string loadPopulation;
     std::string saveWorld;
     std::string loadWorld;
@@ -198,6 +202,42 @@ vkexp::BeaconScenario parseScenario(const std::string_view name) {
          ")");
 }
 
+// "20", or "16,8", or "12,8,8": the hidden layers, front to back. Written this
+// way because that is how the network reads out loud, and because it makes the
+// depth visible in a run directory name.
+[[nodiscard]] std::vector<std::uint32_t> parseHiddenLayers(const std::string_view text) {
+    std::vector<std::uint32_t> widths;
+    std::size_t start = 0;
+    while (start <= text.size()) {
+        const std::size_t comma = text.find(',', start);
+        const std::string_view piece =
+            text.substr(start, comma == std::string_view::npos ? std::string_view::npos
+                                                               : comma - start);
+        if (piece.empty()) {
+            fail("Empty hidden layer width in '" + std::string{text} + "'");
+        }
+        widths.push_back(parseNumber<std::uint32_t>(piece, "--hidden"));
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        start = comma + 1;
+    }
+    if (widths.empty() || widths.size() > vkexp::neuro::Topology::hiddenLayerCount) {
+        fail("--hidden takes 1 to " + std::to_string(vkexp::neuro::Topology::hiddenLayerCount) +
+             " widths, front to back");
+    }
+    return widths;
+}
+
+[[nodiscard]] std::string describeLayers(const vkexp::neuro::BrainShape& brain) {
+    std::string text;
+    for (std::size_t layer = 0; layer < brain.hiddenLayerCount(); ++layer) {
+        text += text.empty() ? "" : " -> ";
+        text += std::to_string(brain.hiddenLayer(layer));
+    }
+    return text;
+}
+
 [[nodiscard]] vkexp::TrailMode parseTrailMode(const std::string_view name) {
     if (name == "off") {
         return vkexp::TrailMode::Off;
@@ -235,6 +275,19 @@ vkexp::BeaconScenario parseScenario(const std::string_view name) {
         return vkexp::NeuronModel::Gated;
     }
     fail("Unknown neuron model '" + std::string{name} + "'; expected reactive, time or gated");
+}
+
+// The short form, for files rather than for reading.
+[[nodiscard]] const char* neuronModelKey(const vkexp::NeuronModel model) {
+    switch (model) {
+    case vkexp::NeuronModel::Reactive:
+        return "reactive";
+    case vkexp::NeuronModel::TimeConstant:
+        return "time";
+    case vkexp::NeuronModel::Gated:
+        return "gated";
+    }
+    return "time";
 }
 
 [[nodiscard]] const char* neuronModelName(const vkexp::NeuronModel model) {
@@ -350,6 +403,10 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.savePopulation = next(index, argument);
         } else if (argument == "--save-champion") {
             options.saveChampion = next(index, argument);
+        } else if (argument == "--hidden") {
+            options.hiddenLayers = parseHiddenLayers(next(index, argument));
+        } else if (argument == "--describe-brain") {
+            options.describeBrain = next(index, argument);
         } else if (argument == "--load-population") {
             options.loadPopulation = next(index, argument);
         } else if (argument == "--save-world") {
@@ -366,6 +423,31 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
         fail("Generations, steps and steps-per-batch must all be non-zero");
     }
     return options;
+}
+
+// Writing down the structure is not a run: it follows from the scenario and the
+// neuron model alone, needs no device, and answers a question about the build
+// rather than about an experiment. So it is its own action, like --help, and the
+// run options around it are not even validated.
+void describeBrainAndExit(const Options& options) {
+    vkexp::SimulationStep settings{};
+    for (std::size_t layer = 0; layer < options.hiddenLayers.size(); ++layer) {
+        settings.hiddenLayers[layer] = options.hiddenLayers[layer];
+    }
+    const vkexp::neuro::BrainDescription description = vkexp::neuro::describeBrain(
+        vkexp::resolvedBrain(vkexp::scenarioDefinition(options.scenario), settings),
+        neuronModelKey(options.neuronModel));
+    std::ofstream stream{options.describeBrain, std::ios::trunc};
+    if (!stream) {
+        fail("Unable to write the brain description to " + options.describeBrain);
+    }
+    stream << vkexp::neuro::brainDescriptionToJson(description);
+    if (!stream) {
+        fail("Failed while writing " + options.describeBrain);
+    }
+    if (!options.quiet) {
+        std::cout << "Wrote the network's structure to " << options.describeBrain << '\n';
+    }
 }
 
 int run(const Options& options) {
@@ -410,6 +492,9 @@ int run(const Options& options) {
         state.physics.maximumSpeed = *options.maximumSpeed;
     }
     state.physics.trailMode = options.trailMode;
+    for (std::size_t layer = 0; layer < options.hiddenLayers.size(); ++layer) {
+        state.physics.hiddenLayers[layer] = options.hiddenLayers[layer];
+    }
     state.physics.neuronModel = options.neuronModel;
     if (options.trailDepositRate) {
         state.physics.trailDepositRate = *options.trailDepositRate;
@@ -456,6 +541,10 @@ int run(const Options& options) {
 
     const vkexp::ScenarioDefinition& scenario =
         vkexp::scenarioDefinition(state.physics.beaconScenario);
+    const vkexp::neuro::BrainShape runBrain = vkexp::resolvedBrain(scenario, state.physics);
+    if (!options.hiddenLayers.empty() && runBrain.hiddenLayerCount() != options.hiddenLayers.size()) {
+        fail("The requested hidden layers do not fit the genome capacity");
+    }
 
     if (!options.loadPopulation.empty()) {
         const vkexp::GenomeArchive archive = vkexp::loadGenomeArchive(options.loadPopulation);
@@ -463,6 +552,15 @@ int run(const Options& options) {
         if (!options.quiet) {
             std::cout << "Resumed " << archive.genomes.size() << " genomes from "
                       << options.loadPopulation << " at generation " << archive.metadata.generation
+                      << '\n';
+            // Whether anything about the layout was actually checked, rather
+            // than only the number of weights. A version 1 file cannot say what
+            // its weights mean, and a resumed run that quietly reinterprets them
+            // still produces a plausible curve.
+            std::cout << "Structure:  "
+                      << (archive.describedStructure
+                              ? "checked against the file"
+                              : "NOT STATED by the file -- only the weight count matched")
                       << '\n';
         }
     }
@@ -482,8 +580,8 @@ int run(const Options& options) {
     if (!options.quiet) {
         std::cout << "Device:     " << context.deviceName() << '\n'
                   << "Scenario:   " << scenario.name << '\n'
-                  << "Brain:      " << scenario.brain.inputCount << " -> "
-                  << scenario.brain.hiddenCount << " -> " << scenario.brain.outputCount << '\n'
+                  << "Brain:      " << runBrain.inputCount << " -> " << describeLayers(runBrain)
+                  << " -> " << runBrain.outputCount << '\n'
                   << "Trial:      " << state.controls.stepsPerGeneration
                   << " steps = " << std::fixed << std::setprecision(1)
                   << vkexp::units::secondsForSteps(state.controls.stepsPerGeneration,
@@ -556,7 +654,7 @@ int run(const Options& options) {
     // eliteCount entries are the ranked survivors, champion first.
     const std::vector<vkexp::Genome>& population = driver.evolution().population();
     const vkexp::GenomeArchiveMetadata metadata =
-        vkexp::genomeArchiveMetadata(state, driver, scenario.brain);
+        vkexp::genomeArchiveMetadata(state, driver, runBrain);
     if (!options.savePopulation.empty()) {
         vkexp::saveGenomeArchive(options.savePopulation, population, metadata);
         if (!options.quiet) {
@@ -596,6 +694,10 @@ int main(const int argc, char** argv) {
         const Options options = parseOptions(argc, argv, helpRequested);
         if (helpRequested) {
             printHelp(argv[0]);
+            return 0;
+        }
+        if (!options.describeBrain.empty()) {
+            describeBrainAndExit(options);
             return 0;
         }
         return run(options);
