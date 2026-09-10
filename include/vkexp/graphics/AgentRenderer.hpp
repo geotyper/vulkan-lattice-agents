@@ -26,10 +26,9 @@ private:
     void createPipeline(AppContext& context);
     void createTarget(AppContext& context, VkExtent2D extent);
     void destroyTarget();
-    // Changing the trail resolution reallocates the field, which invalidates the
-    // handle written into these sets at attach time. framesInFlight is 1, so the
-    // previous frame has finished by the time this runs and the sets are idle.
-    void refreshTrailDescriptor(VkDevice device);
+    // Changing the trail resolution, puck buffers or agent buffer layouts reallocates
+    // GPU fields, which invalidates descriptor set handles.
+    void refreshDescriptors(VkDevice device);
     void draw(VkCommandBuffer commands, float scaleX, float scaleY, float worldRadius,
               std::uint32_t mode, float opacity, std::uint32_t vertices,
               std::uint32_t instances) const;
@@ -42,6 +41,8 @@ private:
     UniquePipelineLayout pipelineLayout_;
     UniquePipeline pipeline_;
     VkBuffer boundTrailBuffer_{};
+    VkBuffer boundPuckBuffer_{};
+    std::array<VkBuffer, 2> boundAgentBuffers_{};
     ImageResource target_;
     VkImageLayout targetLayout_{VK_IMAGE_LAYOUT_UNDEFINED};
 };
