@@ -89,10 +89,6 @@ void AgentRenderer::createPipeline(AppContext& context) {
                          state_.puck.size)
             .update(device, descriptorSets_[index]);
     }
-    boundTrailBuffer_ = state_.trail.buffer;
-    boundPuckBuffer_ = state_.puck.buffer;
-    boundAgentBuffers_[0] = state_.agents.buffers[0];
-    boundAgentBuffers_[1] = state_.agents.buffers[1];
 
     VkPushConstantRange pushRange{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(DrawParameters)};
     const VkDescriptorSetLayout setLayout = descriptorSetLayout_.get();
@@ -201,36 +197,6 @@ void AgentRenderer::onUpdate(AppContext& context, const FrameInfo&) {
     }
 }
 
-void AgentRenderer::refreshDescriptors(const VkDevice device) {
-    const bool needUpdate = (state_.trail.buffer != boundTrailBuffer_) ||
-                            (state_.puck.buffer != boundPuckBuffer_) ||
-                            (state_.agents.buffers[0] != boundAgentBuffers_[0]) ||
-                            (state_.agents.buffers[1] != boundAgentBuffers_[1]);
-    if (!needUpdate) {
-        return;
-    }
-    for (std::size_t index = 0; index < descriptorSets_.size(); ++index) {
-        DescriptorSetWriter writer{};
-        if (state_.agents.buffers[index] != VK_NULL_HANDLE && state_.agents.size > 0) {
-            writer.writeBuffer(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, state_.agents.buffers[index], 0,
-                               state_.agents.size);
-        }
-        if (state_.trail.buffer != VK_NULL_HANDLE && state_.trail.size > 0) {
-            writer.writeBuffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, state_.trail.buffer, 0,
-                               state_.trail.size);
-        }
-        if (state_.puck.buffer != VK_NULL_HANDLE && state_.puck.size > 0) {
-            writer.writeBuffer(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, state_.puck.buffer, 0,
-                               state_.puck.size);
-        }
-        writer.update(device, descriptorSets_[index]);
-    }
-    boundTrailBuffer_ = state_.trail.buffer;
-    boundPuckBuffer_ = state_.puck.buffer;
-    boundAgentBuffers_[0] = state_.agents.buffers[0];
-    boundAgentBuffers_[1] = state_.agents.buffers[1];
-}
-
 void AgentRenderer::draw(const VkCommandBuffer commands, const float scaleX, const float scaleY,
                          const float worldRadius, const std::uint32_t mode, const float opacity,
                          const std::uint32_t vertices, const std::uint32_t instances) const {
@@ -300,7 +266,6 @@ void AgentRenderer::onRender(AppContext& context, const FrameInfo&) {
     vkCmdSetViewport(commands, 0, 1, &viewport);
     vkCmdSetScissor(commands, 0, 1, &scissor);
     vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_.get());
-    refreshDescriptors(context.vulkan.device());
     const VkDescriptorSet descriptorSet = descriptorSets_[state_.agents.currentIndex];
     vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_.get(), 0, 1,
                             &descriptorSet, 0, nullptr);
@@ -350,7 +315,7 @@ void AgentRenderer::onRender(AppContext& context, const FrameInfo&) {
     }
     // The puck moves and is pushed, so it belongs with the agents rather than
     // with the scenery -- but under them, so a crowd around it stays readable.
-    if (drawnScenario.puck && state_.puck.buffer != VK_NULL_HANDLE && state_.puck.size > 0) {
+    if (drawnScenario.puck) {
         draw(commands, scaleX, scaleY, state_.physics.worldRadius, 7, 0.95F, 24 * 3, 1);
     }
     if (state_.display.agents) {

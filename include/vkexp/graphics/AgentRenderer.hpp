@@ -26,9 +26,13 @@ private:
     void createPipeline(AppContext& context);
     void createTarget(AppContext& context, VkExtent2D extent);
     void destroyTarget();
-    // Changing the trail resolution, puck buffers or agent buffer layouts reallocates
-    // GPU fields, which invalidates descriptor set handles.
-    void refreshDescriptors(VkDevice device);
+    // The three buffers these sets name -- agents, trail field, pucks -- are made
+    // once by SimulationDriver and never remade, so the sets are written at attach
+    // time and are correct for the life of the renderer. There is deliberately no
+    // per-frame refresh: this class had one, and it was a patch over a driver that
+    // freed those buffers on a brain-plan change. Resizing only what changes size
+    // is the fix; reconfiguration_smoke pins the handles across every
+    // reconfiguration the UI can produce.
     void draw(VkCommandBuffer commands, float scaleX, float scaleY, float worldRadius,
               std::uint32_t mode, float opacity, std::uint32_t vertices,
               std::uint32_t instances) const;
@@ -40,9 +44,6 @@ private:
     std::array<VkDescriptorSet, 2> descriptorSets_{};
     UniquePipelineLayout pipelineLayout_;
     UniquePipeline pipeline_;
-    VkBuffer boundTrailBuffer_{};
-    VkBuffer boundPuckBuffer_{};
-    std::array<VkBuffer, 2> boundAgentBuffers_{};
     ImageResource target_;
     VkImageLayout targetLayout_{VK_IMAGE_LAYOUT_UNDEFINED};
 };
