@@ -4,9 +4,10 @@
 
 #include "vkexp/compute/HeadlessComputeContext.hpp"
 #include "vkexp/evolution/GenomeArchive.hpp"
-#include "vkexp/simulation/WorldSnapshot.hpp"
+#include "vkexp/simulation/Locomotion.hpp"
 #include "vkexp/simulation/SimulationDriver.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
+#include "vkexp/simulation/WorldSnapshot.hpp"
 #include "vkexp/simulation/Units.hpp"
 #include "vkexp/worlds/WorldScenario.hpp"
 
@@ -44,6 +45,9 @@ struct Options {
     float gateLatchSeconds{4.0F};
     float puckBreakawayPushes{vkexp::puck::kernel::PuckBreakawayPushes};
     bool puckRandomStart{false};
+    // Absent means "leave the four locomotion numbers at their defaults", which
+    // is the Table robot preset by construction.
+    std::optional<vkexp::LocomotionStyle> locomotion;
     vkexp::FitnessWeights fitness{};
     // Optional physics overrides. Absent means "keep the default", which lets a
     // sweep change one term without restating the rest of SimulationStep.
@@ -96,7 +100,11 @@ void printHelp(const char* executable) {
                  "  --beacon-speed <x>       beacon angular speed in rad/s (default 0.35)\n"
                  "  --orbit-ratio <x>        orbit radius as a fraction of the arena (0.72)\n"
                  "  --light-range <x>        light sensor range in metres (default 2.4)\n"
-                 "  --max-speed <x>          agent speed limit in m/s (default 0.55)\n\n"
+                 "  --max-speed <x>          agent speed limit in m/s (default 0.55)\n"
+                 "  --locomotion <name>      how much the body carries: robot|rover|default|\n"
+                 "                           glider|fish. Sets thrust, turn and the two drags\n"
+                 "                           and nothing else, so every style has the same top\n"
+                 "                           speed and only the inertia differs\n\n"
                  "Ablations:\n"
                  "  --no-agent-collisions    disable agent-agent collisions\n"
                  "  --no-agent-light         disable perception of other agents' signals\n"
@@ -168,6 +176,23 @@ vkexp::BeaconScenario parseScenario(const std::string_view name) {
         }
     }
     fail("Unknown scenario: " + std::string{name} + " (expected one of " + scenarioKeyList() + ")");
+}
+
+[[nodiscard]] std::string locomotionKeyList() {
+    std::string keys;
+    for (const vkexp::LocomotionPreset& preset : vkexp::locomotionPresets) {
+        keys += keys.empty() ? "" : "|";
+        keys += preset.key;
+    }
+    return keys;
+}
+
+[[nodiscard]] vkexp::LocomotionStyle parseLocomotion(const std::string_view name) {
+    if (const vkexp::LocomotionPreset* const preset = vkexp::locomotionPresetForKey(name)) {
+        return preset->style;
+    }
+    fail("Unknown locomotion '" + std::string{name} + "' (expected one of " + locomotionKeyList() +
+         ")");
 }
 
 // Short names because they end up in run directories and CSV filenames.
@@ -271,6 +296,8 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.trailHalfLife = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--no-agent-collisions") {
             options.agentCollisions = false;
+        } else if (argument == "--locomotion") {
+            options.locomotion = parseLocomotion(next(index, argument));
         } else if (argument == "--neuron-model") {
             options.neuronModel = parseNeuronModel(next(index, argument));
         } else if (argument == "--no-agent-light") {
@@ -336,6 +363,9 @@ int run(const Options& options) {
     state.physics.gateLatchSeconds = options.gateLatchSeconds;
     state.physics.puckBreakawayPushes = options.puckBreakawayPushes;
     state.physics.puckRandomStart = options.puckRandomStart;
+    if (options.locomotion) {
+        vkexp::applyLocomotionPreset(state.physics, *options.locomotion);
+    }
     state.physics.fitness = options.fitness;
     if (options.beaconAngularSpeed) {
         state.physics.beaconAngularSpeed = *options.beaconAngularSpeed;

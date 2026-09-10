@@ -31,7 +31,8 @@ replay by step count -- while every physical quantity is expressed per second.
 - outputs control left/right motors, RGB emission, emission intensity, and two
   recurrent memory cells;
 - inertial movement with linear/angular drag and hard linear/angular speed
-  limits;
+  limits, with five named locomotion styles from a body that answers in two
+  steps to one that mostly glides;
 - selectable circular or square world in small (x1), medium (x1.5), and large
   (x3) sizes;
 - stationary per-trial beacons, alternating diagonal pairs, orbiting beacons,
@@ -68,6 +69,64 @@ The four trials are not four independently trained populations. Every genome
 controls four agents with the same weights but different initial conditions.
 Their scores are averaged before selection, which discourages solutions that
 only work from one spawn position or heading.
+
+## Locomotion
+
+How much the body carries is a slider, and now also a menu. `Locomotion` in the
+Physics panel picks one of five styles, and `--locomotion <name>` does the same
+from a command line:
+
+| Style | Key | To full speed | Coast | Turn coast |
+|---|---|---|---|---|
+| Robot | `robot` | 0.07 s | 3 cm, under a body | 10 deg |
+| Rover | `rover` | 0.14 s | 8 cm, two bodies | 21 deg |
+| Table robot | `default` | 0.39 s | 32 cm, seven bodies | 50 deg |
+| Glider | `glider` | 1.10 s | 66 cm, fifteen bodies | 138 deg |
+| Fish | `fish` | 2.05 s | 1.10 m, twenty-five bodies | 206 deg |
+
+`Table robot` is the simulation's own defaults, value for value -- selecting it
+is a return to the body every scenario was tuned against rather than an
+approximation of it, and a unit test pins that.
+
+**A style is four numbers, and never the fifth.** A preset sets thrust, turn
+acceleration and the two drags. It does not touch the two speed caps, so every
+style tops out at the same 0.55 m/s and (with one exception below) the same
+3 rad/s. What changes is how long the body takes to get there and how far it
+carries once the motors stop. That is what makes two runs at different styles
+comparable: the agent can ultimately do the same things either way, and the
+question the ladder asks is whether selection can control a body that answers
+slowly.
+
+**Why drag is the whole story.** The step applies it as `exp(-drag * dt)`, so
+`1/drag` is the response time constant, the coast after the motors cut is a
+decay with that same constant, and thrust only decides how much headroom there
+is over the speed the drag will hold. The ladder above is a factor of thirty in
+that one number -- 16.7/s down to 0.5/s -- which is why the drag sliders are
+now logarithmic and thirty times wider than they were. A linear slider over that
+range has no usable resolution at the end where the defaults sit.
+
+**And why it reads as "fish" rather than merely "slow".** Velocity is a free
+vector and thrust is applied along the heading, so a low drag also means
+sideslip: a turning body keeps going the way it was already going. At the Fish
+setting a turn changes where the agent is pointing long before it changes where
+the agent is going, and arriving anywhere means deciding well before being
+there. That is a memory task hiding inside a control task, which is the reason
+to have the ladder at all -- the reactive neuron model should lose ground at the
+heavy end, and if it does not, the world is not asking what it looks like it is
+asking.
+
+**The exception, which is a real quirk of the defaults.** Turn acceleration at
+5.0 rad/s^2 against an angular drag of 2.4/s holds 2.08 rad/s, which is below
+the 3 rad/s cap -- so at the default settings the `Maximum turn speed` slider
+does nothing at all. The window now says `inert` next to it whenever that is
+true, and the other four styles are chosen to reach their cap. The defaults were
+left alone rather than aligned, because changing them would move the baseline
+every measurement so far was taken against; the test asserts the quirk, so
+aligning them later fails loudly instead of passing quietly.
+
+The two lines under the menu are derived from the sliders, not from the table,
+so a hand-tuned body is described as honestly as a named one -- and a preset
+whose numbers are edited cannot keep advertising the behaviour it used to have.
 
 ## World and beacon scenarios
 

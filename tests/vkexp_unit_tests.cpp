@@ -7,6 +7,7 @@
 #include "vkexp/profiling/ProfilerTypes.hpp"
 #include "vkexp/simulation/CpuSimulation.hpp"
 #include "vkexp/simulation/ExperimentSweep.hpp"
+#include "vkexp/simulation/Locomotion.hpp"
 #include "vkexp/simulation/Sensors.hpp"
 #include "vkexp/simulation/PuckKernel.hpp"
 #include "vkexp/worlds/scenarios/GatePlateScenario.hpp"
@@ -2147,6 +2148,113 @@ void testPuckPushCredit() {
 // run answers -- but that the two legs it is made of are real: that the plate is
 // somewhere other than the doorway, that a shut gate actually hides what is
 // behind it, and that the latch does what its one number says.
+// The locomotion ladder. Presets are only five points in a space the sliders
+// already reach, so what is worth pinning is not the numbers themselves but the
+// three claims made about them in the window: that the middle rung is the
+// simulation's own defaults, that the ladder is ordered, and that a rung changes
+// how fast a body answers without changing what it can ultimately do.
+void testLocomotionPresets() {
+    const vkexp::SimulationStep defaults{};
+    for (std::size_t index = 0; index < vkexp::locomotionStyleCount; ++index) {
+        const vkexp::LocomotionPreset& preset = vkexp::locomotionPresets[index];
+        check(static_cast<std::size_t>(preset.style) == index,
+              "the preset table is in LocomotionStyle order");
+        check(preset.key != nullptr && *preset.key != '\0' && preset.name != nullptr,
+              "every preset has a name and a command-line key");
+        check(vkexp::locomotionPresetForKey(preset.key) == &preset,
+              "a preset is reachable by its own key");
+    }
+    check(vkexp::locomotionPresetForKey("nonesuch") == nullptr, "an unknown key finds nothing");
+
+    // The middle rung is the defaults value for value, not an approximation of
+    // them: selecting it has to be a return to the body every scenario was tuned
+    // against, or a run before touching this control and a run after it differ
+    // by an amount nobody wrote down.
+    vkexp::SimulationStep applied = defaults;
+    vkexp::applyLocomotionPreset(applied, vkexp::LocomotionStyle::TableRobot);
+    check(applied.thrust == defaults.thrust && applied.turnAcceleration == defaults.turnAcceleration &&
+              applied.linearDrag == defaults.linearDrag &&
+              applied.angularDrag == defaults.angularDrag,
+          "the Table robot preset is the simulation's own defaults");
+
+    // Applying a preset touches the four locomotion numbers and nothing else --
+    // in particular not the two caps, which is what keeps the styles comparable.
+    vkexp::SimulationStep fish = defaults;
+    vkexp::applyLocomotionPreset(fish, vkexp::LocomotionStyle::Fish);
+    check(fish.maximumSpeed == defaults.maximumSpeed &&
+              fish.maximumAngularSpeed == defaults.maximumAngularSpeed,
+          "a preset never moves the speed caps");
+    check(fish.deltaTime == defaults.deltaTime && fish.worldRadius == defaults.worldRadius,
+          "a preset touches nothing outside locomotion");
+
+    // What the combo reads back. A label that could only be written would keep
+    // saying "Fish" over sliders that had since been dragged elsewhere.
+    const vkexp::LocomotionPreset* found = vkexp::currentLocomotionPreset(fish);
+    check(found != nullptr && found->style == vkexp::LocomotionStyle::Fish,
+          "the sliders report the preset they were set from");
+    fish.linearDrag *= 1.5F;
+    check(vkexp::currentLocomotionPreset(fish) == nullptr,
+          "and report nothing once one of them is dragged away");
+
+    // The ladder, in the quantities a body is actually judged by rather than in
+    // the raw sliders: how long it takes to reach speed and how far it carries
+    // once the motors stop. Ordered strictly, so no two rungs are the same body
+    // under different names.
+    float previousCoast = 0.0F;
+    float previousSpin = 0.0F;
+    float previousTime = 0.0F;
+    for (const vkexp::LocomotionPreset& preset : vkexp::locomotionPresets) {
+        vkexp::SimulationStep settings = defaults;
+        vkexp::applyLocomotionPreset(settings, preset.style);
+        const vkexp::LocomotionResponse response = vkexp::locomotionResponse(settings);
+        check(response.coastDistance > previousCoast, "each rung coasts further than the last");
+        check(response.spinCoast > previousSpin, "each rung carries its turn further");
+        check(response.timeToTopSpeed > previousTime, "each rung takes longer to reach speed");
+        previousCoast = response.coastDistance;
+        previousSpin = response.spinCoast;
+        previousTime = response.timeToTopSpeed;
+
+        // The claim the whole ladder rests on: every style tops out at the same
+        // speed. A rung whose thrust could not hold the cap would be slower as
+        // well as heavier, and a comparison between two rungs would no longer be
+        // a comparison of inertia.
+        check(response.speedCapBinds && std::abs(response.topSpeed - settings.maximumSpeed) < 1.0e-6F,
+              "every locomotion style reaches the same top speed");
+    }
+
+    // The turn is where the claim does not hold, and it is worth failing loudly
+    // if that ever silently changes. Four of the rungs reach the turn cap; the
+    // defaults do not -- 5.0 rad/s^2 against 2.4/s holds 2.08 rad/s, so at the
+    // default settings the maximum turn speed slider has nothing to do. The
+    // window says so next to the slider. This asserts the fact rather than the
+    // preference, so aligning the defaults will fail here and be noticed.
+    vkexp::SimulationStep table = defaults;
+    vkexp::applyLocomotionPreset(table, vkexp::LocomotionStyle::TableRobot);
+    const vkexp::LocomotionResponse tableResponse = vkexp::locomotionResponse(table);
+    check(!tableResponse.turnCapBinds && tableResponse.topTurnRate < table.maximumAngularSpeed,
+          "the default body never reaches its own turn cap");
+    for (const vkexp::LocomotionPreset& preset : vkexp::locomotionPresets) {
+        if (preset.style == vkexp::LocomotionStyle::TableRobot) {
+            continue;
+        }
+        vkexp::SimulationStep settings = defaults;
+        vkexp::applyLocomotionPreset(settings, preset.style);
+        const vkexp::LocomotionResponse response = vkexp::locomotionResponse(settings);
+        check(response.turnCapBinds &&
+                  std::abs(response.topTurnRate - settings.maximumAngularSpeed) < 1.0e-6F,
+              "every other style does reach the same top turn rate");
+    }
+
+    // And the response numbers are read off the sliders, not off the table, so
+    // a hand-tuned body is described as honestly as a named one.
+    vkexp::SimulationStep byHand = defaults;
+    byHand.linearDrag = 4.0F;
+    byHand.thrust = 4.0F;
+    const vkexp::LocomotionResponse handResponse = vkexp::locomotionResponse(byHand);
+    check(std::abs(handResponse.coastDistance - byHand.maximumSpeed / 4.0F) < 1.0e-6F,
+          "coast is derived from the sliders in front of the user");
+}
+
 void testGateWorld() {
     namespace kernel = vkexp::worlds::kernel;
     const auto completedTrips = [](const vkexp::AgentState& agent) {

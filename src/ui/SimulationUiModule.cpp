@@ -1,6 +1,7 @@
 #include "vkexp/ui/SimulationUiModule.hpp"
 
 #include "vkexp/neuro/NeuralNetwork.hpp"
+#include "vkexp/simulation/Locomotion.hpp"
 #include "vkexp/profiling/Profiler.hpp"
 #include "vkexp/ui/ImGuiModule.hpp"
 #include "vkexp/worlds/WorldScenario.hpp"
@@ -358,13 +359,77 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::Text("Body %.1f cm across, arena %.2f m wide",
                 static_cast<double>(units::metresToCentimetres(agentBodyRadius * 2.0F)),
                 static_cast<double>(state_.physics.worldRadius * 2.0F));
-    ImGui::SliderFloat("Thrust (m/s2)", &state_.physics.thrust, 0.2F, 4.0F);
-    ImGui::SliderFloat("Turn (rad/s2)", &state_.physics.turnAcceleration, 0.5F, 10.0F);
-    ImGui::SliderFloat("Linear drag (1/s)", &state_.physics.linearDrag, 0.1F, 5.0F);
-    ImGui::SliderFloat("Angular drag (1/s)", &state_.physics.angularDrag, 0.1F, 6.0F);
+    // Locomotion presets. The four sliders below are still the truth and still
+    // editable one at a time; this only names five points along the one axis
+    // that separates a body you command from a body you steer. "Custom" is what
+    // the combo says once a slider has been dragged off a preset, rather than
+    // the combo keeping a label the numbers no longer support.
+    const LocomotionPreset* const current = currentLocomotionPreset(state_.physics);
+    std::array<const char*, locomotionStyleCount + 1> locomotionNames{};
+    for (std::size_t index = 0; index < locomotionStyleCount; ++index) {
+        locomotionNames[index] = locomotionPresets[index].name;
+    }
+    locomotionNames[locomotionStyleCount] = "Custom";
+    int locomotion = current != nullptr ? static_cast<int>(current->style)
+                                        : static_cast<int>(locomotionStyleCount);
+    if (ImGui::Combo("Locomotion", &locomotion, locomotionNames.data(),
+                     static_cast<int>(locomotionNames.size()))) {
+        if (locomotion < static_cast<int>(locomotionStyleCount)) {
+            applyLocomotionPreset(state_.physics,
+                                  static_cast<LocomotionStyle>(static_cast<std::uint32_t>(locomotion)));
+        }
+    }
+    ImGui::SetItemTooltip(
+        "How much the body carries. A preset moves the four sliders below and "
+        "nothing else -- in particular it never touches the two speed caps, so "
+        "every style tops out at the same speed and the same turn rate, and the "
+        "only thing that changes is how long it takes to get there and how far "
+        "it goes after the motors stop. %s",
+        current != nullptr ? current->description
+                           : "The sliders are not on any preset at the moment.");
+    // What those four numbers come to, in units that can be judged by eye.
+    // Derived from the sliders and not from the preset, so a hand-tuned body is
+    // described as honestly as a named one.
+    const LocomotionResponse response = locomotionResponse(state_.physics);
+    ImGui::TextDisabled("%.2f m/s in %.2f s, coasts %.1f cm (%.0f bodies)",
+                        static_cast<double>(response.topSpeed),
+                        static_cast<double>(response.timeToTopSpeed),
+                        static_cast<double>(units::metresToCentimetres(response.coastDistance)),
+                        static_cast<double>(response.coastDistance / agentBodyDiameter));
+    ImGui::TextDisabled("%.2f rad/s in %.2f s, spins on %.0f deg after%s",
+                        static_cast<double>(response.topTurnRate),
+                        static_cast<double>(response.timeToTopTurnRate),
+                        static_cast<double>(response.spinCoast * 180.0F / 3.14159265F),
+                        response.turnCapBinds ? "" : " -- drag caps the turn, not the slider");
+    ImGui::SliderFloat("Thrust (m/s2)", &state_.physics.thrust, 0.2F, 20.0F, "%.2f",
+                       ImGuiSliderFlags_Logarithmic);
+    ImGui::SliderFloat("Turn (rad/s2)", &state_.physics.turnAcceleration, 0.5F, 80.0F, "%.2f",
+                       ImGuiSliderFlags_Logarithmic);
+    // Logarithmic, and far wider than they were: the whole ladder from a body
+    // that answers in one step to one that mostly glides lives in these two,
+    // and it spans a factor of thirty. A linear slider over that range has no
+    // usable resolution at the end where the defaults sit.
+    ImGui::SliderFloat("Linear drag (1/s)", &state_.physics.linearDrag, 0.1F, 20.0F, "%.2f",
+                       ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("Response time constant %.0f ms; the step applies it as "
+                          "exp(-drag * dt), so this is also the coast.",
+                          static_cast<double>(1000.0F / std::max(state_.physics.linearDrag, 1.0e-3F)));
+    ImGui::SliderFloat("Angular drag (1/s)", &state_.physics.angularDrag, 0.1F, 20.0F, "%.2f",
+                       ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("Response time constant %.0f ms.",
+                          static_cast<double>(1000.0F /
+                                              std::max(state_.physics.angularDrag, 1.0e-3F)));
     ImGui::SliderFloat("Maximum speed (m/s)", &state_.physics.maximumSpeed, 0.10F, 1.50F);
     ImGui::SliderFloat("Maximum turn speed (rad/s)", &state_.physics.maximumAngularSpeed, 0.25F,
                        8.0F);
+    if (!response.turnCapBinds) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4{0.95F, 0.75F, 0.25F, 1.0F}, "inert");
+        ImGui::SetItemTooltip("Turn acceleration against angular drag holds %.2f rad/s, below "
+                              "this cap, so the cap never comes into play. Raise Turn (rad/s2) "
+                              "or lower Angular drag to make it mean something.",
+                              static_cast<double>(response.topTurnRate));
+    }
     ImGui::SliderFloat("Collision restitution", &state_.physics.collisionRestitution, 0.0F, 1.0F);
     ImGui::SliderFloat("Contact stiffness (1/s)", &state_.physics.contactStiffness, 5.0F, 300.0F);
     ImGui::SetItemTooltip(
