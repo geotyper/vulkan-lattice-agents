@@ -27,6 +27,8 @@ namespace {
         return "time";
     case NeuronModel::Gated:
         return "gated";
+    case NeuronModel::Spiking:
+        return "spiking";
     }
     return "time";
 }

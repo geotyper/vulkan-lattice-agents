@@ -47,6 +47,7 @@ enum class NeuronModel : std::uint32_t {
     Reactive = neuro::kernel::NeuronModelReactive,
     TimeConstant = neuro::kernel::NeuronModelTimeConstant,
     Gated = neuro::kernel::NeuronModelGated,
+    Spiking = neuro::kernel::NeuronModelSpiking,
 };
 
 inline constexpr std::size_t neuronModelCount = neuro::kernel::NeuronModelCount;

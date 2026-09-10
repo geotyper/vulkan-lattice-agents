@@ -1743,6 +1743,31 @@ void testGatedNeurons() {
           "The gate block starts after the time constants");
 }
 
+void testSpikingNeuronModel() {
+    namespace kernel = vkexp::neuro::kernel;
+    constexpr auto inputCount = static_cast<kernel::uint>(vkexp::neuro::Topology::inputCount);
+    constexpr auto hiddenCount = static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity);
+    constexpr kernel::uint layers = kernel::brainPackHiddenLayers(hiddenCount, 0u, 0u);
+    const float step = vkexp::units::fixedTimeStep;
+
+    vkexp::neuro::Weights weights = vkexp::neuro::makeWeights(vkexp::neuro::maximumBrainShape);
+    weights[kernel::brainLayerWeightIndex(0u, inputCount, layers, 0u, 0u, 0u)] = 15.0F;
+    weights[kernel::brainOutputWeightIndex(0u, inputCount, layers, 0u, 0u)] = 2.0F;
+
+    vkexp::neuro::Inputs inputs{};
+    inputs[0] = 1.0F;
+
+    vkexp::neuro::HiddenState state{};
+    bool spiked = false;
+    for (int index = 0; index < 50; ++index) {
+        (void)vkexp::neuro::evaluate(weights, inputs, state, step, kernel::NeuronModelSpiking);
+        if (state[0] == 0.0F && index > 0) {
+            spiked = true;
+        }
+    }
+    check(spiked, "Spiking LIF neuron accumulates potential, fires spike, and resets membrane potential");
+}
+
 // What fraction of the far side of the wall can see `target` at all: in light
 // range and with no box in the way. This is the number that separates a world
 // that is learned from one that is not, so it belongs in the build rather than
@@ -3112,6 +3137,7 @@ int main() {
     testExperimentSweep();
     testNeuronTimeConstants();
     testGatedNeurons();
+    testSpikingNeuronModel();
     testTwoDoorsGeometry();
     testShuttleGeometry();
     testTwoGapsGeometry();

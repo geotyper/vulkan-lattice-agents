@@ -930,6 +930,7 @@ int run() {
     runTrajectoryParity(context, vkexp::BeaconScenario::Shuttle, 540,
                         vkexp::NeuronModel::Reactive);
     runTrajectoryParity(context, vkexp::BeaconScenario::Shuttle, 540, vkexp::NeuronModel::Gated);
+    runTrajectoryParity(context, vkexp::BeaconScenario::Shuttle, 540, vkexp::NeuronModel::Spiking);
     // Depth, on both sides. A three-layer plan changes where every weight lives
     // and the order the layers are walked in; a shader that read the plan even
     // slightly differently would drift here and nowhere else, because every
