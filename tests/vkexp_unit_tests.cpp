@@ -793,7 +793,10 @@ void testWorldSnapshotRoundTrip() {
     snapshot.physics.beaconScenario = vkexp::BeaconScenario::ScentRelay;
     snapshot.physics.beaconMotionSeed = 987654U;
     snapshot.physics.beaconPhase = 3U;
-    snapshot.physics.trailEnabled = false;
+    // The middle setting on purpose: it is the one a saver still shaped like a
+    // bool would silently collapse, and it is neither the default nor the value
+    // the inverted pass below uses.
+    snapshot.physics.trailMode = vkexp::TrailMode::Visual;
     snapshot.physics.agentLightEnabled = false;
     snapshot.physics.agentCollisionsEnabled = true;
     // Named here rather than left at its default: a setting the saver forgets
@@ -853,7 +856,8 @@ void testWorldSnapshotRoundTrip() {
               loaded.physics.beaconScenario == vkexp::BeaconScenario::ScentRelay &&
               loaded.physics.beaconMotionSeed == 987654U && loaded.physics.beaconPhase == 3U,
           "Snapshot world identity round-trip");
-    check(!loaded.physics.trailEnabled && !loaded.physics.agentLightEnabled &&
+    check(loaded.physics.trailMode == vkexp::TrailMode::Visual &&
+              !loaded.physics.agentLightEnabled &&
               loaded.physics.agentCollisionsEnabled,
           "Snapshot ablation flags round-trip");
     check(loaded.physics.neuronModel == vkexp::NeuronModel::Gated,
@@ -877,7 +881,7 @@ void testWorldSnapshotRoundTrip() {
     // already carry.
     {
         vkexp::WorldSnapshot inverted = snapshot;
-        inverted.physics.trailEnabled = true;
+        inverted.physics.trailMode = vkexp::TrailMode::Off;
         inverted.physics.agentLightEnabled = true;
         inverted.physics.agentCollisionsEnabled = false;
         inverted.physics.beaconPhaseChanged = true;
@@ -889,7 +893,8 @@ void testWorldSnapshotRoundTrip() {
         const std::filesystem::path invertedPath = path.parent_path() / "inverted.vknw";
         vkexp::saveWorldSnapshot(invertedPath, inverted);
         const vkexp::WorldSnapshot back = vkexp::loadWorldSnapshot(invertedPath);
-        check(back.physics.trailEnabled && back.physics.agentLightEnabled &&
+        check(back.physics.trailMode == vkexp::TrailMode::Off &&
+                  back.physics.agentLightEnabled &&
                   !back.physics.agentCollisionsEnabled && back.physics.beaconPhaseChanged &&
                   back.physics.neuronModel == vkexp::NeuronModel::Reactive &&
                   !back.physics.swapDeliveryEnds && !back.physics.uniformBeaconColor &&
@@ -2541,6 +2546,7 @@ int main() {
     testPuckWorld();
     testPuckPushCredit();
     testGateWorld();
+    testLocomotionPresets();
     testDeliveryCannotBeScoredTwice();
     testScenarioRegistryContract();
     testFitnessWeightsAreParameters();

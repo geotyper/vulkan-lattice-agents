@@ -23,7 +23,8 @@ replay by step count -- while every physical quantity is expressed per second.
   by default, with an all-agents mode);
 - 7 forward light receptors with RGB and luminance channels;
 - 8 full-body tactile sectors distinguishing walls from agents;
-- 3 ground antennae reading the RGB of a decaying trail field;
+- 3 ground antennae reading the RGB of a decaying trail field, switchable
+  between off, drawn-but-unsmelled and drawn-and-smelled;
 - `61 inputs -> 20 tanh neurons -> 8 outputs`;
 - every hidden neuron holds its own state and a time constant that is either
   evolved or recomputed from the inputs each step, so a memory is measured in
@@ -127,6 +128,46 @@ aligning them later fails loudly instead of passing quietly.
 The two lines under the menu are derived from the sliders, not from the table,
 so a hand-tuned body is described as honestly as a named one -- and a preset
 whose numbers are edited cannot keep advertising the behaviour it used to have.
+
+## The trail, and the control for it
+
+Whether the field exists and whether an agent can smell it are separate
+questions, and only the second one changes what the brain has to solve.
+`Trails` in the Physics panel has three settings, and `--trail off|visual|sensed`
+matches them:
+
+| Setting | Field kept and drawn | Antennae read it |
+|---|---|---|
+| Off | no | no |
+| Draw only | yes | no |
+| Draw and smell | yes | yes |
+
+**The middle one is the point.** It is the control for every claim this project
+makes about the trail: the marks are still on screen, agents still lay them, and
+the three ground antennae read a flat zero, so the nine trail inputs are dead
+weights rather than a channel. A behaviour that survives `Draw only` was never
+coming from the field, whatever the run looked like. It is also the simpler
+model to reach for when the trail is not what is being studied -- the marks stay
+useful for a person watching a replay without being part of what is evolving.
+
+`compute_smoke` asserts exactly that: the same marked cell under the same
+antenna, with the field present and deposited into, produces the same step as no
+field at all -- not merely a step that also happens not to turn.
+
+**The input vector keeps all 61 slots in every setting.** Removing the nine
+inputs outright was the other way to write this, and it would change the genome
+length: a population trained with trails could then not be loaded into a run
+without them, and two runs could not be compared at all. Nine dead weights cost
+one dot product per agent per step and buy exchangeability, which is the better
+trade here. What it means in practice is that a blind run still drifts those
+weights, so a genome moved from `Draw only` to `Draw and smell` starts with
+whatever random opinion drift left it -- not with nothing.
+
+**`Scent relay` has no other way home.** It is the one world whose objective is
+only reachable by following a trail, so running it blind is not an ablation but
+an impossibility, and its fitness curve looks like a hard task rather than an
+unreachable one. The scenario declares that it needs the trail and the window
+says so next to the setting, with a button to turn it back on.
 
 ## World and beacon scenarios
 
@@ -492,7 +533,6 @@ they can no longer keep up with, and the world would be solved by launching it
 once, so the pass clamps the puck to the agents' own speed limit and the smoke
 test asserts the clamp. And a drag term, not the model, is what brings a released
 puck to rest.
-
 
 **Why the puck emits light.** The first version of this world did not learn at
 all, and the reason is worth keeping: the photoreceptors see beacons and other

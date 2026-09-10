@@ -59,7 +59,7 @@ struct Options {
     std::optional<float> beaconTrailDepositRate;
     std::optional<float> trailHalfLife;
     std::optional<float> trailCellSize;
-    bool trailEnabled{true};
+    vkexp::TrailMode trailMode{vkexp::TrailMode::Sensed};
     vkexp::NeuronModel neuronModel{vkexp::NeuronModel::TimeConstant};
     bool quiet{};
     std::string savePopulation;
@@ -122,6 +122,9 @@ void printHelp(const char* executable) {
                  "                           the plate is released. 0 means somebody has to\n"
                  "                           stand on it, so the task needs two agents\n"
                  "  --no-trail               disable the ground trail field entirely\n"
+                 "  --trail <mode>           off|visual|sensed. visual keeps the field and draws\n"
+                 "                           it while the antennae read zero, which is the\n"
+                 "                           control for any claim about the trail\n"
                  "  --neuron-model <name>    reactive|time|gated: where a hidden neuron's "
                  "time\n"
                  "                           constant comes from. reactive pins it to the step, "
@@ -193,6 +196,31 @@ vkexp::BeaconScenario parseScenario(const std::string_view name) {
     }
     fail("Unknown locomotion '" + std::string{name} + "' (expected one of " + locomotionKeyList() +
          ")");
+}
+
+[[nodiscard]] vkexp::TrailMode parseTrailMode(const std::string_view name) {
+    if (name == "off") {
+        return vkexp::TrailMode::Off;
+    }
+    if (name == "visual") {
+        return vkexp::TrailMode::Visual;
+    }
+    if (name == "sensed") {
+        return vkexp::TrailMode::Sensed;
+    }
+    fail("Unknown trail mode '" + std::string{name} + "'; expected off, visual or sensed");
+}
+
+[[nodiscard]] const char* trailModeName(const vkexp::TrailMode mode) {
+    switch (mode) {
+    case vkexp::TrailMode::Off:
+        return "OFF";
+    case vkexp::TrailMode::Visual:
+        return "drawn but UNSMELLED";
+    case vkexp::TrailMode::Sensed:
+        return "on";
+    }
+    return "on";
 }
 
 // Short names because they end up in run directories and CSV filenames.
@@ -285,7 +313,9 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
         } else if (argument == "--max-speed") {
             options.maximumSpeed = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--no-trail") {
-            options.trailEnabled = false;
+            options.trailMode = vkexp::TrailMode::Off;
+        } else if (argument == "--trail") {
+            options.trailMode = parseTrailMode(next(index, argument));
         } else if (argument == "--trail-deposit") {
             options.trailDepositRate = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--beacon-deposit") {
@@ -379,7 +409,7 @@ int run(const Options& options) {
     if (options.maximumSpeed) {
         state.physics.maximumSpeed = *options.maximumSpeed;
     }
-    state.physics.trailEnabled = options.trailEnabled;
+    state.physics.trailMode = options.trailMode;
     state.physics.neuronModel = options.neuronModel;
     if (options.trailDepositRate) {
         state.physics.trailDepositRate = *options.trailDepositRate;
@@ -469,7 +499,7 @@ int run(const Options& options) {
                   << "Ablations:  agent collisions "
                   << (state.physics.agentCollisionsEnabled ? "on" : "OFF") << ", agent light "
                   << (state.physics.agentLightEnabled ? "on" : "OFF") << ", trail "
-                  << (state.physics.trailEnabled ? "on" : "OFF") << ", beacon hue "
+                  << trailModeName(state.physics.trailMode) << ", beacon hue "
                   << (state.physics.uniformBeaconColor ? "ABLATED" : "on") << '\n'
                   << "Neurons:    " << neuronModelName(state.physics.neuronModel) << '\n';
         // Only when it is on, and only where it does something, so a default

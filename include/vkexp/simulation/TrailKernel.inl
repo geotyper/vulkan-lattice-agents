@@ -32,6 +32,26 @@ const uint TrailCellCeiling = 1u << 28;
 // wide a track comes out, and "a fifth of an agent" says that where "9 mm" does
 // not.
 
+// --- what the field is for ---------------------------------------------------
+//
+// Three settings and not two, because "the trail exists" and "an agent can smell
+// it" are separate claims and only the second one changes what the brain has to
+// solve. Drawing without sensing is the simpler model: the marks are still there
+// for a person watching, and the three ground antennae read a flat zero, so the
+// nine trail inputs are dead weights rather than a channel. That is the control
+// for every claim this project makes about the trail -- if a behaviour survives
+// with the field drawn but unsmelled, it was never coming from the field.
+//
+// The input vector keeps its 61 slots in all three settings. Shrinking it would
+// change the genome length, and then a run with trails and a run without could
+// not exchange a population or be compared at all.
+const uint TrailModeOff = 0u;    // no field, no deposit, nothing drawn
+const uint TrailModeVisual = 1u; // field kept and drawn, antennae read zero
+const uint TrailModeSensed = 2u; // field kept, drawn and smelled
+
+VKEXP_TRAIL_FN bool trailFieldActive(uint mode) { return mode != TrailModeOff; }
+VKEXP_TRAIL_FN bool trailSensed(uint mode) { return mode == TrailModeSensed; }
+
 VKEXP_TRAIL_FN uint trailValueIndex(uint world, uint cellsPerWorld, uint cell, uint channel) {
     return ((world * cellsPerWorld) + cell) * TrailChannels + channel;
 }

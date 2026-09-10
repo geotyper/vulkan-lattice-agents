@@ -296,7 +296,8 @@ void AgentRenderer::onRender(AppContext& context, const FrameInfo&) {
     draw(commands, scaleX, scaleY, state_.physics.worldRadius, 3, 1.0F, arenaVertices, 1);
     // The field goes on top of the arena and under everything that moves, so a
     // path reads as ground rather than as another agent.
-    if (state_.display.trail && state_.physics.trailEnabled && state_.trail.cellsPerWorld > 0) {
+    if (state_.display.trail && trailFieldActive(state_.physics.trailMode) &&
+        state_.trail.cellsPerWorld > 0) {
         // A disc needs a fan of triangles, a square needs two: the vertex count
         // is the only thing that differs on this side.
         const std::uint32_t markVertices =

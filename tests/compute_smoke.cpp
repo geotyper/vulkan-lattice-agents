@@ -171,9 +171,9 @@ makeStepParameters(const vkexp::SimulationStep& settings, const std::uint32_t ag
                    // The trail field is GPU-only state with no CPU counterpart,
                    // so parity runs with it off and runTrailFieldProbe covers it
                    // directly.
-                   const bool trailEnabled = false) {
+                   const vkexp::TrailMode trailMode = vkexp::TrailMode::Off) {
     vkexp::SimulationStep resolved = settings;
-    resolved.trailEnabled = trailEnabled;
+    resolved.trailMode = trailMode;
     return vkexp::packStepParameters(
         resolved, vkexp::StepParameterLayout{agentCount, trialsPerGenome, agentsPerWorld,
                                              parityGridCellSize, gridWidth, gridCellsPerWorld,
@@ -541,7 +541,7 @@ void runTrailFieldProbe(vkexp::HeadlessComputeContext& context) {
     agent.target = {worldRadius * 0.6F, 0.0F, 0.0F, 0.0F};
     agent.metrics = {worldRadius, worldRadius, 0.0F, 0.0F};
 
-    const auto stepWithField = [&](const bool trailEnabled, const bool markLeft) {
+    const auto stepWithField = [&](const vkexp::TrailMode trailMode, const bool markLeft) {
         // The cell the chosen antenna tip actually lands in, derived the same way
         // the shader derives it rather than guessed.
         const float tipAngle =
@@ -557,7 +557,7 @@ void runTrailFieldProbe(vkexp::HeadlessComputeContext& context) {
         harness.buildGrid(std::span{&agent, 1}, worldRadius);
         const vkexp::GpuStepParameters parameters =
             makeStepParameters(settings, 1, 1, harness.gridWidth(), harness.gridCellsPerWorld(),
-                               harness.trailWidth(), harness.trailCellsPerWorld(), 1, trailEnabled);
+                               harness.trailWidth(), harness.trailCellsPerWorld(), 1, trailMode);
         harness.stepParameters.write(&parameters, sizeof(parameters));
         harness.dispatch(0);
         vkexp::AgentState stepped{};
@@ -565,12 +565,23 @@ void runTrailFieldProbe(vkexp::HeadlessComputeContext& context) {
         return stepped;
     };
 
-    const vkexp::AgentState blind = stepWithField(false, true);
-    const vkexp::AgentState leftScent = stepWithField(true, true);
-    const vkexp::AgentState rightScent = stepWithField(true, false);
+    const vkexp::AgentState blind = stepWithField(vkexp::TrailMode::Off, true);
+    // The same marked cell, the same antenna, and a field that is present and
+    // deposited into -- only the reading is switched off. This is the claim the
+    // "Draw only" setting makes, and the one that makes it a control: if it did
+    // not hold, a run with the trail drawn but nominally unsmelled would still
+    // be a run with a trail.
+    const vkexp::AgentState drawnButBlind = stepWithField(vkexp::TrailMode::Visual, true);
+    const vkexp::AgentState leftScent = stepWithField(vkexp::TrailMode::Sensed, true);
+    const vkexp::AgentState rightScent = stepWithField(vkexp::TrailMode::Sensed, false);
 
     require(std::abs(blind.motion.z) < 1.0e-6F,
             "With the trail off the antenna inputs are zero and the agent does not turn");
+    require(std::abs(drawnButBlind.motion.z) < 1.0e-6F,
+            "A drawn but unsmelled trail moves the agent exactly as no trail does");
+    require(std::abs(drawnButBlind.motion.z - blind.motion.z) < 1.0e-6F &&
+                std::abs(drawnButBlind.pose.z - blind.pose.z) < 1.0e-6F,
+            "and it is the same step, not merely a step that also happens not to turn");
     require(leftScent.motion.z > 1.0e-3F,
             "A mark under the left antenna drives the right motor and turns one way");
     require(rightScent.motion.z < -1.0e-3F,

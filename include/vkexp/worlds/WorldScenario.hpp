@@ -73,6 +73,11 @@ struct ScenarioTunables {
     bool blockedDoorPerGeneration{};
     // Whether this scenario reads SimulationStep::gateLatchSeconds.
     bool gateLatch{};
+    // Whether the trail is the point of this world rather than decoration. The
+    // window warns when such a scenario is run with the antennae switched off,
+    // because the result is then a world with no route to its objective and
+    // nothing about the numbers says so.
+    bool needsTrail{};
 };
 
 // The complete contract of one experiment. Everything the simulation, the

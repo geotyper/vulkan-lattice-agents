@@ -19,6 +19,30 @@ namespace vkexp {
 // for the rate it runs at; declared in BrainKernel.inl so the shader gets the
 // same numbers. See there for what each one is and why Gated contains the other
 // two as special cases.
+// What the trail field is for. Three settings and not two: "the field exists"
+// and "an agent can smell it" are separate claims, and only the second changes
+// what the brain has to solve. Declared in TrailKernel.inl so the shader reads
+// the same numbers; see there for why the input vector keeps its width in all
+// three.
+enum class TrailMode : std::uint32_t {
+    Off = trail::kernel::TrailModeOff,
+    Visual = trail::kernel::TrailModeVisual,
+    Sensed = trail::kernel::TrailModeSensed,
+};
+
+inline constexpr std::size_t trailModeCount = 3;
+
+// Whether a field has to be allocated, faded and deposited into at all.
+[[nodiscard]] constexpr bool trailFieldActive(const TrailMode mode) {
+    return mode != TrailMode::Off;
+}
+
+// Whether the three ground antennae read it. When false they read a flat zero,
+// so the nine trail inputs are dead weights rather than a channel.
+[[nodiscard]] constexpr bool trailSensed(const TrailMode mode) {
+    return mode == TrailMode::Sensed;
+}
+
 enum class NeuronModel : std::uint32_t {
     Reactive = neuro::kernel::NeuronModelReactive,
     TimeConstant = neuro::kernel::NeuronModelTimeConstant,
@@ -390,7 +414,7 @@ struct SimulationStep {
     // diameter, so a full cell is never wider than whatever left the mark.
     float trailRenderWidth{1.0F};
     float trailCellSize{trailCellSizeForBodyFraction(trailCellFractionCoarsest)};
-    bool trailEnabled{true};
+    TrailMode trailMode{TrailMode::Sensed};
     FitnessWeights fitness{};
     std::uint32_t beaconMotionSeed{};
     WorldShape worldShape{WorldShape::Circle};
@@ -510,7 +534,7 @@ struct alignas(16) GpuStepParameters {
     float beaconTrailDeposit{};
     std::uint32_t trailWidth{};
     std::uint32_t trailCellsPerWorld{};
-    std::uint32_t trailEnabled{};
+    std::uint32_t trailMode{};
     std::uint32_t agentsPerWorld{}; // lets one agent per world deposit the beacon
     GpuFitnessWeights fitness;
     ScenarioParameterBlock scenario;

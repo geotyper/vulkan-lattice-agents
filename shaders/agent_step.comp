@@ -264,7 +264,7 @@ void main() {
             trailCellIndex(tip, params.worldRadius, params.trailCellSize, params.trailWidth);
         for (uint channel = 0u; channel < BrainAntennaChannels; ++channel) {
             const float deposit =
-                params.trailEnabled == 0u
+                !trailSensed(params.trailMode)
                     ? 0.0
                     : float(trailValues[trailValueIndex(world, params.trailCellsPerWorld, cell,
                                                         channel)]) /

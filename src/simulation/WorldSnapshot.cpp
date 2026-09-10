@@ -109,7 +109,7 @@ struct PhysicsIntegers {
     std::uint32_t beaconPhaseChanged{};
     std::uint32_t agentCollisionsEnabled{};
     std::uint32_t agentLightEnabled{};
-    std::uint32_t trailEnabled{};
+    std::uint32_t trailMode{};
     std::uint32_t neuronModel{};
     std::uint32_t swapDeliveryEnds{};
     std::uint32_t uniformBeaconColor{};
@@ -177,7 +177,7 @@ void saveWorldSnapshot(const std::filesystem::path& path, const WorldSnapshot& s
                                    physics.beaconPhaseChanged ? 1U : 0U,
                                    physics.agentCollisionsEnabled ? 1U : 0U,
                                    physics.agentLightEnabled ? 1U : 0U,
-                                   physics.trailEnabled ? 1U : 0U,
+                                   static_cast<std::uint32_t>(physics.trailMode),
                                    static_cast<std::uint32_t>(physics.neuronModel),
                                    physics.swapDeliveryEnds ? 1U : 0U,
                                    physics.uniformBeaconColor ? 1U : 0U,
@@ -255,7 +255,7 @@ WorldSnapshot loadWorldSnapshot(const std::filesystem::path& path) {
     snapshot.physics.beaconPhaseChanged = integers.beaconPhaseChanged != 0;
     snapshot.physics.agentCollisionsEnabled = integers.agentCollisionsEnabled != 0;
     snapshot.physics.agentLightEnabled = integers.agentLightEnabled != 0;
-    snapshot.physics.trailEnabled = integers.trailEnabled != 0;
+    snapshot.physics.trailMode = static_cast<TrailMode>(integers.trailMode);
     snapshot.physics.swapDeliveryEnds = integers.swapDeliveryEnds != 0;
     snapshot.physics.uniformBeaconColor = integers.uniformBeaconColor != 0;
     snapshot.physics.blockedDoorPerGeneration = integers.blockedDoorPerGeneration != 0;

@@ -60,7 +60,7 @@ struct WorldSnapshot {
 // 12 added the puck world's friction floor, which decides whether one agent can
 // move the puck at all: a version 11 file predates it, and reading it as a floor
 // of zero would resume an experiment as a different one.
-inline constexpr std::uint32_t worldSnapshotVersion = 12;
+inline constexpr std::uint32_t worldSnapshotVersion = 13;
 
 // Versioned and little-endian, like the genome archive, and just as strict: a
 // file from another brain topology, another agent layout or another scenario

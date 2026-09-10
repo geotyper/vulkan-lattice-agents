@@ -842,7 +842,7 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
         // deposit from the step is what keeps the reading order-independent --
         // depositing inside agent_step would let some agents read a cell another
         // agent had already marked this tick.
-        if (state_.physics.trailEnabled) {
+        if (trailFieldActive(state_.physics.trailMode)) {
             const TrailDecayParameters decayParameters{trailValueCount,
                                                        stepParameterStaging_[step].trailSurvival};
             vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE,

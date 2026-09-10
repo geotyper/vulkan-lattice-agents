@@ -61,7 +61,7 @@ uint firstAgentOfWorld(uint world) {
 void main() {
     const uint id = gl_GlobalInvocationID.x;
     params = stepParameters[selector.stepIndex];
-    if (id >= params.agentCount || params.trailEnabled == 0u) {
+    if (id >= params.agentCount || !trailFieldActive(params.trailMode)) {
         return;
     }
 

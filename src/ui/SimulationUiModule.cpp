@@ -440,9 +440,41 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                        "%.2f");
     ImGui::Checkbox("Agent collisions", &state_.physics.agentCollisionsEnabled);
     ImGui::SeparatorText("Trail field");
-    if (ImGui::Checkbox("Leave trails", &state_.physics.trailEnabled)) {
+    // Three settings, not a checkbox: whether the field exists and whether an
+    // agent can smell it are different questions, and the middle one is the
+    // control. "Draw only" keeps the marks on screen and feeds the three ground
+    // antennae a flat zero, so a behaviour that survives it was never coming
+    // from the trail.
+    int trailMode = static_cast<int>(state_.physics.trailMode);
+    constexpr const char* trailModes[] = {"Off", "Draw only", "Draw and smell"};
+    if (ImGui::Combo("Trails", &trailMode, trailModes, static_cast<int>(trailModeCount))) {
+        state_.physics.trailMode = static_cast<TrailMode>(static_cast<std::uint32_t>(trailMode));
         state_.controls.resetRequested = true;
     }
+    ImGui::SetItemTooltip(
+        "Off: no field at all. Draw only: the field is kept, deposited into and "
+        "drawn, but the nine trail inputs read zero -- the simpler brain, and "
+        "the control for every claim about the trail. Draw and smell: the "
+        "antennae read it. The input vector keeps all 61 slots either way, so a "
+        "population trained under one setting still loads under another.");
+    if (state_.physics.trailMode == TrailMode::Visual) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4{0.95F, 0.75F, 0.25F, 1.0F}, "blind");
+    }
+    // A world whose objective is only reachable by following a trail, run with
+    // the antennae switched off, is a world with no route to its objective --
+    // and the fitness curve looks like a hard task rather than an impossible
+    // one. The scenario says it needs the trail; this is where it gets said.
+    if (scenario.tunables.needsTrail && !trailSensed(state_.physics.trailMode)) {
+        ImGui::TextColored(ImVec4{1.0F, 0.75F, 0.25F, 1.0F}, "%s has no other way home",
+                           scenario.name);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Smell it")) {
+            state_.physics.trailMode = TrailMode::Sensed;
+            state_.controls.resetRequested = true;
+        }
+    }
+    ImGui::BeginDisabled(!trailFieldActive(state_.physics.trailMode));
     ImGui::SliderFloat("Trail deposit / s", &state_.physics.trailDepositRate, 0.0F, 24.0F, "%.2f");
     ImGui::SliderFloat("Beacon deposit / s", &state_.physics.beaconTrailDepositRate, 0.0F, 64.0F,
                        "%.2f");
@@ -489,6 +521,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
         static_cast<double>(units::metresToCentimetres(state_.physics.trailCellSize)), trailWidth,
         trailWidth, fieldBytes / (1024.0 * 1024.0));
     ImGui::TextDisabled("decay traffic %.0f MB per step", 2.0 * fieldBytes / (1024.0 * 1024.0));
+    ImGui::EndDisabled();
     // A snapshot is the fast way back to a run worth looking at, so it sits with
     // the run controls rather than in an export menu. Everything except the trail
     // field is stored; the field rebuilds itself within a couple of half-lives.
