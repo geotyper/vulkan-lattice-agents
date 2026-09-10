@@ -449,7 +449,13 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     // from the trail.
     int trailMode = static_cast<int>(state_.physics.trailMode);
     constexpr const char* trailModes[] = {"Off", "Draw only", "Draw and smell"};
-    if (ImGui::Combo("Trails", &trailMode, trailModes, static_cast<int>(trailModeCount))) {
+    // "Trail mode" rather than "Trails": the Show section already has a "Trails"
+    // checkbox, and ImGui derives a widget's identity from its label, so two of
+    // them in one window are one widget as far as it is concerned. They are also
+    // genuinely different questions -- this one is whether the field exists and
+    // is smelled, that one is whether it is painted -- so the labels are made to
+    // say so rather than separated by a hidden ##suffix.
+    if (ImGui::Combo("Trail mode", &trailMode, trailModes, static_cast<int>(trailModeCount))) {
         state_.physics.trailMode = static_cast<TrailMode>(static_cast<std::uint32_t>(trailMode));
         state_.controls.resetRequested = true;
     }
