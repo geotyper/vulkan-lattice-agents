@@ -691,6 +691,209 @@ void testSharedScenarioKernel() {
 // Depth. The network was one hidden layer for its whole life, and the layered
 // plan has to be a real composition rather than the same network with the extra
 // widths ignored -- which is exactly what a plausible-looking bug would produce.
+// What the network computes, checked against arithmetic written out by hand
+// rather than against the network's own machinery.
+//
+// Everything else about the brain here is a structural claim -- blocks tile, an
+// index lands in its block, the two languages agree. None of that says the
+// forward pass is a forward pass. A layer that summed the wrong sources, dropped
+// its bias, read the previous layer's state instead of its activation, or
+// transposed its matrix would satisfy every one of those and still be a
+// different function.
+void testBrainForwardPass() {
+    namespace bk = vkexp::neuro::kernel;
+
+    // Uniform everything. With every weight and bias set to w and every input to
+    // x, the whole network collapses to a chain that can be written down:
+    //
+    //   a0 = w * (1 + n_inputs * x)         h0 = tanh(a0)
+    //   ak = w * (1 + n_(k-1) * h_(k-1))    hk = tanh(ak)
+    //   y  = tanh(w * (1 + n_last * h_last))
+    //
+    // The counts in it are exactly the connectivity: a layer reading the wrong
+    // number of sources, or reading the input vector when it should read the
+    // layer before it, moves the answer.
+    const auto uniformExpectation = [](const vkexp::neuro::BrainShape& shape, const float w,
+                                       const float x) {
+        float signal = static_cast<float>(shape.inputCount) * x;
+        for (std::size_t layer = 0; layer < shape.hiddenLayerCount(); ++layer) {
+            const float activation = std::tanh(w * (1.0F + signal));
+            signal = static_cast<float>(shape.hiddenLayer(layer)) * activation;
+        }
+        return std::tanh(w * (1.0F + signal));
+    };
+
+    struct Case {
+        vkexp::neuro::BrainShape shape;
+        const char* what;
+    };
+    // Several topologies, and deliberately not only the shipping ones: a one
+    // neuron layer and a widening plan are where an off-by-one in a source count
+    // shows up as something other than a rounding difference.
+    const std::array<Case, 6> cases{{
+        {vkexp::neuro::defaultBrainShape, "the default 61 -> 20 -> 8"},
+        {{57, 20, 6}, "a trimmed 57 -> 20 -> 6"},
+        {{8, 4, 6}, "a small 8 -> 4 -> 6"},
+        {{4, 1, 6}, "a single hidden neuron"},
+        {{8, 4, 6, 3, 2}, "three layers narrowing"},
+        {{8, 2, 6, 5, 7}, "three layers widening"},
+    }};
+    for (const Case& item : cases) {
+        check(item.shape.fitsCapacity(), std::string{"Test topology fits: "} + item.what);
+        // Chosen so nothing saturates: at tanh's flat end every wrong answer
+        // rounds to the right one, and the test would pass on a broken sum.
+        const float w = 0.5F / (1.0F + static_cast<float>(item.shape.inputCount));
+        vkexp::neuro::Weights weights = vkexp::neuro::makeWeights(item.shape);
+        std::fill(weights.begin(), weights.end(), w);
+        vkexp::neuro::Inputs inputs{};
+        inputs.fill(1.0F);
+
+        vkexp::neuro::HiddenState state{};
+        const vkexp::neuro::Outputs outputs = vkexp::neuro::evaluate(
+            weights, inputs, state, 1.0F, bk::NeuronModelReactive, item.shape);
+        const float expected = uniformExpectation(item.shape, w, 1.0F);
+        bool everyOutput = true;
+        for (std::size_t output = 0; output < item.shape.outputCount; ++output) {
+            everyOutput = everyOutput && closeTo(outputs[output], expected);
+        }
+        check(everyOutput,
+              std::string{"Uniform weights give the hand-computed output on "} + item.what);
+        // And every output is the same number, because every output neuron sees
+        // the same layer through the same weights. One that differed would mean
+        // an output row reaching somewhere its neighbours do not.
+        check(closeTo(outputs[0], outputs[item.shape.outputCount - 1]),
+              std::string{"Every output neuron reads the same last layer on "} + item.what);
+    }
+
+    // A matrix that is uniform cannot catch its own transpose, so the second
+    // case makes every weight distinct and drives one input at a time. Under the
+    // reactive model the state *is* the pre-activation, so what comes back is
+    // the single weight that was addressed -- and if rows and columns were
+    // swapped it would be a different one.
+    const vkexp::neuro::BrainShape wired{6, 3, 6};
+    const bk::uint layers = wired.packedLayers();
+    const auto sources = static_cast<bk::uint>(wired.inputCount);
+    const auto weightFor = [](const bk::uint neuron, const bk::uint source) {
+        return 0.1F * static_cast<float>(neuron + 1) + 0.01F * static_cast<float>(source + 1);
+    };
+    // Written by the test's own arithmetic, not by the kernel's index function.
+    // That is the point: filling the genome through the same function that reads
+    // it would make a transposed layout invisible, because the test would write
+    // and read the same wrong place. The layout being asserted is the documented
+    // one -- the first layer starts the genome, one contiguous row per neuron,
+    // sources in order, biases after the last row.
+    vkexp::neuro::Weights wiring = vkexp::neuro::makeWeights(wired);
+    constexpr bk::uint wiredNeurons = 3;
+    for (bk::uint neuron = 0; neuron < wiredNeurons; ++neuron) {
+        for (bk::uint source = 0; source < sources; ++source) {
+            wiring[neuron * sources + source] = weightFor(neuron, source);
+        }
+    }
+    // And the kernel agrees about where that is, which is the other half of the
+    // claim: the layout above is the one the shader walks, not a second opinion.
+    check(bk::brainLayerWeightIndex(0u, sources, layers, 0u, 2u, 1u) == 2u * sources + 1u &&
+              bk::brainLayerBiasIndex(0u, sources, layers, 0u, 1u) ==
+                  wiredNeurons * sources + 1u,
+          "The kernel addresses the first layer row by row, biases after the rows");
+    for (bk::uint source = 0; source < sources; ++source) {
+        vkexp::neuro::Inputs oneHot{};
+        oneHot[source] = 1.0F;
+        vkexp::neuro::HiddenState state{};
+        (void)vkexp::neuro::evaluate(wiring, oneHot, state, 1.0F, bk::NeuronModelReactive, wired);
+        bool addressed = true;
+        for (bk::uint neuron = 0; neuron < 3; ++neuron) {
+            addressed = addressed && closeTo(state[neuron], weightFor(neuron, source));
+        }
+        check(addressed, "One input drives exactly the weights that connect it to each neuron");
+    }
+
+    // Two inputs at once: the neuron adds them. A layer that took the last
+    // source, or the largest, would pass the one-hot case above and fail here.
+    {
+        vkexp::neuro::Inputs twoHot{};
+        twoHot[1] = 1.0F;
+        twoHot[4] = 1.0F;
+        vkexp::neuro::HiddenState state{};
+        (void)vkexp::neuro::evaluate(wiring, twoHot, state, 1.0F, bk::NeuronModelReactive, wired);
+        bool summed = true;
+        for (bk::uint neuron = 0; neuron < 3; ++neuron) {
+            summed = summed && closeTo(state[neuron], weightFor(neuron, 1u) + weightFor(neuron, 4u));
+        }
+        check(summed, "Two live inputs are summed, not chosen between");
+    }
+
+    // Scaling: an input of 2 contributes twice what an input of 1 does. Anything
+    // treating the input as a flag rather than a value passes everything above.
+    {
+        vkexp::neuro::Inputs scaled{};
+        scaled[2] = 2.0F;
+        vkexp::neuro::HiddenState state{};
+        (void)vkexp::neuro::evaluate(wiring, scaled, state, 1.0F, bk::NeuronModelReactive, wired);
+        check(closeTo(state[0], 2.0F * weightFor(0u, 2u)),
+              "An input's value scales its weight rather than switching it on");
+    }
+
+    // The bias is added once, and only to its own neuron.
+    {
+        vkexp::neuro::Weights biased = vkexp::neuro::makeWeights(wired);
+        biased[wiredNeurons * sources + 1u] = 0.75F;
+        vkexp::neuro::HiddenState state{};
+        (void)vkexp::neuro::evaluate(biased, vkexp::neuro::Inputs{}, state, 1.0F,
+                                     bk::NeuronModelReactive, wired);
+        check(closeTo(state[0], 0.0F) && closeTo(state[1], 0.75F) && closeTo(state[2], 0.0F),
+              "A bias reaches its own neuron, once, with no input at all");
+    }
+
+    // And the second layer reads the first layer's *activation*, not its state.
+    // The two are different numbers whenever the state is outside tanh's linear
+    // part, which is exactly where a controller spends its time.
+    {
+        const vkexp::neuro::BrainShape chain{4, 2, 6, 1, 0};
+        const bk::uint chainLayers = chain.packedLayers();
+        const auto chainInputs = static_cast<bk::uint>(chain.inputCount);
+        vkexp::neuro::Weights weights = vkexp::neuro::makeWeights(chain);
+        // Two first-layer neurons driven to clearly different, clearly nonlinear
+        // places, and one second-layer neuron summing both with unit weights.
+        weights[bk::brainLayerBiasIndex(0u, chainInputs, chainLayers, 0u, 0u)] = 1.4F;
+        weights[bk::brainLayerBiasIndex(0u, chainInputs, chainLayers, 0u, 1u)] = -0.9F;
+        weights[bk::brainLayerWeightIndex(0u, chainInputs, chainLayers, 1u, 0u, 0u)] = 1.0F;
+        weights[bk::brainLayerWeightIndex(0u, chainInputs, chainLayers, 1u, 0u, 1u)] = 1.0F;
+        vkexp::neuro::HiddenState state{};
+        (void)vkexp::neuro::evaluate(weights, vkexp::neuro::Inputs{}, state, 1.0F,
+                                     bk::NeuronModelReactive, chain);
+        const float throughActivations = std::tanh(1.4F) + std::tanh(-0.9F);
+        const float throughStates = 1.4F - 0.9F;
+        check(closeTo(state[2], throughActivations),
+              "A deeper layer reads the activations in front of it");
+        check(!closeTo(throughActivations, throughStates),
+              "and the two readings really are different numbers here");
+    }
+
+    // Finally the same uniform chain under the time-constant model, one step from
+    // rest: the integrator scales the step by the neuron's own time constant, so
+    // this says the genes reach the neurons they belong to as well as that the
+    // sums are right.
+    {
+        const vkexp::neuro::BrainShape shape{8, 4, 6, 3, 0};
+        const float w = 0.05F;
+        const float step = 1.0F / 60.0F;
+        vkexp::neuro::Weights weights = vkexp::neuro::makeWeights(shape);
+        std::fill(weights.begin(), weights.end(), w);
+        vkexp::neuro::Inputs inputs{};
+        inputs.fill(1.0F);
+        vkexp::neuro::HiddenState state{};
+        (void)vkexp::neuro::evaluate(weights, inputs, state, step, bk::NeuronModelTimeConstant,
+                                     shape);
+        // Every gene is w, so every neuron runs at the same rate.
+        const float rate = std::min(step / bk::brainTimeConstant(w), 1.0F);
+        const float firstActivation = w * (1.0F + 8.0F * 1.0F);
+        const float firstState = rate * firstActivation;
+        const float secondActivation = w * (1.0F + 4.0F * std::tanh(firstState));
+        check(closeTo(state[0], firstState) && closeTo(state[4], rate * secondActivation),
+              "The integrator scales each layer's own sum by the time constant it was given");
+    }
+}
+
 void testLayeredBrain() {
     namespace bk = vkexp::neuro::kernel;
     const vkexp::neuro::BrainShape flat{8, 4, 6};
@@ -1166,7 +1369,8 @@ void testWorldSnapshotRoundTrip() {
     snapshot.physics.puckBreakawayPushes = 2.5F;
     snapshot.physics.puckRandomStart = true;
 
-    snapshot.genomes.resize(4);
+    snapshot.genomes.assign(
+        4, vkexp::Genome{vkexp::neuro::makeWeights(vkexp::neuro::defaultBrainShape)});
     for (std::size_t index = 0; index < snapshot.genomes.size(); ++index) {
         for (std::size_t weight = 0; weight < snapshot.genomes[index].weights.size(); ++weight) {
             snapshot.genomes[index].weights[weight] =
@@ -1309,9 +1513,12 @@ void testWorldSnapshotRoundTrip() {
 }
 
 void testPopulationReload() {
-    const vkexp::EvolutionSettings settings{8, 2, 3, 0.5F, 0.1F, 0.2F, 42U};
+    const vkexp::EvolutionSettings settings{8,     2,    3, 0.5F, 0.1F, 0.2F, 42U,
+                                            vkexp::neuro::defaultBrainShape.weightCount()};
     vkexp::GeneticAlgorithm evolution{settings};
-    std::vector<vkexp::Genome> replacement(settings.populationSize);
+    std::vector<vkexp::Genome> replacement(
+        settings.populationSize,
+        vkexp::Genome{vkexp::neuro::makeWeights(vkexp::neuro::defaultBrainShape)});
     replacement.front().weights[0] = 3.25F;
     evolution.setPopulation(replacement, 17);
     check(evolution.generation() == 17, "Loaded population restores the generation counter");
@@ -1320,7 +1527,9 @@ void testPopulationReload() {
 
     bool rejectedMismatch = false;
     try {
-        const std::vector<vkexp::Genome> wrongSize(settings.populationSize - 1);
+        const std::vector<vkexp::Genome> wrongSize(
+            settings.populationSize - 1,
+            vkexp::Genome{vkexp::neuro::makeWeights(vkexp::neuro::defaultBrainShape)});
         evolution.setPopulation(wrongSize, 0);
     } catch (const std::invalid_argument&) {
         rejectedMismatch = true;
@@ -2915,6 +3124,7 @@ int main() {
     testScenarioRegistryContract();
     testFitnessWeightsAreParameters();
     testSharedScenarioKernel();
+    testBrainForwardPass();
     testLayeredBrain();
     testBrainDescription();
     testGenomeArchiveRoundTrip();

@@ -40,14 +40,19 @@ void stepAgentCpu(AgentState& agent,
     // The neuron state lives on the agent, so the CPU path carries it the same
     // way the shader does -- read it out, integrate, put it back -- rather than
     // keeping a parallel store that could drift out of step with the GPU's.
+    // Every layer's neurons, not just the first layer's: the states of all
+    // layers live end to end in the one block, so carrying `hiddenCount` of them
+    // silently drops every neuron past the first layer -- which is a deep brain
+    // that forgets everything behind its front layer on every step.
     neuro::HiddenState hidden{};
-    for (std::size_t neuron = 0; neuron < brain.hiddenCount; ++neuron) {
+    const std::size_t neuronCount = brain.hiddenTotal();
+    for (std::size_t neuron = 0; neuron < neuronCount; ++neuron) {
         hidden[neuron] = agentHiddenState(agent, neuron);
     }
     const neuro::Outputs output =
         neuro::evaluate(weights, sampleAgentInputs(agent, settings), hidden, settings.deltaTime,
                         static_cast<neuro::kernel::uint>(settings.neuronModel), brain);
-    for (std::size_t neuron = 0; neuron < brain.hiddenCount; ++neuron) {
+    for (std::size_t neuron = 0; neuron < neuronCount; ++neuron) {
         setAgentHiddenState(agent, neuron, hidden[neuron]);
     }
     const float left = output[0];

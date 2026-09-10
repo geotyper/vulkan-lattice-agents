@@ -467,6 +467,16 @@ void SimulationDriver::restoreSnapshot(const WorldSnapshot& snapshot) {
     state_.controls.stepsPerGeneration = snapshot.stepsPerGeneration;
     state_.worlds.requestedAgentsPerWorld = snapshot.requestedAgentsPerWorld;
 
+    // The settings that just went in decide how long a genome is -- the world's
+    // scenario and its brain plan are both in the file -- so the run adopts that
+    // before the population is handed over. A snapshot of a different world is a
+    // resumable thing; population size and trial count are the two that are not,
+    // because they are buffer dimensions fixed at launch.
+    const std::size_t previousWeights = evolution_.settings().weightCount;
+    adoptBrainPlan();
+    if (evolution_.settings().weightCount != previousWeights && device_ != VK_NULL_HANDLE) {
+        createStepResources();
+    }
     evolution_.setPopulation(snapshot.genomes, snapshot.generation);
     updateWorldLayout();
     refreshGridForWorldSize();

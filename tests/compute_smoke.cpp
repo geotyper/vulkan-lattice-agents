@@ -628,19 +628,20 @@ void runGenomeAddressingProbe(vkexp::HeadlessComputeContext& context) {
     const vkexp::SimulationStep settings{};
     const vkexp::neuro::BrainShape brain = vkexp::scenarioDefinition(settings.beaconScenario).brain;
     const auto inputCount = static_cast<kernel::uint>(brain.inputCount);
-    const auto hiddenCount = static_cast<kernel::uint>(brain.hiddenCount);
     const auto outputCount = static_cast<kernel::uint>(brain.outputCount);
 
     // Genome g biases both motors so that tanh(bias) is a value unique to g.
-    std::vector<vkexp::neuro::Weights> genomes(
-        genomeCount, vkexp::neuro::makeWeights(vkexp::neuro::maximumBrainShape));
+    // At the run's own plan length, because that is the stride the shader steps
+    // by: a genome padded to some other length would put every agent but the
+    // first on the wrong weights, which is the very thing this probe checks.
+    std::vector<vkexp::neuro::Weights> genomes(genomeCount, vkexp::neuro::makeWeights(brain));
     std::array<float, genomeCount> expectedDrive{};
     for (std::uint32_t genome = 0; genome < genomeCount; ++genome) {
         const float bias = -1.0F + 0.4F * static_cast<float>(genome);
         for (const kernel::uint motor :
              {kernel::BrainMotorLeftOutput, kernel::BrainMotorRightOutput}) {
-            genomes[genome][kernel::brainOutputBiasIndex(0u, inputCount, hiddenCount, outputCount,
-                                                         motor)] = bias;
+            genomes[genome][kernel::brainOutputBiasIndex(0u, inputCount, brain.packedLayers(),
+                                                         outputCount, motor)] = bias;
         }
         expectedDrive[genome] = std::tanh(bias);
     }
