@@ -95,7 +95,7 @@ constexpr std::uint32_t physicsFloatCount = 40;
 // after it. A new bool is therefore
 // covered by testWorldSnapshotRoundTrip naming it in both polarities, which is
 // the check that does not depend on the size changing.
-static_assert(sizeof(SimulationStep) == 200,
+static_assert(sizeof(SimulationStep) == 212,
               "SimulationStep changed shape -- update the world snapshot field lists");
 
 // The handful of fields that are not floats, kept apart so the float list above
@@ -110,6 +110,9 @@ struct PhysicsIntegers {
     std::uint32_t agentCollisionsEnabled{};
     std::uint32_t agentLightEnabled{};
     std::uint32_t trailMode{};
+    std::uint32_t firstHiddenLayer{};
+    std::uint32_t secondHiddenLayer{};
+    std::uint32_t thirdHiddenLayer{};
     std::uint32_t neuronModel{};
     std::uint32_t swapDeliveryEnds{};
     std::uint32_t uniformBeaconColor{};
@@ -117,7 +120,7 @@ struct PhysicsIntegers {
     std::uint32_t puckRandomStart{};
 };
 
-static_assert(sizeof(PhysicsIntegers) == 56);
+static_assert(sizeof(PhysicsIntegers) == 68);
 
 void readExactly(std::ifstream& stream, void* destination, const std::size_t bytes,
                  const std::filesystem::path& path) {
@@ -178,6 +181,9 @@ void saveWorldSnapshot(const std::filesystem::path& path, const WorldSnapshot& s
                                    physics.agentCollisionsEnabled ? 1U : 0U,
                                    physics.agentLightEnabled ? 1U : 0U,
                                    static_cast<std::uint32_t>(physics.trailMode),
+                                   physics.hiddenLayers[0],
+                                   physics.hiddenLayers[1],
+                                   physics.hiddenLayers[2],
                                    static_cast<std::uint32_t>(physics.neuronModel),
                                    physics.swapDeliveryEnds ? 1U : 0U,
                                    physics.uniformBeaconColor ? 1U : 0U,
@@ -256,6 +262,8 @@ WorldSnapshot loadWorldSnapshot(const std::filesystem::path& path) {
     snapshot.physics.agentCollisionsEnabled = integers.agentCollisionsEnabled != 0;
     snapshot.physics.agentLightEnabled = integers.agentLightEnabled != 0;
     snapshot.physics.trailMode = static_cast<TrailMode>(integers.trailMode);
+    snapshot.physics.hiddenLayers = {integers.firstHiddenLayer, integers.secondHiddenLayer,
+                                     integers.thirdHiddenLayer};
     snapshot.physics.swapDeliveryEnds = integers.swapDeliveryEnds != 0;
     snapshot.physics.uniformBeaconColor = integers.uniformBeaconColor != 0;
     snapshot.physics.blockedDoorPerGeneration = integers.blockedDoorPerGeneration != 0;

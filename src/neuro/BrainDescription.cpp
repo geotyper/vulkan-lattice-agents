@@ -312,14 +312,16 @@ const BrainBlock* BrainDescription::block(const std::string_view name) const {
 
 BrainDescription describeBrain(const BrainShape shape, const std::string_view neuronModel) {
     const auto inputCount = static_cast<uint>(shape.inputCount);
-    const auto hiddenCount = static_cast<uint>(shape.hiddenCount);
     const auto outputCount = static_cast<uint>(shape.outputCount);
 
     BrainDescription description{};
     description.inputCount = inputCount;
-    description.hiddenCount = hiddenCount;
+    description.hiddenCount = static_cast<uint>(shape.hiddenTotal());
+    for (std::size_t layer = 0; layer < shape.hiddenLayerCount(); ++layer) {
+        description.hiddenLayers.push_back(static_cast<uint>(shape.hiddenLayer(layer)));
+    }
     description.outputCount = outputCount;
-    description.weightCount = bk::brainWeightCount(inputCount, hiddenCount, outputCount);
+    description.weightCount = bk::brainWeightCount(inputCount, shape.packedLayers(), outputCount);
     description.neuronModel = std::string{neuronModel};
 
     // Sensor blocks, each asking the kernel where its first channel lands rather
@@ -360,31 +362,53 @@ BrainDescription describeBrain(const BrainShape shape, const std::string_view ne
     // The genome, block by block, in the order it is laid out. Offsets come from
     // the same index functions the shader calls, with a base of zero, so this
     // cannot drift from the arithmetic: it *is* the arithmetic, evaluated once.
+    const uint layers = shape.packedLayers();
+    const uint layerCount = bk::brainHiddenLayerCount(layers);
     const uint base = 0u;
+    const auto layerName = [](const std::string_view prefix, const uint layer,
+                              const std::string_view suffix) {
+        return std::string{prefix} + std::to_string(layer) + std::string{suffix};
+    };
+    // One pair per hidden layer, then the output layer, then the genes, then the
+    // gate block mirroring the forward one layer for layer.
+    for (uint layer = 0; layer < layerCount; ++layer) {
+        const uint width = bk::brainHiddenLayerSize(layers, layer);
+        const uint sourceCount = bk::brainLayerSourceCount(inputCount, layers, layer);
+        const std::string source = layer == 0 ? std::string{"inputs"} : layerName("hidden", layer - 1, "");
+        const std::string target = layerName("hidden", layer, "");
+        description.weights.push_back(weightBlock(
+            layerName("hidden", layer, "_weights"), source, target,
+            bk::brainLayerWeightIndex(base, inputCount, layers, layer, 0u, 0u), width * sourceCount,
+            width, sourceCount));
+        description.weights.push_back(weightBlock(
+            layerName("hidden", layer, "_bias"), "", target,
+            bk::brainLayerBiasIndex(base, inputCount, layers, layer, 0u), width));
+    }
+    const uint lastHidden = bk::brainLastHiddenSize(layers);
     description.weights.push_back(weightBlock(
-        "hidden_weights", "inputs", "hidden", bk::brainHiddenWeightIndex(base, inputCount, 0u, 0u),
-        inputCount * hiddenCount, hiddenCount, inputCount));
-    description.weights.push_back(weightBlock(
-        "hidden_bias", "", "hidden", bk::brainHiddenBiasIndex(base, inputCount, hiddenCount, 0u),
-        hiddenCount));
-    description.weights.push_back(weightBlock(
-        "output_weights", "hidden", "outputs",
-        bk::brainOutputWeightIndex(base, inputCount, hiddenCount, 0u, 0u), hiddenCount * outputCount,
-        outputCount, hiddenCount));
+        "output_weights", layerName("hidden", layerCount - 1u, ""), "outputs",
+        bk::brainOutputWeightIndex(base, inputCount, layers, 0u, 0u), lastHidden * outputCount,
+        outputCount, lastHidden));
     description.weights.push_back(weightBlock(
         "output_bias", "", "outputs",
-        bk::brainOutputBiasIndex(base, inputCount, hiddenCount, outputCount, 0u), outputCount));
+        bk::brainOutputBiasIndex(base, inputCount, layers, outputCount, 0u), outputCount));
     description.weights.push_back(weightBlock(
         "time_constants", "", "hidden",
-        bk::brainTimeConstantGeneIndex(base, inputCount, hiddenCount, outputCount, 0u),
-        hiddenCount));
-    description.weights.push_back(weightBlock(
-        "gate_weights", "inputs", "hidden_rate",
-        bk::brainGateWeightIndex(base, inputCount, hiddenCount, outputCount, 0u, 0u),
-        inputCount * hiddenCount, hiddenCount, inputCount));
-    description.weights.push_back(weightBlock(
-        "gate_bias", "", "hidden_rate",
-        bk::brainGateBiasIndex(base, inputCount, hiddenCount, outputCount, 0u), hiddenCount));
+        bk::brainTimeConstantGeneIndex(base, inputCount, layers, outputCount, 0u),
+        bk::brainHiddenNeuronCount(layers)));
+    for (uint layer = 0; layer < layerCount; ++layer) {
+        const uint width = bk::brainHiddenLayerSize(layers, layer);
+        const uint sourceCount = bk::brainLayerSourceCount(inputCount, layers, layer);
+        const std::string source = layer == 0 ? std::string{"inputs"} : layerName("hidden", layer - 1, "");
+        const std::string target = layerName("hidden", layer, "_rate");
+        description.weights.push_back(weightBlock(
+            layerName("gate", layer, "_weights"), source, target,
+            bk::brainGateWeightIndex(base, inputCount, layers, outputCount, layer, 0u, 0u),
+            width * sourceCount, width, sourceCount));
+        description.weights.push_back(weightBlock(
+            layerName("gate", layer, "_bias"), "", target,
+            bk::brainGateBiasIndex(base, inputCount, layers, outputCount, layer, 0u), width));
+    }
     return description;
 }
 
@@ -394,6 +418,12 @@ std::string brainDescriptionToJson(const BrainDescription& description) {
     out += "{\n";
     out += "  \"inputs_count\": " + std::to_string(description.inputCount) + ",\n";
     out += "  \"hidden_count\": " + std::to_string(description.hiddenCount) + ",\n";
+    out += "  \"hidden_layers\": [";
+    for (std::size_t layer = 0; layer < description.hiddenLayers.size(); ++layer) {
+        out += layer == 0 ? " " : ", ";
+        out += std::to_string(description.hiddenLayers[layer]);
+    }
+    out += " ],\n";
     out += "  \"outputs_count\": " + std::to_string(description.outputCount) + ",\n";
     out += "  \"weight_count\": " + std::to_string(description.weightCount) + ",\n";
     out += "  \"neuron_model\": ";
@@ -420,6 +450,14 @@ BrainDescription parseBrainDescription(const std::string_view json) {
                 description.inputCount = reader.readNumber();
             } else if (key == "hidden_count") {
                 description.hiddenCount = reader.readNumber();
+            } else if (key == "hidden_layers") {
+                reader.expect('[');
+                if (!reader.consume(']')) {
+                    do {
+                        description.hiddenLayers.push_back(reader.readNumber());
+                    } while (reader.consume(','));
+                    reader.expect(']');
+                }
             } else if (key == "outputs_count") {
                 description.outputCount = reader.readNumber();
             } else if (key == "weight_count") {
@@ -461,6 +499,18 @@ std::vector<std::string> compareBrainDescriptions(const BrainDescription& expect
     compareCount("weight count", expected.weightCount, actual.weightCount);
     compareCount("input count", expected.inputCount, actual.inputCount);
     compareCount("hidden count", expected.hiddenCount, actual.hiddenCount);
+    if (expected.hiddenLayers != actual.hiddenLayers) {
+        const auto describe = [](const std::vector<std::uint32_t>& layers) {
+            std::string text;
+            for (const std::uint32_t width : layers) {
+                text += text.empty() ? "" : "+";
+                text += std::to_string(width);
+            }
+            return text.empty() ? std::string{"none"} : text;
+        };
+        differences.emplace_back("hidden layers are " + describe(actual.hiddenLayers) +
+                                 ", this build has " + describe(expected.hiddenLayers));
+    }
     compareCount("output count", expected.outputCount, actual.outputCount);
     compareBlockList("input", expected.inputs, actual.inputs, differences);
     compareBlockList("output", expected.outputs, actual.outputs, differences);

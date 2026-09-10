@@ -36,7 +36,7 @@ void stepAgentCpu(AgentState& agent,
     if (scenario.beforeStep != nullptr) {
         scenario.beforeStep(agent, settings);
     }
-    const neuro::BrainShape brain = scenario.brain;
+    const neuro::BrainShape brain = resolvedBrain(scenario, settings);
     // The neuron state lives on the agent, so the CPU path carries it the same
     // way the shader does -- read it out, integrate, put it back -- rather than
     // keeping a parallel store that could drift out of step with the GPU's.

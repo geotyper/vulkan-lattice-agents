@@ -41,6 +41,13 @@ struct SimulationControls {
     // block. Goes next to the archive with a .json extension.
     bool saveBrainStructureRequested{};
 
+    // The hidden-layer plan being edited in the Brain window, before it is
+    // applied. Kept beside the other controls rather than in the physics block
+    // because it is a draft: what the run is actually using lives in
+    // SimulationStep, and these two differing is exactly what "not applied yet"
+    // means. All zero means "not started editing".
+    std::array<int, 3> hiddenLayerDraft{};
+
     // Watching rather than training. The generation is still scored and
     // reported -- that is how loaded weights get judged -- but nothing is
     // selected or mutated, so the same population respawns and the run repeats

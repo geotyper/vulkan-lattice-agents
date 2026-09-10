@@ -91,7 +91,8 @@ void SimulationModule::onUpdate(AppContext& context, const FrameInfo&) {
             saveGenomeArchive(
                 state_.controls.genomePath, population.first(saved),
                 genomeArchiveMetadata(state_, driver_,
-                                      scenarioDefinition(state_.physics.beaconScenario).brain));
+                                      resolvedBrain(scenarioDefinition(state_.physics.beaconScenario),
+                                                    state_.physics)));
             state_.controls.snapshotStatus =
                 "Saved " + std::to_string(saved) + " genome(s) from generation " +
                 std::to_string(driver_.evolution().generation()) + " to " +
@@ -114,7 +115,7 @@ void SimulationModule::onUpdate(AppContext& context, const FrameInfo&) {
                 throw std::runtime_error("Unable to write " + path.string());
             }
             stream << neuro::brainDescriptionToJson(neuro::describeBrain(
-                scenarioDefinition(state_.physics.beaconScenario).brain,
+                resolvedBrain(scenarioDefinition(state_.physics.beaconScenario), state_.physics),
                 neuronModelKey(state_.physics.neuronModel)));
             if (!stream) {
                 throw std::runtime_error("Failed while writing " + path.string());

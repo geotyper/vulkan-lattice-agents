@@ -288,48 +288,73 @@ void main() {
     // offset into the shared genome buffer.
     const uint genome = id / params.trialsPerGenome;
     const uint inputCount = brainLayoutInputCount(params.brainLayout);
-    const uint hiddenCount = brainLayoutHiddenCount(params.brainLayout);
     const uint outputCount = brainLayoutOutputCount(params.brainLayout);
-    const uint base = genome * brainLayoutStride(params.brainLayout);
-    float hidden[BrainHiddenCapacity];
-    for (uint neuron = 0; neuron < hiddenCount; ++neuron) {
-        float activation = weights[brainHiddenBiasIndex(base, inputCount, hiddenCount, neuron)];
-        for (uint inputIndex = 0; inputIndex < inputCount; ++inputIndex) {
-            activation += weights[brainHiddenWeightIndex(base, inputCount, neuron, inputIndex)] *
-                          inputs[inputIndex];
-        }
-        // Where the time constant comes from is the only thing the model
-        // changes, exactly as in vkexp::neuro::evaluate. Reactive pins it to the
-        // step, which the shared integrator turns into a plain assignment; gated
-        // recomputes it from the inputs through the same mapping the gene uses,
-        // so a constant gate is the fixed-time-constant neuron.
-        float timeConstant = params.deltaTime;
-        if (params.neuronModel == NeuronModelTimeConstant) {
-            timeConstant = brainTimeConstant(weights[brainTimeConstantGeneIndex(
-                base, inputCount, hiddenCount, outputCount, neuron)]);
-        } else if (params.neuronModel == NeuronModelGated) {
-            float gate =
-                weights[brainGateBiasIndex(base, inputCount, hiddenCount, outputCount, neuron)];
-            for (uint gateInput = 0; gateInput < inputCount; ++gateInput) {
-                gate += weights[brainGateWeightIndex(base, inputCount, hiddenCount, outputCount,
-                                                     neuron, gateInput)] *
-                        inputs[gateInput];
-            }
-            timeConstant = brainTimeConstant(gate);
-        }
-        const float state = brainIntegrateNeuron(agentHiddenState(agent, neuron), activation,
-                                                 timeConstant, params.deltaTime);
-        agent.hidden[neuron >> 2u][neuron & 3u] = state;
-        hidden[neuron] = brainActivation(state);
+    const uint layers = params.brainHiddenLayers;
+    const uint layerCount = brainHiddenLayerCount(layers);
+    const uint base = genome * params.brainGenomeStride;
+
+    // What the current layer reads: the input vector first, then each layer's
+    // own output. One loop over layers, and only the source changes -- which is
+    // the whole of what makes a two- or three-layer plan work here. Copied into
+    // a scratch array rather than aliased, because GLSL has no pointer to alias
+    // with and the CPU evaluator has to do the same thing to stay in parity.
+    float source[BrainInputCapacity];
+    for (uint index = 0; index < inputCount; ++index) {
+        source[index] = inputs[index];
     }
+    uint sourceCount = inputCount;
+
+    for (uint layer = 0; layer < layerCount; ++layer) {
+        const uint width = brainHiddenLayerSize(layers, layer);
+        const uint stateOffset = brainHiddenLayerStateOffset(layers, layer);
+        float produced[BrainHiddenNeuronCapacity];
+        for (uint neuron = 0; neuron < width; ++neuron) {
+            float activation =
+                weights[brainLayerBiasIndex(base, inputCount, layers, layer, neuron)];
+            for (uint index = 0; index < sourceCount; ++index) {
+                activation +=
+                    weights[brainLayerWeightIndex(base, inputCount, layers, layer, neuron, index)] *
+                    source[index];
+            }
+            // Where the time constant comes from is the only thing the model
+            // changes, exactly as in vkexp::neuro::evaluate. Reactive pins it to
+            // the step, which the shared integrator turns into a plain
+            // assignment; gated recomputes it from what this layer reads,
+            // through the same mapping the gene uses.
+            const uint global = stateOffset + neuron;
+            float timeConstant = params.deltaTime;
+            if (params.neuronModel == NeuronModelTimeConstant) {
+                timeConstant = brainTimeConstant(weights[brainTimeConstantGeneIndex(
+                    base, inputCount, layers, outputCount, global)]);
+            } else if (params.neuronModel == NeuronModelGated) {
+                float gate = weights[brainGateBiasIndex(base, inputCount, layers, outputCount,
+                                                        layer, neuron)];
+                for (uint index = 0; index < sourceCount; ++index) {
+                    gate += weights[brainGateWeightIndex(base, inputCount, layers, outputCount,
+                                                         layer, neuron, index)] *
+                            source[index];
+                }
+                timeConstant = brainTimeConstant(gate);
+            }
+            const float state = brainIntegrateNeuron(agentHiddenState(agent, global), activation,
+                                                     timeConstant, params.deltaTime);
+            agent.hidden[global >> 2u][global & 3u] = state;
+            produced[neuron] = brainActivation(state);
+        }
+        for (uint neuron = 0; neuron < width; ++neuron) {
+            source[neuron] = produced[neuron];
+        }
+        sourceCount = width;
+    }
+
     float outputs[BrainOutputCapacity];
     for (uint neuron = 0; neuron < outputCount; ++neuron) {
         float activation =
-            weights[brainOutputBiasIndex(base, inputCount, hiddenCount, outputCount, neuron)];
-        for (uint hiddenIndex = 0; hiddenIndex < hiddenCount; ++hiddenIndex) {
-            activation += weights[brainOutputWeightIndex(base, inputCount, hiddenCount, neuron,
-                                                         hiddenIndex)] *
-                          hidden[hiddenIndex];
+            weights[brainOutputBiasIndex(base, inputCount, layers, outputCount, neuron)];
+        for (uint index = 0; index < sourceCount; ++index) {
+            activation +=
+                weights[brainOutputWeightIndex(base, inputCount, layers, neuron, index)] *
+                source[index];
         }
         outputs[neuron] = brainActivation(activation);
     }

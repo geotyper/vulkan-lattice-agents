@@ -23,7 +23,19 @@ const uint BrainSelfInputCount = 4u;      // speed, turn rate, energy, own signa
 const uint BrainTaskInputCount = 2u;      // cargo level, seeking-home flag
 const uint BrainRecurrentCount = 2u;      // memory cells, fed back as inputs
 const uint BrainActuatorOutputCount = 6u; // left, right, R, G, B, intensity
-const uint BrainHiddenCapacity = 20u;
+// Hidden neurons in total, across however many layers there are, and how many
+// layers there may be. Both are compile-time because both size arrays: the
+// shader's scratch buffers, and the state block on the agent record. A plan
+// chooses how to spend the total; it cannot raise it.
+//
+// 32 rather than 20, and three layers rather than one. The cost of the headroom
+// is paid in the genome stride, which is sized for the widest plan the capacity
+// allows -- one 32-wide layer -- so a run using fewer neurons carries weights it
+// never reads. That is the same trade the gate block already makes, and for the
+// same reason: one buffer size and one genome length means a population stays
+// loadable across plans, and comparing two plans stays possible at all.
+const uint BrainHiddenNeuronCapacity = 32u;
+const uint BrainHiddenLayerCapacity = 3u;
 
 // --- derived layout: never edited by hand ------------------------------------
 
@@ -235,81 +247,189 @@ const uint NeuronModelCount = 3u;
 // genome under all three, so a model can be switched mid-experiment without the
 // population meaning something different afterwards.
 
-VKEXP_BRAIN_FN uint brainWeightCount(uint inputCount, uint hiddenCount, uint outputCount) {
-    return inputCount * hiddenCount + hiddenCount + hiddenCount * outputCount + outputCount +
-           hiddenCount + hiddenCount * inputCount + hiddenCount;
+// --- how many hidden layers, and how wide -----------------------------------
+//
+// The plan is three widths packed into one uint, six bits each. A width of zero
+// means the layer is not there, and the layers are dense from the front, so
+// {20, 0, 0} is the single 20-wide layer this network had for its whole life.
+//
+// Packed rather than passed as an array because it crosses into GLSL, where the
+// common subset this file is written in has no structs and no arrays of
+// parameters. Six bits is the capacity above with one to spare.
+const uint BrainLayerSizeMask = 0x3fu;
+const uint BrainLayerSizeBits = 6u;
+
+VKEXP_BRAIN_FN uint brainPackHiddenLayers(uint first, uint second, uint third) {
+    return (first & BrainLayerSizeMask) | ((second & BrainLayerSizeMask) << BrainLayerSizeBits) |
+           ((third & BrainLayerSizeMask) << (2u * BrainLayerSizeBits));
 }
 
-// Start of the gate block: everything before it, in order.
-VKEXP_BRAIN_FN uint brainGateBlockOffset(uint base, uint inputCount, uint hiddenCount,
-                                         uint outputCount) {
-    return base + inputCount * hiddenCount + hiddenCount + hiddenCount * outputCount + outputCount +
-           hiddenCount;
+VKEXP_BRAIN_FN uint brainHiddenLayerSize(uint layers, uint layer) {
+    if (layer >= BrainHiddenLayerCapacity) {
+        return 0u;
+    }
+    return (layers >> (layer * BrainLayerSizeBits)) & BrainLayerSizeMask;
 }
 
-VKEXP_BRAIN_FN uint brainHiddenWeightIndex(uint base, uint inputCount, uint neuron,
-                                           uint inputIndex) {
-    return base + neuron * inputCount + inputIndex;
+// Layers are dense from the front, so the count is where the widths stop.
+VKEXP_BRAIN_FN uint brainHiddenLayerCount(uint layers) {
+    uint count = 0u;
+    for (uint layer = 0u; layer < BrainHiddenLayerCapacity; ++layer) {
+        if (brainHiddenLayerSize(layers, layer) == 0u) {
+            return count;
+        }
+        count = layer + 1u;
+    }
+    return count;
 }
 
-VKEXP_BRAIN_FN uint brainHiddenBiasIndex(uint base, uint inputCount, uint hiddenCount,
+VKEXP_BRAIN_FN uint brainHiddenNeuronCount(uint layers) {
+    uint total = 0u;
+    for (uint layer = 0u; layer < BrainHiddenLayerCapacity; ++layer) {
+        total += brainHiddenLayerSize(layers, layer);
+    }
+    return total;
+}
+
+// Where a layer's neuron states begin in the agent's hidden block. The states
+// of all layers live end to end in one array, so a deeper plan needs no new
+// storage on the agent -- only a different division of the same block.
+VKEXP_BRAIN_FN uint brainHiddenLayerStateOffset(uint layers, uint layer) {
+    uint offset = 0u;
+    for (uint earlier = 0u; earlier < layer; ++earlier) {
+        offset += brainHiddenLayerSize(layers, earlier);
+    }
+    return offset;
+}
+
+// What a layer reads: the input vector for the first, the layer before it after
+// that. This one function is why a deep plan needs no special case anywhere.
+VKEXP_BRAIN_FN uint brainLayerSourceCount(uint inputCount, uint layers, uint layer) {
+    if (layer == 0u) {
+        return inputCount;
+    }
+    return brainHiddenLayerSize(layers, layer - 1u);
+}
+
+// --- genome addressing: the layers laid out flat -----------------------------
+//
+// [layer 0 weights][layer 0 biases] ... [layer n weights][layer n biases]
+// [hidden->output weights][output biases][time constants]
+// [gate 0 weights][gate 0 biases] ... [gate n weights][gate n biases]
+//
+// The gate block mirrors the forward block layer for layer, because a gate is a
+// second opinion about the same inputs. It is carried whatever neuron model is
+// selected, so switching a model is a parameter change and not a
+// reinterpretation of the population -- see the model notes above.
+
+// Every forward weight and bias, for all layers: the size of the first block,
+// and also of the gate block that mirrors it.
+VKEXP_BRAIN_FN uint brainForwardBlockSize(uint inputCount, uint layers) {
+    uint total = 0u;
+    for (uint layer = 0u; layer < BrainHiddenLayerCapacity; ++layer) {
+        const uint size = brainHiddenLayerSize(layers, layer);
+        total += size * brainLayerSourceCount(inputCount, layers, layer) + size;
+    }
+    return total;
+}
+
+// The width the output layer reads from: the last hidden layer.
+VKEXP_BRAIN_FN uint brainLastHiddenSize(uint layers) {
+    const uint count = brainHiddenLayerCount(layers);
+    if (count == 0u) {
+        return 0u;
+    }
+    return brainHiddenLayerSize(layers, count - 1u);
+}
+
+VKEXP_BRAIN_FN uint brainWeightCount(uint inputCount, uint layers, uint outputCount) {
+    const uint forward = brainForwardBlockSize(inputCount, layers);
+    return forward + brainLastHiddenSize(layers) * outputCount + outputCount +
+           brainHiddenNeuronCount(layers) + forward;
+}
+
+// Start of a layer's own weights, walking the layers before it.
+VKEXP_BRAIN_FN uint brainLayerBlockOffset(uint base, uint inputCount, uint layers, uint layer) {
+    uint offset = base;
+    for (uint earlier = 0u; earlier < layer; ++earlier) {
+        const uint size = brainHiddenLayerSize(layers, earlier);
+        offset += size * brainLayerSourceCount(inputCount, layers, earlier) + size;
+    }
+    return offset;
+}
+
+VKEXP_BRAIN_FN uint brainLayerWeightIndex(uint base, uint inputCount, uint layers, uint layer,
+                                          uint neuron, uint sourceIndex) {
+    return brainLayerBlockOffset(base, inputCount, layers, layer) +
+           neuron * brainLayerSourceCount(inputCount, layers, layer) + sourceIndex;
+}
+
+VKEXP_BRAIN_FN uint brainLayerBiasIndex(uint base, uint inputCount, uint layers, uint layer,
+                                        uint neuron) {
+    const uint size = brainHiddenLayerSize(layers, layer);
+    return brainLayerBlockOffset(base, inputCount, layers, layer) +
+           size * brainLayerSourceCount(inputCount, layers, layer) + neuron;
+}
+
+VKEXP_BRAIN_FN uint brainOutputBlockOffset(uint base, uint inputCount, uint layers) {
+    return base + brainForwardBlockSize(inputCount, layers);
+}
+
+VKEXP_BRAIN_FN uint brainOutputWeightIndex(uint base, uint inputCount, uint layers, uint neuron,
+                                           uint hiddenIndex) {
+    return brainOutputBlockOffset(base, inputCount, layers) + neuron * brainLastHiddenSize(layers) +
+           hiddenIndex;
+}
+
+VKEXP_BRAIN_FN uint brainOutputBiasIndex(uint base, uint inputCount, uint layers, uint outputCount,
                                          uint neuron) {
-    return base + inputCount * hiddenCount + neuron;
+    return brainOutputBlockOffset(base, inputCount, layers) +
+           brainLastHiddenSize(layers) * outputCount + neuron;
 }
 
-VKEXP_BRAIN_FN uint brainOutputWeightIndex(uint base, uint inputCount, uint hiddenCount,
-                                           uint neuron, uint hiddenIndex) {
-    return base + inputCount * hiddenCount + hiddenCount + neuron * hiddenCount + hiddenIndex;
-}
-
-VKEXP_BRAIN_FN uint brainOutputBiasIndex(uint base, uint inputCount, uint hiddenCount,
-                                         uint outputCount, uint neuron) {
-    return base + inputCount * hiddenCount + hiddenCount + hiddenCount * outputCount + neuron;
-}
-
-VKEXP_BRAIN_FN uint brainTimeConstantGeneIndex(uint base, uint inputCount, uint hiddenCount,
+// One gene per hidden neuron, numbered across all layers end to end, the same
+// way the states are.
+VKEXP_BRAIN_FN uint brainTimeConstantGeneIndex(uint base, uint inputCount, uint layers,
                                                uint outputCount, uint neuron) {
-    return base + inputCount * hiddenCount + hiddenCount + hiddenCount * outputCount + outputCount +
-           neuron;
+    return brainOutputBiasIndex(base, inputCount, layers, outputCount, outputCount) + neuron;
 }
 
-VKEXP_BRAIN_FN uint brainGateWeightIndex(uint base, uint inputCount, uint hiddenCount,
-                                         uint outputCount, uint neuron, uint inputIndex) {
-    return brainGateBlockOffset(base, inputCount, hiddenCount, outputCount) + neuron * inputCount +
-           inputIndex;
+VKEXP_BRAIN_FN uint brainGateBlockOffset(uint base, uint inputCount, uint layers,
+                                         uint outputCount) {
+    return brainTimeConstantGeneIndex(base, inputCount, layers, outputCount,
+                                      brainHiddenNeuronCount(layers));
 }
 
-VKEXP_BRAIN_FN uint brainGateBiasIndex(uint base, uint inputCount, uint hiddenCount,
-                                       uint outputCount, uint neuron) {
-    return brainGateBlockOffset(base, inputCount, hiddenCount, outputCount) +
-           hiddenCount * inputCount + neuron;
+VKEXP_BRAIN_FN uint brainGateWeightIndex(uint base, uint inputCount, uint layers, uint outputCount,
+                                         uint layer, uint neuron, uint sourceIndex) {
+    return brainLayerWeightIndex(brainGateBlockOffset(base, inputCount, layers, outputCount),
+                                 inputCount, layers, layer, neuron, sourceIndex);
+}
+
+VKEXP_BRAIN_FN uint brainGateBiasIndex(uint base, uint inputCount, uint layers, uint outputCount,
+                                       uint layer, uint neuron) {
+    return brainLayerBiasIndex(brainGateBlockOffset(base, inputCount, layers, outputCount),
+                               inputCount, layers, layer, neuron);
 }
 
 // --- active shape packed into one uint for the GPU ---------------------------
 
-// stride | inputs | hidden | outputs, packed into the one uint the shader reads.
-// The input and hidden fields are 7 bits rather than 6: the antenna block put the
-// capacity at 61, two short of a 6-bit ceiling, and a sensor suite that cannot
-// grow is not a preset. 12 + 7 + 7 + 5 = 31 bits, one still spare.
-const uint BrainStrideMask = 0xfffu;
-const uint BrainInputShift = 12u;
-const uint BrainHiddenShift = 19u;
-const uint BrainOutputShift = 26u;
+// inputs | outputs, packed into the one uint the shader reads beside the layer
+// plan. The genome stride used to live here too, in twelve bits; the capacity
+// for three layers puts it past 4095, so it travels as its own uint now. Better
+// than widening the field: a stride that silently wrapped would address another
+// genome's weights and still produce numbers.
+const uint BrainInputShift = 0u;
+const uint BrainOutputShift = 7u;
 const uint BrainCountMask = 0x7fu;
 const uint BrainOutputCountMask = 0x1fu;
 
-VKEXP_BRAIN_FN uint brainPackLayout(uint genomeStride, uint inputCount, uint hiddenCount,
-                                    uint outputCount) {
-    return genomeStride | (inputCount << BrainInputShift) | (hiddenCount << BrainHiddenShift) |
-           (outputCount << BrainOutputShift);
+VKEXP_BRAIN_FN uint brainPackLayout(uint inputCount, uint outputCount) {
+    return (inputCount << BrainInputShift) | (outputCount << BrainOutputShift);
 }
 
-VKEXP_BRAIN_FN uint brainLayoutStride(uint packed) { return packed & BrainStrideMask; }
 VKEXP_BRAIN_FN uint brainLayoutInputCount(uint packed) {
     return (packed >> BrainInputShift) & BrainCountMask;
-}
-VKEXP_BRAIN_FN uint brainLayoutHiddenCount(uint packed) {
-    return (packed >> BrainHiddenShift) & BrainCountMask;
 }
 VKEXP_BRAIN_FN uint brainLayoutOutputCount(uint packed) {
     return (packed >> BrainOutputShift) & BrainOutputCountMask;

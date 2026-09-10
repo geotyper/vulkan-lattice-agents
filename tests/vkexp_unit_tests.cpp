@@ -291,12 +291,13 @@ void testNeuralNetworkContract() {
               std::string_view(forage.name) == "Forage + home",
           "Scenario definitions own their display names");
     const std::uint32_t layout = vkexp::neuro::packBrainLayout(stationary.brain);
-    const vkexp::neuro::BrainShape unpacked = vkexp::neuro::brainShape(layout);
-    check(vkexp::neuro::brainGenomeStride(layout) == vkexp::neuro::Topology::weightCount &&
-              unpacked.inputCount == stationary.brain.inputCount &&
+    const std::uint32_t layers = stationary.brain.packedLayers();
+    const vkexp::neuro::BrainShape unpacked = vkexp::neuro::brainShape(layout, layers);
+    check(unpacked.inputCount == stationary.brain.inputCount &&
               unpacked.hiddenCount == stationary.brain.hiddenCount &&
-              unpacked.outputCount == stationary.brain.outputCount,
-          "Packed GPU brain layout preserves capacity and active shape");
+              unpacked.outputCount == stationary.brain.outputCount &&
+              unpacked.hiddenLayerCount() == stationary.brain.hiddenLayerCount(),
+          "The packed GPU layout and layer plan preserve the active shape");
 }
 
 void testMultimodalSensors() {
@@ -446,10 +447,14 @@ void testForageCycleAndMemory() {
     agent.metrics = {};
 
     vkexp::neuro::Weights weights{};
-    constexpr std::size_t outputBias =
-        vkexp::neuro::Topology::inputCount * vkexp::neuro::Topology::hiddenCount +
-        vkexp::neuro::Topology::hiddenCount +
-        vkexp::neuro::Topology::hiddenCount * vkexp::neuro::Topology::outputCount;
+    // Asked of the kernel rather than multiplied out here: with layers in the
+    // picture the hand-written product was one plan's answer, not the layout.
+    const vkexp::neuro::BrainShape forageBrain =
+        vkexp::scenarioDefinition(settings.beaconScenario).brain;
+    const std::size_t outputBias = vkexp::neuro::kernel::brainOutputBiasIndex(
+        0u, static_cast<vkexp::neuro::kernel::uint>(forageBrain.inputCount),
+        forageBrain.packedLayers(),
+        static_cast<vkexp::neuro::kernel::uint>(forageBrain.outputCount), 0u);
     weights[outputBias + 6] = 0.5F;
     weights[outputBias + 7] = -0.75F;
 
@@ -530,12 +535,12 @@ void testFixedStepIndependence() {
     const vkexp::neuro::BrainShape brain =
         vkexp::scenarioDefinition(vkexp::BeaconScenario::Stationary).brain;
     const auto inputCount = static_cast<vkexp::neuro::kernel::uint>(brain.inputCount);
-    const auto hiddenCount = static_cast<vkexp::neuro::kernel::uint>(brain.hiddenCount);
     const auto outputCount = static_cast<vkexp::neuro::kernel::uint>(brain.outputCount);
+    const vkexp::neuro::kernel::uint layers = brain.packedLayers();
     vkexp::neuro::Weights drivingWeights{};
     for (const vkexp::neuro::kernel::uint motor : {vkexp::neuro::kernel::BrainMotorLeftOutput,
                                                    vkexp::neuro::kernel::BrainMotorRightOutput}) {
-        drivingWeights[vkexp::neuro::kernel::brainOutputBiasIndex(0, inputCount, hiddenCount,
+        drivingWeights[vkexp::neuro::kernel::brainOutputBiasIndex(0, inputCount, layers,
                                                                   outputCount, motor)] = 3.0F;
     }
 
@@ -678,6 +683,96 @@ void testSharedScenarioKernel() {
 // The network written down as structure, and whether that writing-down is
 // trustworthy. A description that merely looks right is worse than none: the
 // whole point of putting it in a file is that a loader can act on it.
+// Depth. The network was one hidden layer for its whole life, and the layered
+// plan has to be a real composition rather than the same network with the extra
+// widths ignored -- which is exactly what a plausible-looking bug would produce.
+void testLayeredBrain() {
+    namespace bk = vkexp::neuro::kernel;
+    const vkexp::neuro::BrainShape flat{8, 4, 6};
+    const vkexp::neuro::BrainShape deep{8, 4, 6, 3, 2};
+
+    check(flat.hiddenLayerCount() == 1 && flat.hiddenTotal() == 4,
+          "One width is one layer, and every scenario that wrote three numbers still means that");
+    check(deep.hiddenLayerCount() == 3 && deep.hiddenTotal() == 9,
+          "Three widths are three layers and their total");
+
+    // A hole is refused rather than closed up: {4, 0, 2} could mean a two-layer
+    // plan or a mistake, and guessing between them is worse than saying no.
+    const vkexp::neuro::BrainShape holed{8, 4, 6, 0, 2};
+    check(!holed.fitsCapacity(), "A plan with a hole in the middle is refused");
+    const vkexp::neuro::BrainShape overspent{
+        8, vkexp::neuro::Topology::hiddenCount, 6, vkexp::neuro::Topology::hiddenCount, 0};
+    check(!overspent.fitsCapacity(), "A plan spending more neurons than there are is refused");
+    check(deep.fitsCapacity() && flat.fitsCapacity(), "and the plans that do fit are accepted");
+
+    // Every layer's states live end to end in the one block on the agent, so no
+    // two neurons may share a slot. A collision would make a deep brain hold one
+    // memory where it thinks it holds two.
+    const bk::uint layers = deep.packedLayers();
+    check(bk::brainHiddenLayerStateOffset(layers, 0u) == 0 &&
+              bk::brainHiddenLayerStateOffset(layers, 1u) == 4 &&
+              bk::brainHiddenLayerStateOffset(layers, 2u) == 7,
+          "Each layer's states begin after the layers before it");
+    check(bk::brainLayerSourceCount(8u, layers, 0u) == 8 &&
+              bk::brainLayerSourceCount(8u, layers, 1u) == 4 &&
+              bk::brainLayerSourceCount(8u, layers, 2u) == 3,
+          "A layer reads the inputs first and the layer before it after that");
+
+    // The blocks of a deep plan tile the genome exactly, the same claim
+    // testBrainDescription makes for the flat one.
+    const vkexp::neuro::BrainDescription description = vkexp::neuro::describeBrain(deep);
+    std::uint32_t cursor = 0;
+    bool tiles = true;
+    for (const vkexp::neuro::BrainBlock& block : description.weights) {
+        tiles = tiles && block.offset == cursor && block.count > 0;
+        cursor += block.count;
+    }
+    check(tiles && cursor == description.weightCount,
+          "A three-layer genome is tiled by its blocks with no gap and no overlap");
+    check(description.hiddenLayers == std::vector<std::uint32_t>{4, 3, 2},
+          "and the description says how the neurons are divided");
+
+    // And the arithmetic: a chain of three neurons, one per layer, each reading
+    // only the one before it. Under the reactive model the state is the
+    // activation outright, so the whole network is a composition of tanh and the
+    // expected value can be written down.
+    vkexp::neuro::Weights weights{};
+    const auto inputs8 = static_cast<bk::uint>(deep.inputCount);
+    weights[bk::brainLayerWeightIndex(0u, inputs8, layers, 0u, 0u, 0u)] = 1.5F;
+    weights[bk::brainLayerWeightIndex(0u, inputs8, layers, 1u, 0u, 0u)] = 1.25F;
+    weights[bk::brainLayerWeightIndex(0u, inputs8, layers, 2u, 0u, 0u)] = 1.75F;
+    weights[bk::brainOutputWeightIndex(0u, inputs8, layers, 0u, 0u)] = 2.0F;
+    vkexp::neuro::Inputs inputs{};
+    inputs[0] = 0.8F;
+
+    vkexp::neuro::HiddenState state{};
+    const vkexp::neuro::Outputs deepOut = vkexp::neuro::evaluate(
+        weights, inputs, state, 1.0F, bk::NeuronModelReactive, deep);
+    const float expected =
+        std::tanh(2.0F * std::tanh(1.75F * std::tanh(1.25F * std::tanh(1.5F * 0.8F))));
+    check(closeTo(deepOut[0], expected),
+          "Three layers compose: each one reads the one before it and nothing else");
+
+    // The same weights under a one-layer plan cannot give the same answer, or
+    // the depth is being ignored somewhere and every assertion above is about a
+    // network nobody is running.
+    vkexp::neuro::HiddenState flatState{};
+    const vkexp::neuro::Outputs flatOut = vkexp::neuro::evaluate(
+        weights, inputs, flatState, 1.0F, bk::NeuronModelReactive, flat);
+    check(std::abs(flatOut[0] - deepOut[0]) > 1.0e-3F,
+          "and a flat plan on the same weights is a different network, not the same one");
+
+    // Each layer holds its own state, which is what depth is for under the time
+    // constant models: a slow layer behind a fast one.
+    vkexp::neuro::HiddenState settled{};
+    for (int step = 0; step < 4; ++step) {
+        (void)vkexp::neuro::evaluate(weights, inputs, settled, 1.0F / 60.0F,
+                                     bk::NeuronModelTimeConstant, deep);
+    }
+    check(std::abs(settled[0]) > 0.0F && std::abs(settled[4]) > 0.0F,
+          "Neurons in the second layer carry state of their own");
+}
+
 void testBrainDescription() {
     namespace bk = vkexp::neuro::kernel;
     const vkexp::neuro::BrainShape shape = vkexp::neuro::maximumBrainShape;
@@ -726,37 +821,39 @@ void testBrainDescription() {
     const auto inputs = static_cast<bk::uint>(shape.inputCount);
     const auto hidden = static_cast<bk::uint>(shape.hiddenCount);
     const auto outputs = static_cast<bk::uint>(shape.outputCount);
+    const bk::uint layers = shape.packedLayers();
     const auto inside = [&](const char* name, const bk::uint index) {
         const vkexp::neuro::BrainBlock* const block = description.block(name);
         return block != nullptr && index >= block->offset && index < block->offset + block->count;
     };
-    check(inside("hidden_weights", bk::brainHiddenWeightIndex(0u, inputs, 0u, 0u)) &&
-              inside("hidden_weights",
-                     bk::brainHiddenWeightIndex(0u, inputs, hidden - 1u, inputs - 1u)),
+    check(inside("hidden0_weights", bk::brainLayerWeightIndex(0u, inputs, layers, 0u, 0u, 0u)) &&
+              inside("hidden0_weights", bk::brainLayerWeightIndex(0u, inputs, layers, 0u,
+                                                                  hidden - 1u, inputs - 1u)),
           "Both corners of the input-to-hidden matrix fall in its block");
-    check(inside("hidden_bias", bk::brainHiddenBiasIndex(0u, inputs, hidden, 0u)) &&
-              inside("hidden_bias", bk::brainHiddenBiasIndex(0u, inputs, hidden, hidden - 1u)),
+    check(inside("hidden0_bias", bk::brainLayerBiasIndex(0u, inputs, layers, 0u, 0u)) &&
+              inside("hidden0_bias", bk::brainLayerBiasIndex(0u, inputs, layers, 0u, hidden - 1u)),
           "Both ends of the hidden bias fall in its block");
-    check(inside("output_weights", bk::brainOutputWeightIndex(0u, inputs, hidden, 0u, 0u)) &&
+    check(inside("output_weights", bk::brainOutputWeightIndex(0u, inputs, layers, 0u, 0u)) &&
               inside("output_weights",
-                     bk::brainOutputWeightIndex(0u, inputs, hidden, outputs - 1u, hidden - 1u)),
+                     bk::brainOutputWeightIndex(0u, inputs, layers, outputs - 1u, hidden - 1u)),
           "Both corners of the hidden-to-output matrix fall in its block");
-    check(inside("output_bias", bk::brainOutputBiasIndex(0u, inputs, hidden, outputs, 0u)) &&
+    check(inside("output_bias", bk::brainOutputBiasIndex(0u, inputs, layers, outputs, 0u)) &&
               inside("output_bias",
-                     bk::brainOutputBiasIndex(0u, inputs, hidden, outputs, outputs - 1u)),
+                     bk::brainOutputBiasIndex(0u, inputs, layers, outputs, outputs - 1u)),
           "Both ends of the output bias fall in its block");
     check(inside("time_constants",
-                 bk::brainTimeConstantGeneIndex(0u, inputs, hidden, outputs, 0u)) &&
+                 bk::brainTimeConstantGeneIndex(0u, inputs, layers, outputs, 0u)) &&
               inside("time_constants",
-                     bk::brainTimeConstantGeneIndex(0u, inputs, hidden, outputs, hidden - 1u)),
+                     bk::brainTimeConstantGeneIndex(0u, inputs, layers, outputs, hidden - 1u)),
           "Both ends of the time constants fall in their block");
-    check(inside("gate_weights", bk::brainGateWeightIndex(0u, inputs, hidden, outputs, 0u, 0u)) &&
-              inside("gate_weights", bk::brainGateWeightIndex(0u, inputs, hidden, outputs,
-                                                              hidden - 1u, inputs - 1u)),
+    check(inside("gate0_weights",
+                 bk::brainGateWeightIndex(0u, inputs, layers, outputs, 0u, 0u, 0u)) &&
+              inside("gate0_weights", bk::brainGateWeightIndex(0u, inputs, layers, outputs, 0u,
+                                                               hidden - 1u, inputs - 1u)),
           "Both corners of the gate matrix fall in its block");
-    check(inside("gate_bias", bk::brainGateBiasIndex(0u, inputs, hidden, outputs, 0u)) &&
-              inside("gate_bias",
-                     bk::brainGateBiasIndex(0u, inputs, hidden, outputs, hidden - 1u)),
+    check(inside("gate0_bias", bk::brainGateBiasIndex(0u, inputs, layers, outputs, 0u, 0u)) &&
+              inside("gate0_bias",
+                     bk::brainGateBiasIndex(0u, inputs, layers, outputs, 0u, hidden - 1u)),
           "Both ends of the gate bias fall in their block");
 
     // And the sensor blocks against the sensor index functions, which is the
@@ -1275,8 +1372,9 @@ void testNeuronTimeConstants() {
     vkexp::neuro::Weights weights{};
     constexpr auto inputCount = static_cast<kernel::uint>(vkexp::neuro::Topology::inputCount);
     constexpr auto hiddenCount = static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenCount);
-    weights[kernel::brainHiddenWeightIndex(0u, inputCount, 0u, 0u)] = 3.0F;
-    weights[kernel::brainOutputWeightIndex(0u, inputCount, hiddenCount, 0u, 0u)] = 3.0F;
+    constexpr kernel::uint layers = kernel::brainPackHiddenLayers(hiddenCount, 0u, 0u);
+    weights[kernel::brainLayerWeightIndex(0u, inputCount, layers, 0u, 0u, 0u)] = 3.0F;
+    weights[kernel::brainOutputWeightIndex(0u, inputCount, layers, 0u, 0u)] = 3.0F;
     vkexp::neuro::Inputs inputs{};
     inputs[0] = 1.0F;
 
@@ -1313,11 +1411,12 @@ void testGatedNeurons() {
     constexpr auto inputCount = static_cast<kernel::uint>(vkexp::neuro::Topology::inputCount);
     constexpr auto hiddenCount = static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenCount);
     constexpr auto outputCount = static_cast<kernel::uint>(vkexp::neuro::Topology::outputCount);
+    constexpr kernel::uint layers = kernel::brainPackHiddenLayers(hiddenCount, 0u, 0u);
     const float step = vkexp::units::fixedTimeStep;
 
     vkexp::neuro::Weights weights{};
-    weights[kernel::brainHiddenWeightIndex(0u, inputCount, 0u, 0u)] = 3.0F;
-    weights[kernel::brainOutputWeightIndex(0u, inputCount, hiddenCount, 0u, 0u)] = 3.0F;
+    weights[kernel::brainLayerWeightIndex(0u, inputCount, layers, 0u, 0u, 0u)] = 3.0F;
+    weights[kernel::brainOutputWeightIndex(0u, inputCount, layers, 0u, 0u)] = 3.0F;
     vkexp::neuro::Inputs inputs{};
     inputs[0] = 1.0F;
 
@@ -1328,9 +1427,9 @@ void testGatedNeurons() {
     for (const float gene : {-2.0F, 0.0F, 1.5F}) {
         vkexp::neuro::Weights fixed = weights;
         vkexp::neuro::Weights gated = weights;
-        fixed[kernel::brainTimeConstantGeneIndex(0u, inputCount, hiddenCount, outputCount, 0u)] =
+        fixed[kernel::brainTimeConstantGeneIndex(0u, inputCount, layers, outputCount, 0u)] =
             gene;
-        gated[kernel::brainGateBiasIndex(0u, inputCount, hiddenCount, outputCount, 0u)] = gene;
+        gated[kernel::brainGateBiasIndex(0u, inputCount, layers, outputCount, 0u, 0u)] = gene;
 
         vkexp::neuro::HiddenState fixedState{};
         vkexp::neuro::HiddenState gatedState{};
@@ -1350,7 +1449,7 @@ void testGatedNeurons() {
     // makes the neuron follow -- the opposite of a GRU update gate, and worth
     // pinning down here because the sign is the easy thing to get backwards.
     vkexp::neuro::Weights listening = weights;
-    listening[kernel::brainGateWeightIndex(0u, inputCount, hiddenCount, outputCount, 0u, 1u)] =
+    listening[kernel::brainGateWeightIndex(0u, inputCount, layers, outputCount, 0u, 0u, 1u)] =
         8.0F;
     vkexp::neuro::Inputs holding = inputs;
     holding[1] = 1.0F; // drives the gate up, so the neuron should barely move
@@ -1365,15 +1464,24 @@ void testGatedNeurons() {
 
     // The gate block is real genome, not a reinterpretation of existing weights:
     // it sits after everything else and the count has room for it.
-    check(kernel::brainGateBiasIndex(0u, inputCount, hiddenCount, outputCount, hiddenCount - 1u) ==
-              vkexp::neuro::Topology::weightCount - 1u,
+    // The gate block is real genome, not a reinterpretation of existing weights.
+    // Asserted against the widest plan, which is what the genome is sized for:
+    // under a narrower plan the genome has a tail nothing reads, by design.
+    constexpr kernel::uint widest =
+        kernel::brainPackHiddenLayers(static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenCount),
+                                      0u, 0u);
+    constexpr auto capacityInputs =
+        static_cast<kernel::uint>(vkexp::neuro::Topology::inputCount);
+    constexpr auto capacityOutputs =
+        static_cast<kernel::uint>(vkexp::neuro::Topology::outputCount);
+    check(kernel::brainGateBiasIndex(0u, capacityInputs, widest, capacityOutputs, 0u,
+                                     static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenCount) -
+                                         1u) == vkexp::neuro::Topology::weightCount - 1u,
           "The gate block ends exactly at the end of the genome");
-    check(kernel::brainGateWeightIndex(0u, inputCount, hiddenCount, outputCount, 0u, 0u) >
-              kernel::brainTimeConstantGeneIndex(0u, inputCount, hiddenCount, outputCount,
+    check(kernel::brainGateWeightIndex(0u, inputCount, layers, outputCount, 0u, 0u, 0u) >
+              kernel::brainTimeConstantGeneIndex(0u, inputCount, layers, outputCount,
                                                  hiddenCount - 1u),
           "The gate block starts after the time constants");
-    check(vkexp::neuro::Topology::weightCount <= kernel::BrainStrideMask,
-          "The genome still fits the packed brain layout");
 }
 
 // What fraction of the far side of the wall can see `target` at all: in light
@@ -2757,6 +2865,7 @@ int main() {
     testScenarioRegistryContract();
     testFitnessWeightsAreParameters();
     testSharedScenarioKernel();
+    testLayeredBrain();
     testBrainDescription();
     testGenomeArchiveRoundTrip();
     testGroupFitnessSharing();

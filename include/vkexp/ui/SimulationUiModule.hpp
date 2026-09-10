@@ -9,6 +9,12 @@
 
 namespace vkexp {
 
+struct ScenarioDefinition;
+namespace neuro {
+struct BrainShape;
+}
+
+
 class ImGuiModule;
 class Profiler;
 
@@ -22,6 +28,10 @@ public:
 
 private:
     void syncTexture();
+    // The network's own window: how many hidden layers this world runs and how
+    // wide they are. Separate because it is a question about the brain rather
+    // than about the world, and because it is edited rarely and read often.
+    void drawBrainWindow(const ScenarioDefinition& scenario, const neuro::BrainShape& brain);
 
     SimulationState& state_;
     ImGuiModule& imgui_;

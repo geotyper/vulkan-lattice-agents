@@ -1,6 +1,7 @@
 #include "vkexp/ui/SimulationUiModule.hpp"
 
 #include "vkexp/neuro/NeuralNetwork.hpp"
+#include "vkexp/worlds/WorldScenario.hpp"
 #include "vkexp/simulation/Locomotion.hpp"
 #include "vkexp/profiling/Profiler.hpp"
 #include "vkexp/ui/ImGuiModule.hpp"
@@ -15,6 +16,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -651,8 +653,14 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                               "the row above, exactly.");
         break;
     }
-    const neuro::BrainShape brain = scenarioDefinition(state_.physics.beaconScenario).brain;
-    ImGui::Text("%zu inputs -> %zu tanh -> %zu outputs", brain.inputCount, brain.hiddenCount,
+    const ScenarioDefinition& brainScenario = scenarioDefinition(state_.physics.beaconScenario);
+    const neuro::BrainShape brain = resolvedBrain(brainScenario, state_.physics);
+    std::string layerText;
+    for (std::size_t layer = 0; layer < brain.hiddenLayerCount(); ++layer) {
+        layerText += layerText.empty() ? "" : " -> ";
+        layerText += std::to_string(brain.hiddenLayer(layer));
+    }
+    ImGui::Text("%zu inputs -> %s tanh -> %zu outputs", brain.inputCount, layerText.c_str(),
                 brain.outputCount);
     ImGui::TextDisabled("%zu active weights / %zu genome capacity", brain.weightCount(),
                         neuro::Topology::weightCount);
@@ -672,6 +680,8 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
         ImGui::TextDisabled("motors and RGB/light intensity");
     }
     ImGui::End();
+
+    drawBrainWindow(brainScenario, brain);
 
     ImGui::SetNextWindowPos(ImVec2(16.0F, 500.0F), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(330.0F, 380.0F), ImGuiCond_FirstUseEver);
@@ -815,6 +825,119 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     }
     ImGui::End();
     profilerPanel_.draw(context.profiler);
+}
+
+void SimulationUiModule::drawBrainWindow(const ScenarioDefinition& scenario,
+                                         const neuro::BrainShape& brain) {
+    ImGui::SetNextWindowPos(ImVec2(360.0F, 16.0F), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(340.0F, 330.0F), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Brain");
+
+    // Only the hidden layers are editable, and that is the point rather than a
+    // limitation: how many sensors a world offers and how many actuators it
+    // needs are statements about the world. How much brain to spend on it is the
+    // question worth asking, and it is the one this window asks.
+    ImGui::TextDisabled("%zu sensor inputs and %zu outputs, set by %s", brain.inputCount,
+                        brain.outputCount, scenario.name);
+
+    // Edited as a draft and applied on a button, not live: a plan is a different
+    // genome layout, so it can only take effect on a reset, and a slider that
+    // silently did nothing until later would be worse than one that says so.
+    auto& draft = state_.controls.hiddenLayerDraft;
+    const bool defaulted = state_.physics.hiddenLayers[0] == 0;
+    if (draft[0] == 0) {
+        for (std::size_t layer = 0; layer < draft.size(); ++layer) {
+            draft[layer] = static_cast<int>(brain.hiddenLayer(layer));
+        }
+    }
+    int layerCount = 0;
+    for (std::size_t layer = 0; layer < draft.size(); ++layer) {
+        if (draft[layer] > 0) {
+            layerCount = static_cast<int>(layer) + 1;
+        }
+    }
+    layerCount = std::max(layerCount, 1);
+    if (ImGui::SliderInt("Hidden layers", &layerCount, 1,
+                         static_cast<int>(neuro::Topology::hiddenLayerCount))) {
+        for (std::size_t layer = 0; layer < draft.size(); ++layer) {
+            const bool wanted = static_cast<int>(layer) < layerCount;
+            // A layer switched on starts as wide as the one before it rather
+            // than at zero, so the plan is always one the capacity accepts and
+            // the button below is never disabled for a reason nobody chose.
+            draft[layer] = wanted ? std::max(draft[layer], layer == 0 ? 8 : draft[layer - 1]) : 0;
+        }
+    }
+    ImGui::SetItemTooltip("Layers are dense from the front. More layers with the same total is a "
+                          "narrower path with more turns in it: the same neurons composed rather "
+                          "than laid side by side.");
+
+    const auto capacity = static_cast<int>(neuro::Topology::hiddenCount);
+    int total = 0;
+    for (int layer = 0; layer < layerCount; ++layer) {
+        const auto slot = static_cast<std::size_t>(layer);
+        ImGui::PushID(layer);
+        char label[24];
+        std::snprintf(label, sizeof(label), "Layer %d", layer + 1);
+        // Each layer is bounded by what the others have not already spent, so a
+        // plan under construction is always one that fits.
+        int spentElsewhere = 0;
+        for (int other = 0; other < layerCount; ++other) {
+            if (other != layer) {
+                spentElsewhere += draft[static_cast<std::size_t>(other)];
+            }
+        }
+        ImGui::SliderInt(label, &draft[slot], 1, std::max(capacity - spentElsewhere, 1));
+        ImGui::PopID();
+        total += draft[slot];
+    }
+    for (std::size_t layer = static_cast<std::size_t>(layerCount); layer < draft.size(); ++layer) {
+        draft[layer] = 0;
+    }
+
+    neuro::BrainShape planned = brain;
+    planned.hiddenCount = static_cast<std::size_t>(draft[0]);
+    planned.secondHiddenCount = static_cast<std::size_t>(draft[1]);
+    planned.thirdHiddenCount = static_cast<std::size_t>(draft[2]);
+    const bool fits = planned.fitsCapacity();
+    ImGui::TextDisabled("%d of %d neurons, %zu of %zu weights", total, capacity,
+                        fits ? planned.weightCount() : 0, neuro::Topology::weightCount);
+    // What the genome costs is worth seeing beside the plan: the stride is fixed
+    // at the widest plan the capacity allows, so a narrower one carries weights
+    // it never reads, and a deeper one is usually cheaper than it looks.
+    ImGui::TextDisabled("the genome is always %zu long; the rest goes unread",
+                        neuro::Topology::weightCount);
+
+    const bool changed = planned.hiddenCount != brain.hiddenCount ||
+                         planned.secondHiddenCount != brain.secondHiddenCount ||
+                         planned.thirdHiddenCount != brain.thirdHiddenCount;
+    ImGui::BeginDisabled(!fits || !changed);
+    if (ImGui::Button("Apply and reset")) {
+        state_.physics.hiddenLayers = {static_cast<std::uint32_t>(draft[0]),
+                                       static_cast<std::uint32_t>(draft[1]),
+                                       static_cast<std::uint32_t>(draft[2])};
+        state_.controls.resetRequested = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("A plan is a different layout of the same genome, so it can only take "
+                          "effect on a reset -- the population that was evolving under the old "
+                          "one does not carry over meaningfully.");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(defaulted);
+    if (ImGui::Button("Back to the world's own")) {
+        state_.physics.hiddenLayers = {};
+        draft = {};
+        state_.controls.resetRequested = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("Every world declares the brain it was tuned with. This is how to get "
+                          "back to it, and it is what a fresh run uses.");
+
+    if (changed) {
+        ImGui::TextColored(ImVec4{0.95F, 0.75F, 0.25F, 1.0F}, "not applied yet");
+    } else if (!defaulted) {
+        ImGui::TextDisabled("running a plan of your own, not %s's", scenario.name);
+    }
+    ImGui::End();
 }
 
 void SimulationUiModule::onDetach(AppContext&) {

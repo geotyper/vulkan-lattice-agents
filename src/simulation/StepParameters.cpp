@@ -9,6 +9,7 @@ namespace vkexp {
 GpuStepParameters packStepParameters(const SimulationStep& resolved,
                                      const StepParameterLayout& layout) {
     const ScenarioDefinition& scenario = scenarioDefinition(resolved.beaconScenario);
+    const neuro::BrainShape brain = resolvedBrain(scenario, resolved);
     return {resolved.deltaTime,
             resolved.worldRadius,
             resolved.thrust,
@@ -26,7 +27,7 @@ GpuStepParameters packStepParameters(const SimulationStep& resolved,
             layout.gridCellSize,
             resolved.wallCollisionPenalty,
             layout.agentCount,
-            neuro::packBrainLayout(scenario.brain),
+            neuro::packBrainLayout(brain),
             layout.trialsPerGenome,
             static_cast<std::uint32_t>(resolved.worldShape),
             layout.gridWidth,
@@ -56,8 +57,8 @@ GpuStepParameters packStepParameters(const SimulationStep& resolved,
             layout.worldCount,
             resolved.puckTargetRadiusRatio,
             scenario.puck ? 1U : 0U,
-            0U,
-            0U};
+            brain.packedLayers(),
+            static_cast<std::uint32_t>(neuro::Topology::weightCount)};
 }
 
 } // namespace vkexp

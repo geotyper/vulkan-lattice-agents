@@ -144,6 +144,15 @@ struct ScenarioDefinition {
 [[nodiscard]] SimulationStep resolveStepSettings(const SimulationStep& base, std::uint32_t step,
                                                  std::uint32_t stepsPerGeneration);
 
+// The network a run actually evaluates: the scenario's own two ends, and the
+// hidden layers the settings ask for. All three widths zero means the scenario's
+// declaration stands, so a world keeps the brain it was tuned with unless
+// somebody says otherwise. A plan that does not fit the capacity is refused the
+// same way -- the scenario's own is used, because a run with a brain nobody can
+// evaluate is worse than a run with the brain that was there before.
+[[nodiscard]] neuro::BrainShape resolvedBrain(const ScenarioDefinition& scenario,
+                                              const SimulationStep& settings);
+
 // True when the scenario's static geometry stands between the two points.
 // Scenarios without obstacles answer false without looking at anything.
 [[nodiscard]] bool sightBlocked(const AgentState& agent, const SimulationStep& settings,

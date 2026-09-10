@@ -25,7 +25,9 @@ replay by step count -- while every physical quantity is expressed per second.
 - 8 full-body tactile sectors distinguishing walls from agents;
 - 3 ground antennae reading the RGB of a decaying trail field, switchable
   between off, drawn-but-unsmelled and drawn-and-smelled;
-- `61 inputs -> 20 tanh neurons -> 8 outputs`;
+- `61 inputs -> 20 tanh neurons -> 8 outputs` by default, with the hidden
+  layers configurable from the Brain window: up to three of them, 32 neurons
+  in total, evaluated identically on the CPU and the GPU;
 - every hidden neuron holds its own state and a time constant that is either
   evolved or recomputed from the inputs each step, so a memory is measured in
   seconds and can be held until something says to let go;
@@ -892,17 +894,24 @@ inputs 61                            hidden 20            outputs 8
   2 recurrent cells fed back           =  2
 ```
 
-The genome is one flat vector of 2668 floats in seven blocks:
+The genome is one flat vector of 4264 floats. Under the default plan -- one
+hidden layer of twenty -- 2668 of them are in use, in seven blocks:
 
 | Block | Size | Read by |
 | --- | --- | --- |
-| input -> hidden | 61 x 20 = 1220 | every model |
-| hidden bias | 20 | every model |
-| hidden -> output | 20 x 8 = 160 | every model |
+| inputs -> hidden 0 | 61 x 20 = 1220 | every model |
+| hidden 0 bias | 20 | every model |
+| hidden 0 -> output | 20 x 8 = 160 | every model |
 | output bias | 8 | every model |
 | time constants | 20 | `time` |
-| gate weights | 20 x 61 = 1220 | `gated` |
-| gate biases | 20 | `gated` |
+| gate 0 weights | 20 x 61 = 1220 | `gated` |
+| gate 0 biases | 20 | `gated` |
+
+A deeper plan has one weights-and-bias pair per layer, and one gate pair to
+mirror it; the output layer always reads the last hidden layer. `12,8,8` comes to
+1940 weights in fifteen blocks, which is *fewer* than the flat default: the first
+matrix is what dominates, and a narrow first layer makes the whole network
+cheaper even as it makes it deeper.
 
 Every model carries every block, whichever one is selected. That is deliberate:
 it makes switching a parameter change rather than a reinterpretation of the
@@ -917,6 +926,51 @@ store it the same way and multi-step parity covers it without a separate
 harness. It is zero at the start of a generation, which is the whole of the
 reset semantics. The gate needs no state of its own: what it needs is the state
 the neuron already has.
+
+### Choosing the structure
+
+The hidden layers are a plan now, not a constant. The **Brain** window sets how
+many there are and how wide, `--hidden 12,8,8` says the same from a command
+line, and both the CPU evaluator and the compute shader walk whatever is chosen:
+
+| | |
+| --- | --- |
+| Layers | up to 3, dense from the front |
+| Neurons | 32 in total, spent however the plan likes |
+| Default | one layer of 20 -- what every world was tuned with |
+
+**Only the hidden layers, and that is the design rather than a limitation.** How
+many sensors a world offers and how many actuators it needs are statements about
+the world, so the two ends stay the scenario's own. How much brain to spend on
+the world is the question worth asking, and it is the only one the window asks.
+
+**The capacity is compiled in; the plan is not.** GLSL sizes its arrays with
+compile-time constants, so how many neurons there may be at most, and how many
+layers, live in `BrainKernel.inl`. Everything inside that -- how many layers this
+run uses, how wide each one is, where every weight of every layer lives -- is
+computed at runtime by shared kernel functions that walk the plan, so the two
+languages cannot walk it differently. `compute_smoke` runs the trajectory parity
+cases at `12,8,8` and at `16,6` precisely because every other case in the file
+runs the single layer the network always had: a shader that read the plan even
+slightly differently would drift there and nowhere else.
+
+**The genome is one length whatever the plan.** It is sized for the widest plan
+the capacity allows -- one 32-wide layer, 4264 weights -- so a narrower or deeper
+plan carries a tail it never reads. That is the same trade the gate block makes
+and for the same reason: one buffer size and one genome length is what lets a
+population stay loadable across plans and two plans be compared at all. The
+window shows both numbers side by side.
+
+**Each layer holds its own state.** The time constants are per neuron, numbered
+across all layers end to end, so a deep plan is not just a longer path but a path
+with different memories along it -- a fast layer in front of a slow one is now
+something a run can be. Whether that helps is exactly the experiment the plan
+exists to make possible, and it has not been run yet.
+
+**A plan takes effect on a reset**, because it is a different layout of the same
+genome: the population evolving under the old one does not carry over
+meaningfully. The window says "not applied yet" rather than pretending
+otherwise, and offers the world's own plan back in one button.
 
 ### The same structure, written down
 

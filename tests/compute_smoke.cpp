@@ -401,7 +401,11 @@ void runTrajectoryParity(vkexp::HeadlessComputeContext& context,
                          const vkexp::BeaconScenario scenario, const std::uint32_t steps,
                          const vkexp::NeuronModel neuronModel = vkexp::NeuronModel::TimeConstant,
                          const bool swapEnds = false, const bool uniformBeaconColor = false,
-                         const bool doorsByGeneration = false) {
+                         const bool doorsByGeneration = false,
+                         // The hidden-layer plan, or empty for the scenario's own. A deep
+                         // plan is a different genome layout and a different evaluation
+                         // order, and the two languages have to walk it identically.
+                         const std::array<std::uint32_t, 3> hiddenLayers = {}) {
     const vkexp::neuro::Weights weights = makeTestWeights();
     vkexp::SimulationStep base{};
     base.beaconScenario = scenario;
@@ -410,6 +414,7 @@ void runTrajectoryParity(vkexp::HeadlessComputeContext& context,
     base.swapDeliveryEnds = swapEnds;
     base.uniformBeaconColor = uniformBeaconColor;
     base.blockedDoorPerGeneration = doorsByGeneration;
+    base.hiddenLayers = hiddenLayers;
     // The seed is the generation number, and both generation-keyed options land
     // on odd ones. The default seed is even and the probe agent runs trial 0, so
     // asking for either without this would set a flag that changes nothing and
@@ -523,16 +528,14 @@ void runTrailFieldProbe(vkexp::HeadlessComputeContext& context) {
     const vkexp::neuro::BrainShape brain = vkexp::scenarioDefinition(settings.beaconScenario).brain;
     namespace bk = vkexp::neuro::kernel;
     const auto inputCount = static_cast<bk::uint>(brain.inputCount);
-    const auto hiddenCount = static_cast<bk::uint>(brain.hiddenCount);
+    const bk::uint layers = brain.packedLayers();
     std::vector<float> genome(vkexp::neuro::Topology::weightCount, 0.0F);
     const bk::uint leftGreen = bk::brainAntennaChannelIndex(0u, 1u);
     const bk::uint rightGreen = bk::brainAntennaChannelIndex(bk::BrainAntennaCount - 1u, 1u);
-    genome[bk::brainHiddenWeightIndex(0, inputCount, 0u, leftGreen)] = 4.0F;
-    genome[bk::brainHiddenWeightIndex(0, inputCount, 1u, rightGreen)] = 4.0F;
-    genome[bk::brainOutputWeightIndex(0, inputCount, hiddenCount, bk::BrainMotorRightOutput, 0u)] =
-        4.0F;
-    genome[bk::brainOutputWeightIndex(0, inputCount, hiddenCount, bk::BrainMotorLeftOutput, 1u)] =
-        4.0F;
+    genome[bk::brainLayerWeightIndex(0, inputCount, layers, 0u, 0u, leftGreen)] = 4.0F;
+    genome[bk::brainLayerWeightIndex(0, inputCount, layers, 0u, 1u, rightGreen)] = 4.0F;
+    genome[bk::brainOutputWeightIndex(0, inputCount, layers, bk::BrainMotorRightOutput, 0u)] = 4.0F;
+    genome[bk::brainOutputWeightIndex(0, inputCount, layers, bk::BrainMotorLeftOutput, 1u)] = 4.0F;
     harness.genomes.write(genome.data(), sizeof(float) * genome.size());
 
     vkexp::AgentState agent{};
@@ -826,13 +829,14 @@ void runAgentInteractionTest(vkexp::HeadlessComputeContext& context, const bool 
     settings.neuronModel = vkexp::NeuronModel::Reactive;
     const vkexp::neuro::BrainShape brain = vkexp::scenarioDefinition(settings.beaconScenario).brain;
     const auto inputCount = static_cast<kernel::uint>(brain.inputCount);
-    const auto hiddenCount = static_cast<kernel::uint>(brain.hiddenCount);
+    const kernel::uint layers = brain.packedLayers();
     const kernel::uint centerReceptor = kernel::BrainLightReceptorCount / 2u;
     const kernel::uint centerRedInput = kernel::brainLightChannelIndex(centerReceptor, 0u);
 
     std::array<vkexp::neuro::Weights, agentCount> genomes{};
-    genomes[0][kernel::brainHiddenWeightIndex(0u, inputCount, 0u, centerRedInput)] = 4.0F;
-    genomes[0][kernel::brainOutputWeightIndex(0u, inputCount, hiddenCount,
+    genomes[0][kernel::brainLayerWeightIndex(0u, inputCount, layers, 0u, 0u, centerRedInput)] =
+        4.0F;
+    genomes[0][kernel::brainOutputWeightIndex(0u, inputCount, layers,
                                               kernel::BrainSignalColorOutput, 0u)] = 4.0F;
 
     const std::uint32_t worldCount = isolatedWorlds ? 2U : 1U;
@@ -906,6 +910,14 @@ int run() {
     runTrajectoryParity(context, vkexp::BeaconScenario::Shuttle, 540,
                         vkexp::NeuronModel::Reactive);
     runTrajectoryParity(context, vkexp::BeaconScenario::Shuttle, 540, vkexp::NeuronModel::Gated);
+    // Depth, on both sides. A three-layer plan changes where every weight lives
+    // and the order the layers are walked in; a shader that read the plan even
+    // slightly differently would drift here and nowhere else, because every
+    // other case in this file runs the one layer the network always had.
+    runTrajectoryParity(context, vkexp::BeaconScenario::Shuttle, 540,
+                        vkexp::NeuronModel::TimeConstant, false, false, false, {12U, 8U, 8U});
+    runTrajectoryParity(context, vkexp::BeaconScenario::Shuttle, 540, vkexp::NeuronModel::Gated,
+                        false, false, false, {16U, 6U, 0U});
     runTrajectoryParity(context, vkexp::BeaconScenario::TwoDoors, 540, vkexp::NeuronModel::Gated);
     // Both layouts of the swapping world. One polarity would prove nothing: the
     // swap is a branch on each side, and a side that ignored the flag entirely

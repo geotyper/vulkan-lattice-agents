@@ -11,7 +11,7 @@
 // The network written down as structure rather than as arithmetic.
 //
 // Every offset in this project is computed: the input vector is addressed by
-// brainLightChannelIndex and friends, the genome by brainHiddenWeightIndex and
+// brainLightChannelIndex and friends, the genome by brainLayerWeightIndex and
 // friends, and both languages compile the same functions so they cannot
 // disagree. What none of that gives is a *statement* of the layout -- something
 // a person can read, a file can carry, and a loader can compare against. Six
@@ -24,10 +24,11 @@
 // description changes with it -- and testBrainDescription pins that the blocks
 // still tile the vectors exactly, with no gap and no overlap.
 //
-// What it is not, yet: a way to *choose* the structure. GLSL sizes its arrays
-// with compile-time constants, so capacity stays in BrainKernel.inl. What a file
-// can already carry is the active shape inside that capacity, which reaches the
-// GPU as the packed brain layout.
+// The structure is now also chosen rather than only described: a plan says how
+// many hidden layers to run and how wide, and both languages walk it. What stays
+// compiled in is the *capacity* -- GLSL sizes its arrays with compile-time
+// constants, so how many neurons there may be at most, and how many layers, live
+// in BrainKernel.inl. A plan spends that capacity; it cannot raise it.
 namespace vkexp::neuro {
 
 class BrainDescriptionError final : public std::runtime_error {
@@ -56,7 +57,12 @@ struct BrainBlock {
 
 struct BrainDescription {
     std::uint32_t inputCount{};
+    // Hidden neurons in total, and how they are divided into layers. The total
+    // is kept beside the division because it is what sizes the state block and
+    // the gene block, and a reader that only wants "how big is this brain" then
+    // needs no arithmetic.
     std::uint32_t hiddenCount{};
+    std::vector<std::uint32_t> hiddenLayers;
     std::uint32_t outputCount{};
     std::uint32_t weightCount{};
     // Which integrator the weights are read under. The gate block is carried by
