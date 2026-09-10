@@ -10,6 +10,7 @@
 #include "worlds/shuttle.glsl"
 #include "worlds/two_gaps.glsl"
 #include "worlds/puck_push.glsl"
+#include "worlds/gate_plate.glsl"
 
 vec2 scenarioBeaconPosition(uint scenario, Agent agent, uint beaconIndex, uint phase,
                             float worldRadius, ScenarioParameters sp) {
@@ -41,6 +42,9 @@ vec2 scenarioBeaconPosition(uint scenario, Agent agent, uint beaconIndex, uint p
     if (scenario == 9u) {
         return puckPushScenarioPosition(beaconIndex, agent);
     }
+    if (scenario == 10u) {
+        return gatePlateScenarioPosition(beaconIndex, worldRadius);
+    }
     return scentRelayScenarioPosition(agent, beaconIndex, worldRadius, sp);
 }
 
@@ -65,6 +69,9 @@ vec3 scenarioBeaconColor(uint scenario, uint beaconIndex, uint phase, uint trial
     }
     if (scenario == 9u) {
         return puckPushScenarioColor(beaconIndex);
+    }
+    if (scenario == 10u) {
+        return gatePlateScenarioColor(beaconIndex);
     }
     return stationaryScenarioColor(trial);
 }
@@ -95,7 +102,7 @@ float scenarioTargetDistance(uint scenario, Agent agent, vec2 position, uint pha
         return length(agent.penalties.yz);
     }
     if (scenario == 4u || scenario == 5u || scenario == 6u || scenario == 7u ||
-        scenario == 8u) {
+        scenario == 8u || scenario == 10u) {
         const uint targetIndex = agent.internal.y >= 0.5 ? 1u : 0u;
         return length(scenarioBeaconPosition(scenario, agent, targetIndex, phase, worldRadius,
                                              sp) - position);
@@ -123,6 +130,9 @@ vec2 scenarioObstacleCentre(uint scenario, Agent agent, uint index, float worldR
     if (scenario == 8u) {
         return twoGapsBoxCentre(index, worldRadius);
     }
+    if (scenario == 10u) {
+        return gateBoxCentre(index, worldRadius, gatePlateScenarioOpen(agent));
+    }
     return vec2(0.0);
 }
 
@@ -135,6 +145,9 @@ vec2 scenarioObstacleHalfExtent(uint scenario, uint index, float worldRadius) {
     }
     if (scenario == 8u) {
         return twoGapsBoxHalfExtent(index, worldRadius);
+    }
+    if (scenario == 10u) {
+        return gateBoxHalfExtent(index, worldRadius);
     }
     return vec2(0.0);
 }
@@ -170,6 +183,9 @@ vec3 scenarioBodyTint(uint scenario, Agent agent, vec3 bodyColor) {
     }
     if (scenario == 8u) {
         return twoGapsScenarioBodyTint(agent, bodyColor);
+    }
+    if (scenario == 10u) {
+        return gatePlateScenarioBodyTint(agent, bodyColor);
     }
     return bodyColor;
 }

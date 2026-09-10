@@ -7,8 +7,10 @@
 #include "vkexp/profiling/ProfilerTypes.hpp"
 #include "vkexp/simulation/CpuSimulation.hpp"
 #include "vkexp/simulation/ExperimentSweep.hpp"
+#include "vkexp/simulation/Locomotion.hpp"
 #include "vkexp/simulation/Sensors.hpp"
 #include "vkexp/simulation/PuckKernel.hpp"
+#include "vkexp/worlds/scenarios/GatePlateScenario.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
 #include "vkexp/simulation/TrailKernel.hpp"
 #include "vkexp/simulation/Units.hpp"
@@ -598,6 +600,14 @@ void testScenarioRegistryContract() {
         vkexp::stepAgentCpu(stepped, zeroWeights, settings);
         check(std::isfinite(stepped.pose.x) && std::isfinite(stepped.metrics.w),
               label + ": one step through the hooks stays finite");
+
+        // Every scenario says how long a trial has to be for its objectives to
+        // be reachable, because a world run in too short a trial reports a ratio
+        // that cannot reach one and nothing about the picture says so. The UI
+        // offers the number and the headless runner defaults to it, so a
+        // scenario that left it at zero would silently ask for no time at all.
+        check(scenario.nominalStepsPerGeneration >= 120U,
+              label + ": declares a trial length its objectives can be reached in");
     }
 }
 
@@ -783,7 +793,10 @@ void testWorldSnapshotRoundTrip() {
     snapshot.physics.beaconScenario = vkexp::BeaconScenario::ScentRelay;
     snapshot.physics.beaconMotionSeed = 987654U;
     snapshot.physics.beaconPhase = 3U;
-    snapshot.physics.trailEnabled = false;
+    // The middle setting on purpose: it is the one a saver still shaped like a
+    // bool would silently collapse, and it is neither the default nor the value
+    // the inverted pass below uses.
+    snapshot.physics.trailMode = vkexp::TrailMode::Visual;
     snapshot.physics.agentLightEnabled = false;
     snapshot.physics.agentCollisionsEnabled = true;
     // Named here rather than left at its default: a setting the saver forgets
@@ -796,6 +809,9 @@ void testWorldSnapshotRoundTrip() {
     snapshot.physics.swapDeliveryEnds = true;
     snapshot.physics.uniformBeaconColor = true;
     snapshot.physics.blockedDoorPerGeneration = true;
+    snapshot.physics.gateLatchSeconds = 2.75F;
+    snapshot.physics.puckBreakawayPushes = 2.5F;
+    snapshot.physics.puckRandomStart = true;
 
     snapshot.genomes.resize(4);
     for (std::size_t index = 0; index < snapshot.genomes.size(); ++index) {
@@ -840,7 +856,8 @@ void testWorldSnapshotRoundTrip() {
               loaded.physics.beaconScenario == vkexp::BeaconScenario::ScentRelay &&
               loaded.physics.beaconMotionSeed == 987654U && loaded.physics.beaconPhase == 3U,
           "Snapshot world identity round-trip");
-    check(!loaded.physics.trailEnabled && !loaded.physics.agentLightEnabled &&
+    check(loaded.physics.trailMode == vkexp::TrailMode::Visual &&
+              !loaded.physics.agentLightEnabled &&
               loaded.physics.agentCollisionsEnabled,
           "Snapshot ablation flags round-trip");
     check(loaded.physics.neuronModel == vkexp::NeuronModel::Gated,
@@ -848,6 +865,11 @@ void testWorldSnapshotRoundTrip() {
     check(loaded.physics.swapDeliveryEnds && loaded.physics.uniformBeaconColor &&
               loaded.physics.blockedDoorPerGeneration,
           "Snapshot keeps the world options");
+    check(closeTo(loaded.physics.gateLatchSeconds, 2.75F),
+          "Snapshot keeps the gate latch, which is a whole world's difficulty");
+    check(closeTo(loaded.physics.puckBreakawayPushes, 2.5F),
+          "Snapshot keeps the puck's friction floor, which decides whether one agent can move it");
+    check(loaded.physics.puckRandomStart, "Snapshot keeps where the puck is placed");
 
     // Once more with every flag inverted, because one polarity proves nothing
     // about a bool. All four default to true, so a flag the loader forgets to
@@ -859,7 +881,7 @@ void testWorldSnapshotRoundTrip() {
     // already carry.
     {
         vkexp::WorldSnapshot inverted = snapshot;
-        inverted.physics.trailEnabled = true;
+        inverted.physics.trailMode = vkexp::TrailMode::Off;
         inverted.physics.agentLightEnabled = true;
         inverted.physics.agentCollisionsEnabled = false;
         inverted.physics.beaconPhaseChanged = true;
@@ -867,14 +889,16 @@ void testWorldSnapshotRoundTrip() {
         inverted.physics.swapDeliveryEnds = false;
         inverted.physics.uniformBeaconColor = false;
         inverted.physics.blockedDoorPerGeneration = false;
+        inverted.physics.puckRandomStart = false;
         const std::filesystem::path invertedPath = path.parent_path() / "inverted.vknw";
         vkexp::saveWorldSnapshot(invertedPath, inverted);
         const vkexp::WorldSnapshot back = vkexp::loadWorldSnapshot(invertedPath);
-        check(back.physics.trailEnabled && back.physics.agentLightEnabled &&
+        check(back.physics.trailMode == vkexp::TrailMode::Off &&
+                  back.physics.agentLightEnabled &&
                   !back.physics.agentCollisionsEnabled && back.physics.beaconPhaseChanged &&
                   back.physics.neuronModel == vkexp::NeuronModel::Reactive &&
                   !back.physics.swapDeliveryEnds && !back.physics.uniformBeaconColor &&
-                  !back.physics.blockedDoorPerGeneration,
+                  !back.physics.blockedDoorPerGeneration && !back.physics.puckRandomStart,
               "Snapshot ablation flags round-trip in both directions");
     }
 
@@ -1045,7 +1069,6 @@ void testNeuronTimeConstants() {
     vkexp::neuro::Weights weights{};
     constexpr auto inputCount = static_cast<kernel::uint>(vkexp::neuro::Topology::inputCount);
     constexpr auto hiddenCount = static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenCount);
-    constexpr auto outputCount = static_cast<kernel::uint>(vkexp::neuro::Topology::outputCount);
     weights[kernel::brainHiddenWeightIndex(0u, inputCount, 0u, 0u)] = 3.0F;
     weights[kernel::brainOutputWeightIndex(0u, inputCount, hiddenCount, 0u, 0u)] = 3.0F;
     vkexp::neuro::Inputs inputs{};
@@ -1157,7 +1180,8 @@ void testGatedNeurons() {
 // room there is to pick the signal up, and no single point answers that.
 template <typename BoxAt>
 float visibleFractionOfFarSide(const float radius, const vkexp::worlds::kernel::vec2 target,
-                               const std::uint32_t boxCount, BoxAt&& boxAt) {
+                               const std::uint32_t boxCount, BoxAt&& boxAt,
+                               const float sideSign = 1.0F) {
     namespace kernel = vkexp::worlds::kernel;
     vkexp::SimulationStep settings;
     settings.worldRadius = radius;
@@ -1170,8 +1194,10 @@ float visibleFractionOfFarSide(const float radius, const vkexp::worlds::kernel::
         for (int iy = 0; iy < samples; ++iy) {
             const float x = -radius + 2.0F * radius * (static_cast<float>(ix) + 0.5F) /
                                           static_cast<float>(samples);
-            // The far side is the half the target is not on.
-            const float y = radius * (static_cast<float>(iy) + 0.5F) / static_cast<float>(samples);
+            // The far side is the half the target is not on. `sideSign` flips
+            // which half that is, for a world whose target sits on the other one.
+            const float y = sideSign * radius * (static_cast<float>(iy) + 0.5F) /
+                            static_cast<float>(samples);
             if (std::hypot(x, y) > radius) {
                 continue;
             }
@@ -1929,70 +1955,495 @@ void testPuckPushCredit() {
     // A puck on the axis, above the middle, so "toward the middle" is straight
     // down and the two sides of it are unambiguous.
     const puck::vec2 puckAt{0.0F, 0.6F};
-    const puck::vec2 still{0.0F, 0.0F};
-    const float speed = settings.maximumSpeed;
 
-    // Behind it, pushing down: the whole approach is useful.
-    const float behind = puck::puckPushContribution({0.0F, puckAt.y + contact}, {0.0F, -speed},
-                                                    vkexp::agentBodyRadius, puckAt, still, radius);
-    check(closeTo(behind, speed), "An agent pushing straight toward the middle is paid its approach");
+    // Behind it, driving straight at the middle: the whole press is useful.
+    const puck::vec2 down{0.0F, -1.0F};
+    const puck::vec2 up{0.0F, 1.0F};
+    const float behind = puck::puckPushContribution({0.0F, puckAt.y + contact}, down, 1.0F,
+                                                    vkexp::agentBodyRadius, puckAt, radius);
+    check(closeTo(behind, 1.0F), "An agent driving straight toward the middle presses a whole one");
 
-    // In the way, pushing up with exactly the same effort. It is in contact, it
-    // is approaching, and it moves the puck the wrong way -- so it earns nothing.
+    // The reason the push is a pressure and not an approach speed. This agent is
+    // standing still, wedged and going nowhere, and it presses exactly as hard as
+    // one at a run -- which is what lets a crowd behave like tugboats instead of
+    // being outdone by a single battering ram. Under the old model it counted for
+    // nothing at all.
+    check(closeTo(puck::puckPushContribution({0.0F, puckAt.y + contact}, down, 1.0F,
+                                             vkexp::agentBodyRadius, puckAt, radius),
+                  behind),
+          "A motionless agent leaning at full drive presses as hard as a moving one");
+    check(closeTo(puck::puckPushContribution({0.0F, puckAt.y + contact}, down, 0.0F,
+                                             vkexp::agentBodyRadius, puckAt, radius),
+                  0.0F),
+          "And one with its motors off presses nothing, however close it stands");
+    check(puck::puckPushContribution({0.0F, puckAt.y + contact}, down, 0.4F,
+                                     vkexp::agentBodyRadius, puckAt, radius) < behind,
+          "Half throttle presses less than full");
+
+    // In the way, driving with exactly the same effort. It is in contact, it is
+    // pressing, and it moves the puck the wrong way -- so it earns nothing.
     // Nothing here names a correct side; the projection does the work.
-    const float blocking = puck::puckPushContribution({0.0F, puckAt.y - contact}, {0.0F, speed},
-                                                      vkexp::agentBodyRadius, puckAt, still, radius);
+    //
     // Zero and not negative: blocking stops being paid for, it does not become
     // a thing to avoid. An agent taught to keep clear of the puck is worse than
     // one that leans on it.
+    const float blocking = puck::puckPushContribution({0.0F, puckAt.y - contact}, up, 1.0F,
+                                                      vkexp::agentBodyRadius, puckAt, radius);
     check(closeTo(blocking, 0.0F), "An agent wedged between the puck and the middle earns nothing");
 
-    // Sideways: in contact and approaching, but the push is perpendicular to the
+    // Sideways: in contact and pressing, but the push is perpendicular to the
     // journey, so it is worth nothing without being wrong.
-    const float sideways = puck::puckPushContribution({contact, puckAt.y}, {-speed, 0.0F},
-                                                      vkexp::agentBodyRadius, puckAt, still, radius);
+    const float sideways = puck::puckPushContribution({contact, puckAt.y}, {-1.0F, 0.0F}, 1.0F,
+                                                      vkexp::agentBodyRadius, puckAt, radius);
     check(closeTo(sideways, 0.0F), "A push across the puck's path is worth nothing");
 
     // Half a turn off the line: paid, but less. This is the part that makes it a
     // gradient rather than a switch -- getting further round the puck pays more.
     const float diagonal = puck::puckPushContribution(
-        {contact * 0.7071F, puckAt.y + contact * 0.7071F}, {-speed * 0.7071F, -speed * 0.7071F},
-        vkexp::agentBodyRadius, puckAt, still, radius);
+        {contact * 0.7071F, puckAt.y + contact * 0.7071F}, {-0.7071F, -0.7071F}, 1.0F,
+        vkexp::agentBodyRadius, puckAt, radius);
     check(diagonal > 0.0F && diagonal < behind,
           "Pushing at an angle pays, and pays less than pushing straight");
 
-    // Touching and not pushing, and near but not touching: neither is work.
-    check(closeTo(puck::puckPushContribution({0.0F, puckAt.y + contact}, still,
-                                             vkexp::agentBodyRadius, puckAt, still, radius),
+    // Facing away, and near but not touching: neither is work.
+    check(closeTo(puck::puckPushContribution({0.0F, puckAt.y + contact}, up, 1.0F,
+                                             vkexp::agentBodyRadius, puckAt, radius),
                   0.0F),
-          "Resting against the puck is not pushing it");
-    check(closeTo(puck::puckPushContribution({0.0F, puckAt.y + contact * 3.0F}, {0.0F, -speed},
-                                             vkexp::agentBodyRadius, puckAt, still, radius),
+          "An agent with its back to the puck is not pushing it");
+    check(closeTo(puck::puckPushContribution({0.0F, puckAt.y + contact * 3.0F}, down, 1.0F,
+                                             vkexp::agentBodyRadius, puckAt, radius),
                   0.0F),
           "An agent that has not reached the puck is not moving it");
 
-    // Measured against the puck, the same way the push in puck_step.comp is: an
-    // agent trailing a puck already outrunning it is not pushing it. This is the
-    // assertion that fails if the mirrored velocity is dropped from target.xy.
-    check(closeTo(puck::puckPushContribution({0.0F, puckAt.y + contact}, {0.0F, -speed},
-                                             vkexp::agentBodyRadius, puckAt, {0.0F, -speed * 2.0F},
-                                             radius),
-                  0.0F),
-          "An agent slower than the puck it follows is not pushing it");
-
     // And the balance: a delivery's worth of pushing has to beat a whole trial
-    // of leaning on the puck, or the behaviour that is cheaper still wins. The
-    // journey is 1.1 m at the puck's settled speed, and the pusher is credited
-    // only the approach behind it.
+    // of leaning on the puck, or the behaviour that is cheaper still wins. Two
+    // agents press the puck along at force over drag, and each is credited its
+    // own press for as long as the journey takes.
     const float trialSeconds =
         vkexp::units::secondsForSteps(vkexp::SimulationControls{}.stepsPerGeneration,
                                       vkexp::units::fixedTimeStep);
     const float parked = trialSeconds * settings.fitness.trackingReward * puck::PuckProximityShare;
-    const float puckSpeed = speed * puck::PuckPushRate / (puck::PuckPushRate + puck::PuckDrag);
+    const float pairSpeed = 2.0F * puck::PuckPushAcceleration / puck::PuckDrag;
     const float journey = std::hypot(puck::puckStartPosition(settings.worldRadius, 0).x,
                                      puck::puckStartPosition(settings.worldRadius, 0).y);
-    const float pushed = (speed - puckSpeed) * (journey / puckSpeed) * puck::PuckWorkReward;
+    const float pushed = (journey / pairSpeed) * puck::PuckWorkReward;
     check(pushed > parked * 2.0F, "Pushing the puck home outearns a whole trial of leaning on it");
+
+    // The equilibrium the acceleration was chosen against, which is the whole
+    // shape of the world: one agent moves it slowly, a pair twice as fast, and
+    // three reach the agents' own speed limit, at which point pushing harder
+    // stops helping because the puck cannot outrun the things pushing it.
+    const float soloSpeed = puck::PuckPushAcceleration / puck::PuckDrag;
+    check(soloSpeed > 0.05F && soloSpeed < settings.maximumSpeed * 0.5F,
+          "One agent alone moves the puck, and slowly");
+    check(closeTo(pairSpeed, soloSpeed * 2.0F), "Two press it along twice as fast");
+    check(3.0F * soloSpeed >= settings.maximumSpeed,
+          "And three reach the speed the puck is capped at, so more is no longer better");
+
+    // The friction floor, which is what turns the world from one that permits a
+    // group into one that requires it. Without it a single agent moves the puck
+    // on its own, so cooperation is a convenience and the question the world
+    // exists to ask -- can selection produce agents that push together -- is one
+    // it never puts. Counted in agents, and compared against a pressure that is
+    // also counted in agents, so the slider means exactly what it says.
+    const float breakaway = puck::puckBreakawayPush(settings.puckBreakawayPushes);
+    check(breakaway > 1.0F, "By default one agent pressing at full drive cannot start the puck");
+    check(closeTo(puck::puckFrictionFraction(1.0F, breakaway), 0.0F),
+          "So its whole press is absorbed");
+    check(puck::puckFrictionFraction(2.0F, breakaway) > 0.0F,
+          "And two pressing the same way get through");
+
+    // Presses are summed as vectors before the floor is measured, so two agents
+    // on opposite faces cancel and move nothing however hard they try. This is
+    // what makes "two agents" mean two agents pushing the same way rather than
+    // two agents touching.
+    check(closeTo(puck::puckFrictionFraction(0.0F, breakaway), 0.0F),
+          "Two agents on opposite faces cancel before the floor is measured");
+
+    // Subtracted, not switched: a pair that barely clears the floor moves the
+    // puck slowly rather than the world flipping between nothing and everything.
+    // Selection needs an increment here for the same reason the journey is a
+    // fraction rather than a completion.
+    const float justOver = puck::puckFrictionFraction(breakaway * 1.02F, breakaway);
+    const float wellOver = puck::puckFrictionFraction(breakaway * 4.0F, breakaway);
+    check(justOver > 0.0F && justOver < 0.1F, "Just over the floor almost nothing gets through");
+    check(wellOver > justOver && wellOver < 1.0F, "And more press gets more through, never all");
+
+    // At zero the floor is gone and the world is the one it was before, which is
+    // what makes this a knob rather than a change of task.
+    check(closeTo(puck::puckBreakawayPush(0.0F), 0.0F) &&
+              closeTo(puck::puckFrictionFraction(1.0F, 0.0F), 1.0F),
+          "At a breakaway of zero one agent moves the puck exactly as before");
+
+    // And the work reward has to follow the puck rather than the pushing, or a
+    // lone agent leaning on a puck it cannot start collects all trial for moving
+    // nothing -- teaching the futile pushing the floor exists to rule out.
+    vkexp::AgentState pusher{};
+    // Facing the puck, at full throttle, standing still: the case the pressure
+    // model exists for.
+    pusher.pose = {0.0F, puckAt.y + contact, -std::numbers::pi_v<float> / 2.0F,
+                   vkexp::agentBodyRadius};
+    pusher.internal.x = 1.0F;
+    pusher.penalties.y = puckAt.x;
+    pusher.penalties.z = puckAt.y;
+    pusher.target = {0.0F, 0.0F, 0.0F, 0.0F}; // the puck is stuck
+    vkexp::worlds::rewardPuckWork(pusher, settings);
+    check(closeTo(pusher.metrics.w, 0.0F), "Pushing a puck that is not moving earns nothing");
+    pusher.target.y = -settings.maximumSpeed * puck::PuckWorkMovingSpeed;
+    vkexp::worlds::rewardPuckWork(pusher, settings);
+    check(pusher.metrics.w > 0.0F, "And pushing one that is under way earns the work");
+
+    // Where the puck is placed. Off, the axis, agents on its side. On, scattered
+    // through a ring, and the point is that no one layout can be memorised: the
+    // same world gets a different puck every generation, and different worlds get
+    // different pucks within one.
+    const float arena = settings.worldRadius;
+    const std::uint32_t seed = 7U;
+    const puck::vec2 axis = puck::puckStartPositionFor(arena, 0U, 3U, seed, false);
+    check(closeTo(axis.x, puck::puckStartPosition(arena, 0U).x) &&
+              closeTo(axis.y, puck::puckStartPosition(arena, 0U).y),
+          "With the option off the puck is placed exactly where it always was");
+
+    bool differsBetweenWorlds = false;
+    bool differsBetweenGenerations = false;
+    for (std::uint32_t world = 0; world < 32U; ++world) {
+        const puck::vec2 here = puck::puckStartPositionFor(arena, 0U, world, seed, true);
+        const float span = std::hypot(here.x, here.y);
+        check(span > puck::PuckScatterInner * arena * 0.999F &&
+                  span < puck::PuckScatterOuter * arena * 1.001F,
+              "A scattered puck lands in the ring, clear of both the rim and the middle");
+        const puck::vec2 neighbour = puck::puckStartPositionFor(arena, 0U, world + 1U, seed, true);
+        const puck::vec2 later = puck::puckStartPositionFor(arena, 0U, world, seed + 1U, true);
+        if (!closeTo(here.x, neighbour.x) || !closeTo(here.y, neighbour.y)) {
+            differsBetweenWorlds = true;
+        }
+        if (!closeTo(here.x, later.x) || !closeTo(here.y, later.y)) {
+            differsBetweenGenerations = true;
+        }
+        const puck::vec2 again = puck::puckStartPositionFor(arena, 0U, world, seed, true);
+        check(closeTo(here.x, again.x) && closeTo(here.y, again.y),
+              "And it is the same puck every time the same generation is asked for");
+    }
+    check(differsBetweenWorlds, "Worlds in one generation get different pucks");
+    check(differsBetweenGenerations, "And one world gets a different puck the next generation");
+
+    // The whole point of the option is that the shaping opens against wherever
+    // the puck actually is. A spawn that placed the agents from one answer and
+    // the driver that placed the puck from another would score a journey that
+    // was never travelled -- which is the fault the axis version already had once.
+    const vkexp::ScenarioDefinition& puckScenario =
+        vkexp::scenarioDefinition(vkexp::BeaconScenario::PuckPush);
+    vkexp::SimulationStep scattered = settings;
+    scattered.puckRandomStart = true;
+    scattered.beaconMotionSeed = seed;
+    for (const std::uint32_t world : {0U, 5U, 11U}) {
+        vkexp::AgentState agent{};
+        agent.pose = {0.3F, 0.2F, 0.0F, vkexp::agentBodyRadius};
+        agent.penalties.w = static_cast<float>(world);
+        puckScenario.spawn(agent, scattered);
+        const puck::vec2 placed =
+            puck::puckStartPositionFor(arena, 0U, world, seed, true);
+        check(closeTo(puckScenario.targetDistance(agent, scattered),
+                      std::hypot(placed.x, placed.y)),
+              "A scattered trial opens measuring the puck the driver actually placed");
+    }
+}
+
+// The gate world. What has to hold is not that it is solvable -- that is what a
+// run answers -- but that the two legs it is made of are real: that the plate is
+// somewhere other than the doorway, that a shut gate actually hides what is
+// behind it, and that the latch does what its one number says.
+// The locomotion ladder. Presets are only five points in a space the sliders
+// already reach, so what is worth pinning is not the numbers themselves but the
+// three claims made about them in the window: that the middle rung is the
+// simulation's own defaults, that the ladder is ordered, and that a rung changes
+// how fast a body answers without changing what it can ultimately do.
+void testLocomotionPresets() {
+    const vkexp::SimulationStep defaults{};
+    for (std::size_t index = 0; index < vkexp::locomotionStyleCount; ++index) {
+        const vkexp::LocomotionPreset& preset = vkexp::locomotionPresets[index];
+        check(static_cast<std::size_t>(preset.style) == index,
+              "the preset table is in LocomotionStyle order");
+        check(preset.key != nullptr && *preset.key != '\0' && preset.name != nullptr,
+              "every preset has a name and a command-line key");
+        check(vkexp::locomotionPresetForKey(preset.key) == &preset,
+              "a preset is reachable by its own key");
+    }
+    check(vkexp::locomotionPresetForKey("nonesuch") == nullptr, "an unknown key finds nothing");
+
+    // The middle rung is the defaults value for value, not an approximation of
+    // them: selecting it has to be a return to the body every scenario was tuned
+    // against, or a run before touching this control and a run after it differ
+    // by an amount nobody wrote down.
+    vkexp::SimulationStep applied = defaults;
+    vkexp::applyLocomotionPreset(applied, vkexp::LocomotionStyle::TableRobot);
+    check(applied.thrust == defaults.thrust && applied.turnAcceleration == defaults.turnAcceleration &&
+              applied.linearDrag == defaults.linearDrag &&
+              applied.angularDrag == defaults.angularDrag,
+          "the Table robot preset is the simulation's own defaults");
+
+    // Applying a preset touches the four locomotion numbers and nothing else --
+    // in particular not the two caps, which is what keeps the styles comparable.
+    vkexp::SimulationStep fish = defaults;
+    vkexp::applyLocomotionPreset(fish, vkexp::LocomotionStyle::Fish);
+    check(fish.maximumSpeed == defaults.maximumSpeed &&
+              fish.maximumAngularSpeed == defaults.maximumAngularSpeed,
+          "a preset never moves the speed caps");
+    check(fish.deltaTime == defaults.deltaTime && fish.worldRadius == defaults.worldRadius,
+          "a preset touches nothing outside locomotion");
+
+    // What the combo reads back. A label that could only be written would keep
+    // saying "Fish" over sliders that had since been dragged elsewhere.
+    const vkexp::LocomotionPreset* found = vkexp::currentLocomotionPreset(fish);
+    check(found != nullptr && found->style == vkexp::LocomotionStyle::Fish,
+          "the sliders report the preset they were set from");
+    fish.linearDrag *= 1.5F;
+    check(vkexp::currentLocomotionPreset(fish) == nullptr,
+          "and report nothing once one of them is dragged away");
+
+    // The ladder, in the quantities a body is actually judged by rather than in
+    // the raw sliders: how long it takes to reach speed and how far it carries
+    // once the motors stop. Ordered strictly, so no two rungs are the same body
+    // under different names.
+    float previousCoast = 0.0F;
+    float previousSpin = 0.0F;
+    float previousTime = 0.0F;
+    for (const vkexp::LocomotionPreset& preset : vkexp::locomotionPresets) {
+        vkexp::SimulationStep settings = defaults;
+        vkexp::applyLocomotionPreset(settings, preset.style);
+        const vkexp::LocomotionResponse response = vkexp::locomotionResponse(settings);
+        check(response.coastDistance > previousCoast, "each rung coasts further than the last");
+        check(response.spinCoast > previousSpin, "each rung carries its turn further");
+        check(response.timeToTopSpeed > previousTime, "each rung takes longer to reach speed");
+        previousCoast = response.coastDistance;
+        previousSpin = response.spinCoast;
+        previousTime = response.timeToTopSpeed;
+
+        // The claim the whole ladder rests on: every style tops out at the same
+        // speed. A rung whose thrust could not hold the cap would be slower as
+        // well as heavier, and a comparison between two rungs would no longer be
+        // a comparison of inertia.
+        check(response.speedCapBinds && std::abs(response.topSpeed - settings.maximumSpeed) < 1.0e-6F,
+              "every locomotion style reaches the same top speed");
+    }
+
+    // The turn is where the claim does not hold, and it is worth failing loudly
+    // if that ever silently changes. Four of the rungs reach the turn cap; the
+    // defaults do not -- 5.0 rad/s^2 against 2.4/s holds 2.08 rad/s, so at the
+    // default settings the maximum turn speed slider has nothing to do. The
+    // window says so next to the slider. This asserts the fact rather than the
+    // preference, so aligning the defaults will fail here and be noticed.
+    vkexp::SimulationStep table = defaults;
+    vkexp::applyLocomotionPreset(table, vkexp::LocomotionStyle::TableRobot);
+    const vkexp::LocomotionResponse tableResponse = vkexp::locomotionResponse(table);
+    check(!tableResponse.turnCapBinds && tableResponse.topTurnRate < table.maximumAngularSpeed,
+          "the default body never reaches its own turn cap");
+    for (const vkexp::LocomotionPreset& preset : vkexp::locomotionPresets) {
+        if (preset.style == vkexp::LocomotionStyle::TableRobot) {
+            continue;
+        }
+        vkexp::SimulationStep settings = defaults;
+        vkexp::applyLocomotionPreset(settings, preset.style);
+        const vkexp::LocomotionResponse response = vkexp::locomotionResponse(settings);
+        check(response.turnCapBinds &&
+                  std::abs(response.topTurnRate - settings.maximumAngularSpeed) < 1.0e-6F,
+              "every other style does reach the same top turn rate");
+    }
+
+    // And the response numbers are read off the sliders, not off the table, so
+    // a hand-tuned body is described as honestly as a named one.
+    vkexp::SimulationStep byHand = defaults;
+    byHand.linearDrag = 4.0F;
+    byHand.thrust = 4.0F;
+    const vkexp::LocomotionResponse handResponse = vkexp::locomotionResponse(byHand);
+    check(std::abs(handResponse.coastDistance - byHand.maximumSpeed / 4.0F) < 1.0e-6F,
+          "coast is derived from the sliders in front of the user");
+}
+
+void testGateWorld() {
+    namespace kernel = vkexp::worlds::kernel;
+    const auto completedTrips = [](const vkexp::AgentState& agent) {
+        return static_cast<std::uint32_t>(std::max(agent.target.w, 0.0F));
+    };
+    const vkexp::ScenarioDefinition& scenario =
+        vkexp::scenarioDefinition(vkexp::BeaconScenario::GatePlate);
+    vkexp::SimulationStep settings;
+    settings.beaconScenario = vkexp::BeaconScenario::GatePlate;
+    const float radius = settings.worldRadius;
+    const kernel::vec2 plate = kernel::gatePlatePosition(radius);
+    const kernel::vec2 resource = kernel::gateResourcePosition(radius);
+
+    // The two things to do are in different places. If the plate sat in the
+    // doorway the task would collapse into one leg -- walk through, pressing on
+    // the way -- and nothing about it would need holding in mind.
+    check(plate.y < -kernel::GateWallHalfThickness && resource.y > kernel::GateWallHalfThickness,
+          "The plate is in front of the wall and the resource behind it");
+    const float plateToOpening =
+        std::hypot(plate.x - kernel::GateOpeningOffset * radius, plate.y);
+    check(plateToOpening > kernel::gatePlateRadius(radius) + kernel::GateOpeningHalfWidth * radius,
+          "Standing on the plate is not standing in the doorway");
+    check(kernel::gateOnPlate({plate.x, plate.y}, radius),
+          "The plate's own centre is on the plate");
+    check(!kernel::gateOnPlate({plate.x + kernel::gatePlateRadius(radius) * 1.05F, plate.y}, radius),
+          "And just outside its rim is not");
+    check(kernel::gatePlateRadius(radius) > vkexp::agentBodyRadius * 4.0F,
+          "The plate is wide enough for several agents to be standing on it at once");
+    // Which is also why it is drawn as its own disc rather than as the beacon
+    // that lights it: a beacon is drawn at one fixed visual radius, and at that
+    // radius the picture would show a dot a third the size of the floor the
+    // press test actually reads.
+    check(kernel::gatePlateRadius(radius) > vkexp::beaconVisualRadius * 2.0F,
+          "And wider than the beacon marking it, so the two cannot be drawn as one thing");
+
+    // A shut gate has to hide the resource, and an open one has to show it. That
+    // is the whole of what this world tells an agent it has done: press, and the
+    // far light appears. Measured the way the two-door and two-gap walls were --
+    // swept over the side the agents stand on rather than probed at a point --
+    // and asserted in both directions, because a wall that hides nothing and a
+    // wall with no way through are both wrong, and the same test has to fail for
+    // both.
+    const auto visibleWith = [&](const bool open) {
+        return visibleFractionOfFarSide(
+            radius, resource, kernel::GatePlateBoxCount,
+            [&](const kernel::uint index) {
+                return std::pair{kernel::gateBoxCentre(index, radius, open),
+                                 kernel::gateBoxHalfExtent(index, radius)};
+            },
+            -1.0F);
+    };
+    check(visibleWith(false) < 0.01F,
+          "A shut gate leaves the resource invisible from the side the agents start on");
+    check(visibleWith(true) > minimumTargetVisibility,
+          "An open one shows it from as much of that side as a gap that was learned");
+
+    // The latch, which is the difficulty of this world in one number. Pressed
+    // reloads it; released runs it down; and at zero it is open exactly while
+    // pressed -- one step and no more, which is the setting that needs a second
+    // agent.
+    const float dt = settings.deltaTime;
+    check(kernel::gateIsOpen(kernel::gateRemaining(0.0F, true, 4.0F, dt)),
+          "Pressing the plate opens the gate");
+    check(closeTo(kernel::gateRemaining(0.0F, true, 4.0F, dt), 4.0F),
+          "And reloads the latch to its full length");
+    check(closeTo(kernel::gateRemaining(4.0F, false, 4.0F, dt), 4.0F - dt),
+          "Letting go runs the latch down by one step");
+    check(!kernel::gateIsOpen(kernel::gateRemaining(dt * 0.5F, false, 4.0F, dt)),
+          "And it stops at zero rather than going negative");
+    check(kernel::gateIsOpen(kernel::gateRemaining(0.0F, true, 0.0F, dt)),
+          "At a latch of zero the gate is still open during the step it is pressed");
+    check(!kernel::gateIsOpen(kernel::gateRemaining(dt, false, 0.0F, dt)),
+          "And shut the step after it is released, so somebody has to stay");
+
+    // The gate leaf is geometry, and when it is open it must stop nothing. Parked
+    // outside the arena rather than resized, because the extent is asked for
+    // without an agent to ask about.
+    const kernel::vec2 shutLeaf = kernel::gateBoxCentre(2U, radius, false);
+    const kernel::vec2 openLeaf = kernel::gateBoxCentre(2U, radius, true);
+    check(std::hypot(shutLeaf.x, shutLeaf.y) < radius,
+          "A shut gate leaf stands in the arena, in the opening");
+    check(std::hypot(openLeaf.x, openLeaf.y) > radius * 4.0F,
+          "An open one is parked far enough out to stop nothing and block no light");
+    check(scenario.obstacleCount == kernel::GatePlateBoxCount && scenario.obstacle != nullptr,
+          "The gate world reports its three boxes and hands them out");
+
+    // Which leg is being shaped. Shut, the plate; open, the resource. This is
+    // read through the same internal.y convention the delivery worlds use, so a
+    // scenario that set it the other way round would be shaped toward the wrong
+    // beacon while every other assertion here still passed.
+    vkexp::AgentState agent{};
+    agent.pose = {plate.x, plate.y - 0.4F, 0.0F, vkexp::agentBodyRadius};
+    scenario.spawn(agent, settings);
+    check(!vkexp::worlds::gate_plate::gateOpen(agent), "A trial opens with the gate shut");
+    check(agent.pose.y < 0.0F, "And with every agent on the near side of the wall");
+    agent.pose = {plate.x, plate.y, 0.0F, vkexp::agentBodyRadius};
+    agent.internal.y = 1.0F;
+    check(closeTo(scenario.targetDistance(agent, settings), 0.0F),
+          "With the gate shut the shaping measures the way to the plate");
+    agent.target.x = 2.0F;
+    agent.internal.y = 0.0F;
+    check(closeTo(scenario.targetDistance(agent, settings),
+                  std::hypot(resource.x - agent.pose.x, resource.y - agent.pose.y)),
+          "With it open the shaping measures the way to the resource");
+
+    // The cycle. Crossing is half a task -- an agent that is through is done, and
+    // the door being held is worth something exactly once. Coming back makes the
+    // gate a thing that has to be open twice, so whoever is holding it matters
+    // for as long as anybody is still out.
+    check(scenario.objectivesPerAgent > 1, "The world asks for round trips, not one crossing");
+    vkexp::AgentState busy{};
+    busy.target.w = static_cast<float>(scenario.objectivesPerAgent) + 2.0F;
+    check(scenario.achievedObjectives(busy) == scenario.objectivesPerAgent,
+          "The reported ratio is capped at what the trial has room for");
+    check(scenario.fitness(busy, settings.fitness) >
+              scenario.fitness([&] {
+                  vkexp::AgentState slower{};
+                  slower.target.w = static_cast<float>(scenario.objectivesPerAgent);
+                  return slower;
+              }(),
+                               settings.fitness),
+          "But the score is not, so extra trips still pay");
+
+    // What the trial has to be long enough for. A leg is the straight line from
+    // the plate to the resource; at the speed limit a round trip is about 840
+    // steps, so two of them want roughly 1800 -- twice the default. Asserted
+    // rather than noted, because the geometry is what would quietly break it: a
+    // plate moved further from the door makes the nominal unreachable and the
+    // reported ratio would flatten near half without anything looking wrong.
+    const float legSeconds =
+        std::hypot(resource.x - plate.x, resource.y - plate.y) / settings.maximumSpeed;
+    const float nominalSeconds =
+        static_cast<float>(scenario.objectivesPerAgent) * 2.0F * legSeconds * 1.8F;
+    check(nominalSeconds <= vkexp::units::secondsForSteps(scenario.nominalStepsPerGeneration,
+                                                          vkexp::units::fixedTimeStep),
+          "The nominal number of round trips fits in the trial the world asks for");
+    check(nominalSeconds > vkexp::units::secondsForSteps(900U, vkexp::units::fixedTimeStep) &&
+              scenario.nominalStepsPerGeneration > 900U,
+          "And does not fit in the usual 900, which is why the world asks out loud");
+
+    // Walking the cycle by hand, because the order is the whole task and every
+    // step of it is a place the flags can be crossed. The distance handed to the
+    // hook is the distance to whatever the agent was heading for, which is what
+    // the step computes, so the walk has to recompute it the same way.
+    vkexp::AgentState walker{};
+    walker.pose = {plate.x, plate.y, 0.0F, vkexp::agentBodyRadius};
+    scenario.spawn(walker, settings);
+    walker.pose.x = plate.x;
+    walker.pose.y = plate.y;
+    const auto step = [&](const float x, const float y, const float latch) {
+        walker.pose.x = x;
+        walker.pose.y = y;
+        walker.target.x = latch;
+        scenario.afterStep(walker, settings, scenario.targetDistance(walker, settings));
+    };
+    // Standing on the plate opens the gate but closes no trip.
+    step(plate.x, plate.y, 2.0F);
+    check(completedTrips(walker) == 0 && walker.internal.x < 0.5F,
+          "Standing on the plate is not an arrival and starts no cargo");
+    check(walker.internal.y < 0.5F, "With the gate running the target becomes the resource");
+    // Out to the resource: that is the pickup.
+    step(resource.x, resource.y, 2.0F);
+    check(walker.internal.x >= 0.5F, "Reaching the resource picks it up");
+    check(walker.internal.y >= 0.5F, "And turns the agent back toward the plate");
+    check(completedTrips(walker) == 0, "Which is not yet a round trip");
+    // Sitting on the resource does not collect it twice.
+    step(resource.x, resource.y, 2.0F);
+    check(completedTrips(walker) == 0 && walker.internal.x >= 0.5F,
+          "Lingering on the resource collects it once");
+    // And home again.
+    step(plate.x, plate.y, 2.0F);
+    check(completedTrips(walker) == 1 && walker.internal.x < 0.5F,
+          "Coming back to the plate closes the round trip and empties the agent");
+
+    // The gate shutting mid-cycle sends an outbound agent back to the plate and
+    // leaves a carrying one where it was going, because a carrying agent was
+    // already heading there.
+    vkexp::AgentState outbound{};
+    outbound.pose = {0.0F, plate.y, 0.0F, vkexp::agentBodyRadius};
+    outbound.internal.y = 0.0F;
+    outbound.target.x = 0.0F; // the gate has just shut
+    scenario.afterStep(outbound, settings, scenario.targetDistance(outbound, settings));
+    check(outbound.internal.y >= 0.5F,
+          "A shut gate sends an agent that is not carrying back to the plate");
 }
 
 void testExperimentSweep() {
@@ -2094,6 +2545,8 @@ int main() {
     testBeaconColorAblation();
     testPuckWorld();
     testPuckPushCredit();
+    testGateWorld();
+    testLocomotionPresets();
     testDeliveryCannotBeScoredTwice();
     testScenarioRegistryContract();
     testFitnessWeightsAreParameters();

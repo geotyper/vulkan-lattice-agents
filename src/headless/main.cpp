@@ -4,9 +4,10 @@
 
 #include "vkexp/compute/HeadlessComputeContext.hpp"
 #include "vkexp/evolution/GenomeArchive.hpp"
-#include "vkexp/simulation/WorldSnapshot.hpp"
+#include "vkexp/simulation/Locomotion.hpp"
 #include "vkexp/simulation/SimulationDriver.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
+#include "vkexp/simulation/WorldSnapshot.hpp"
 #include "vkexp/simulation/Units.hpp"
 #include "vkexp/worlds/WorldScenario.hpp"
 
@@ -31,7 +32,7 @@ struct Options {
     vkexp::WorldShape worldShape{vkexp::WorldShape::Circle};
     vkexp::WorldSize worldSize{vkexp::WorldSize::Small};
     std::uint64_t generations{20};
-    std::uint32_t stepsPerGeneration{900};
+    std::uint32_t stepsPerGeneration{};  // 0 means "whatever the scenario needs"
     std::uint32_t stepsPerBatch{128};
     std::uint32_t agentsPerWorld{12};
     std::size_t populationSize{512};
@@ -41,6 +42,12 @@ struct Options {
     bool swapDeliveryEnds{false};
     bool uniformBeaconColor{false};
     bool blockedDoorPerGeneration{false};
+    float gateLatchSeconds{4.0F};
+    float puckBreakawayPushes{vkexp::puck::kernel::PuckBreakawayPushes};
+    bool puckRandomStart{false};
+    // Absent means "leave the four locomotion numbers at their defaults", which
+    // is the Table robot preset by construction.
+    std::optional<vkexp::LocomotionStyle> locomotion;
     vkexp::FitnessWeights fitness{};
     // Optional physics overrides. Absent means "keep the default", which lets a
     // sweep change one term without restating the rest of SimulationStep.
@@ -52,7 +59,7 @@ struct Options {
     std::optional<float> beaconTrailDepositRate;
     std::optional<float> trailHalfLife;
     std::optional<float> trailCellSize;
-    bool trailEnabled{true};
+    vkexp::TrailMode trailMode{vkexp::TrailMode::Sensed};
     vkexp::NeuronModel neuronModel{vkexp::NeuronModel::TimeConstant};
     bool quiet{};
     std::string savePopulation;
@@ -81,7 +88,8 @@ void printHelp(const char* executable) {
                  "Experiment:\n"
               << "  --scenario <name>        " << scenarioKeyList() << "\n"
               << "  --generations <n>        generations to run (default 20)\n"
-                 "  --steps <n>              steps per generation (default 900 = 15.0 s)\n"
+                 "  --steps <n>              steps per generation (default: what the scenario\n"
+                 "                           needs, usually 900 = 15.0 s)\n"
                  "  --population <n>         genomes (default 512)\n"
                  "  --agents-per-world <n>   agents sharing one logical world (default 12)\n"
                  "  --seed <n>               genetic algorithm seed (default 12648430)\n"
@@ -92,7 +100,11 @@ void printHelp(const char* executable) {
                  "  --beacon-speed <x>       beacon angular speed in rad/s (default 0.35)\n"
                  "  --orbit-ratio <x>        orbit radius as a fraction of the arena (0.72)\n"
                  "  --light-range <x>        light sensor range in metres (default 2.4)\n"
-                 "  --max-speed <x>          agent speed limit in m/s (default 0.55)\n\n"
+                 "  --max-speed <x>          agent speed limit in m/s (default 0.55)\n"
+                 "  --locomotion <name>      how much the body carries: robot|rover|default|\n"
+                 "                           glider|fish. Sets thrust, turn and the two drags\n"
+                 "                           and nothing else, so every style has the same top\n"
+                 "                           speed and only the inertia differs\n\n"
                  "Ablations:\n"
                  "  --no-agent-collisions    disable agent-agent collisions\n"
                  "  --no-agent-light         disable perception of other agents' signals\n"
@@ -100,7 +112,19 @@ void printHelp(const char* executable) {
                  "  --uniform-beacon-color   ablate hue: both ends emit the average colour\n"
                  "  --doors-by-generation    two doors: the dead end changes per generation,\n"
                  "                           not per trial\n"
+                 "  --puck-breakaway <n>     puck world: how hard the world has to press before\n"
+                 "                           the puck moves, in agents leaning on it head-on.\n"
+                 "                           Above 1 no single agent can start it\n"
+                 "  --puck-scatter           puck world: place the puck anywhere in a ring each\n"
+                 "                           generation instead of on the axis in front of the\n"
+                 "                           agents, so finding it is part of the task\n"
+                 "  --gate-latch <s>         gate world: seconds the gate keeps running after\n"
+                 "                           the plate is released. 0 means somebody has to\n"
+                 "                           stand on it, so the task needs two agents\n"
                  "  --no-trail               disable the ground trail field entirely\n"
+                 "  --trail <mode>           off|visual|sensed. visual keeps the field and draws\n"
+                 "                           it while the antennae read zero, which is the\n"
+                 "                           control for any claim about the trail\n"
                  "  --neuron-model <name>    reactive|time|gated: where a hidden neuron's "
                  "time\n"
                  "                           constant comes from. reactive pins it to the step, "
@@ -155,6 +179,48 @@ vkexp::BeaconScenario parseScenario(const std::string_view name) {
         }
     }
     fail("Unknown scenario: " + std::string{name} + " (expected one of " + scenarioKeyList() + ")");
+}
+
+[[nodiscard]] std::string locomotionKeyList() {
+    std::string keys;
+    for (const vkexp::LocomotionPreset& preset : vkexp::locomotionPresets) {
+        keys += keys.empty() ? "" : "|";
+        keys += preset.key;
+    }
+    return keys;
+}
+
+[[nodiscard]] vkexp::LocomotionStyle parseLocomotion(const std::string_view name) {
+    if (const vkexp::LocomotionPreset* const preset = vkexp::locomotionPresetForKey(name)) {
+        return preset->style;
+    }
+    fail("Unknown locomotion '" + std::string{name} + "' (expected one of " + locomotionKeyList() +
+         ")");
+}
+
+[[nodiscard]] vkexp::TrailMode parseTrailMode(const std::string_view name) {
+    if (name == "off") {
+        return vkexp::TrailMode::Off;
+    }
+    if (name == "visual") {
+        return vkexp::TrailMode::Visual;
+    }
+    if (name == "sensed") {
+        return vkexp::TrailMode::Sensed;
+    }
+    fail("Unknown trail mode '" + std::string{name} + "'; expected off, visual or sensed");
+}
+
+[[nodiscard]] const char* trailModeName(const vkexp::TrailMode mode) {
+    switch (mode) {
+    case vkexp::TrailMode::Off:
+        return "OFF";
+    case vkexp::TrailMode::Visual:
+        return "drawn but UNSMELLED";
+    case vkexp::TrailMode::Sensed:
+        return "on";
+    }
+    return "on";
 }
 
 // Short names because they end up in run directories and CSV filenames.
@@ -247,7 +313,9 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
         } else if (argument == "--max-speed") {
             options.maximumSpeed = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--no-trail") {
-            options.trailEnabled = false;
+            options.trailMode = vkexp::TrailMode::Off;
+        } else if (argument == "--trail") {
+            options.trailMode = parseTrailMode(next(index, argument));
         } else if (argument == "--trail-deposit") {
             options.trailDepositRate = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--beacon-deposit") {
@@ -258,6 +326,8 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.trailHalfLife = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--no-agent-collisions") {
             options.agentCollisions = false;
+        } else if (argument == "--locomotion") {
+            options.locomotion = parseLocomotion(next(index, argument));
         } else if (argument == "--neuron-model") {
             options.neuronModel = parseNeuronModel(next(index, argument));
         } else if (argument == "--no-agent-light") {
@@ -268,6 +338,12 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.uniformBeaconColor = true;
         } else if (argument == "--doors-by-generation") {
             options.blockedDoorPerGeneration = true;
+        } else if (argument == "--puck-breakaway") {
+            options.puckBreakawayPushes = parseNumber<float>(next(index, argument), argument);
+        } else if (argument == "--puck-scatter") {
+            options.puckRandomStart = true;
+        } else if (argument == "--gate-latch") {
+            options.gateLatchSeconds = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--quiet") {
             options.quiet = true;
         } else if (argument == "--save-population") {
@@ -286,7 +362,7 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             fail("Unknown argument: " + std::string{argument});
         }
     }
-    if (options.generations == 0 || options.stepsPerGeneration == 0 || options.stepsPerBatch == 0) {
+    if (options.generations == 0 || options.stepsPerBatch == 0) {
         fail("Generations, steps and steps-per-batch must all be non-zero");
     }
     return options;
@@ -296,7 +372,13 @@ int run(const Options& options) {
     vkexp::HeadlessComputeContext context{{"vkneuro headless evolution"}};
 
     vkexp::SimulationState state;
-    state.controls.stepsPerGeneration = options.stepsPerGeneration;
+    // Unset means the scenario's own nominal, so a world that needs a longer
+    // trial than the usual one gets it without having to be remembered about.
+    // Naming --steps overrides it, including downwards.
+    state.controls.stepsPerGeneration =
+        options.stepsPerGeneration > 0
+            ? options.stepsPerGeneration
+            : vkexp::scenarioDefinition(options.scenario).nominalStepsPerGeneration;
     state.worlds.requestedAgentsPerWorld = options.agentsPerWorld;
     state.physics.beaconScenario = options.scenario;
     state.physics.worldShape = options.worldShape;
@@ -308,6 +390,12 @@ int run(const Options& options) {
     state.physics.swapDeliveryEnds = options.swapDeliveryEnds;
     state.physics.uniformBeaconColor = options.uniformBeaconColor;
     state.physics.blockedDoorPerGeneration = options.blockedDoorPerGeneration;
+    state.physics.gateLatchSeconds = options.gateLatchSeconds;
+    state.physics.puckBreakawayPushes = options.puckBreakawayPushes;
+    state.physics.puckRandomStart = options.puckRandomStart;
+    if (options.locomotion) {
+        vkexp::applyLocomotionPreset(state.physics, *options.locomotion);
+    }
     state.physics.fitness = options.fitness;
     if (options.beaconAngularSpeed) {
         state.physics.beaconAngularSpeed = *options.beaconAngularSpeed;
@@ -321,7 +409,7 @@ int run(const Options& options) {
     if (options.maximumSpeed) {
         state.physics.maximumSpeed = *options.maximumSpeed;
     }
-    state.physics.trailEnabled = options.trailEnabled;
+    state.physics.trailMode = options.trailMode;
     state.physics.neuronModel = options.neuronModel;
     if (options.trailDepositRate) {
         state.physics.trailDepositRate = *options.trailDepositRate;
@@ -411,7 +499,7 @@ int run(const Options& options) {
                   << "Ablations:  agent collisions "
                   << (state.physics.agentCollisionsEnabled ? "on" : "OFF") << ", agent light "
                   << (state.physics.agentLightEnabled ? "on" : "OFF") << ", trail "
-                  << (state.physics.trailEnabled ? "on" : "OFF") << ", beacon hue "
+                  << trailModeName(state.physics.trailMode) << ", beacon hue "
                   << (state.physics.uniformBeaconColor ? "ABLATED" : "on") << '\n'
                   << "Neurons:    " << neuronModelName(state.physics.neuronModel) << '\n';
         // Only when it is on, and only where it does something, so a default

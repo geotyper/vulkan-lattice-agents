@@ -21,6 +21,7 @@ struct vec2 {
 [[nodiscard]] inline float cos(const float value) { return std::cos(value); }
 [[nodiscard]] inline float sin(const float value) { return std::sin(value); }
 [[nodiscard]] inline float floor(const float value) { return std::floor(value); }
+[[nodiscard]] inline float sqrt(const float value) { return std::sqrt(value); }
 [[nodiscard]] inline float max(const float a, const float b) { return a > b ? a : b; }
 [[nodiscard]] inline float length(const vec2 value) {
     return std::sqrt(value.x * value.x + value.y * value.y);

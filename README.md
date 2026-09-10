@@ -23,7 +23,8 @@ replay by step count -- while every physical quantity is expressed per second.
   by default, with an all-agents mode);
 - 7 forward light receptors with RGB and luminance channels;
 - 8 full-body tactile sectors distinguishing walls from agents;
-- 3 ground antennae reading the RGB of a decaying trail field;
+- 3 ground antennae reading the RGB of a decaying trail field, switchable
+  between off, drawn-but-unsmelled and drawn-and-smelled;
 - `61 inputs -> 20 tanh neurons -> 8 outputs`;
 - every hidden neuron holds its own state and a time constant that is either
   evolved or recomputed from the inputs each step, so a memory is measured in
@@ -31,7 +32,8 @@ replay by step count -- while every physical quantity is expressed per second.
 - outputs control left/right motors, RGB emission, emission intensity, and two
   recurrent memory cells;
 - inertial movement with linear/angular drag and hard linear/angular speed
-  limits;
+  limits, with five named locomotion styles from a body that answers in two
+  steps to one that mostly glides;
 - selectable circular or square world in small (x1), medium (x1.5), and large
   (x3) sizes;
 - stationary per-trial beacons, alternating diagonal pairs, orbiting beacons,
@@ -69,6 +71,104 @@ controls four agents with the same weights but different initial conditions.
 Their scores are averaged before selection, which discourages solutions that
 only work from one spawn position or heading.
 
+## Locomotion
+
+How much the body carries is a slider, and now also a menu. `Locomotion` in the
+Physics panel picks one of five styles, and `--locomotion <name>` does the same
+from a command line:
+
+| Style | Key | To full speed | Coast | Turn coast |
+|---|---|---|---|---|
+| Robot | `robot` | 0.07 s | 3 cm, under a body | 10 deg |
+| Rover | `rover` | 0.14 s | 8 cm, two bodies | 21 deg |
+| Table robot | `default` | 0.39 s | 32 cm, seven bodies | 50 deg |
+| Glider | `glider` | 1.10 s | 66 cm, fifteen bodies | 138 deg |
+| Fish | `fish` | 2.05 s | 1.10 m, twenty-five bodies | 206 deg |
+
+`Table robot` is the simulation's own defaults, value for value -- selecting it
+is a return to the body every scenario was tuned against rather than an
+approximation of it, and a unit test pins that.
+
+**A style is four numbers, and never the fifth.** A preset sets thrust, turn
+acceleration and the two drags. It does not touch the two speed caps, so every
+style tops out at the same 0.55 m/s and (with one exception below) the same
+3 rad/s. What changes is how long the body takes to get there and how far it
+carries once the motors stop. That is what makes two runs at different styles
+comparable: the agent can ultimately do the same things either way, and the
+question the ladder asks is whether selection can control a body that answers
+slowly.
+
+**Why drag is the whole story.** The step applies it as `exp(-drag * dt)`, so
+`1/drag` is the response time constant, the coast after the motors cut is a
+decay with that same constant, and thrust only decides how much headroom there
+is over the speed the drag will hold. The ladder above is a factor of thirty in
+that one number -- 16.7/s down to 0.5/s -- which is why the drag sliders are
+now logarithmic and thirty times wider than they were. A linear slider over that
+range has no usable resolution at the end where the defaults sit.
+
+**And why it reads as "fish" rather than merely "slow".** Velocity is a free
+vector and thrust is applied along the heading, so a low drag also means
+sideslip: a turning body keeps going the way it was already going. At the Fish
+setting a turn changes where the agent is pointing long before it changes where
+the agent is going, and arriving anywhere means deciding well before being
+there. That is a memory task hiding inside a control task, which is the reason
+to have the ladder at all -- the reactive neuron model should lose ground at the
+heavy end, and if it does not, the world is not asking what it looks like it is
+asking.
+
+**The exception, which is a real quirk of the defaults.** Turn acceleration at
+5.0 rad/s^2 against an angular drag of 2.4/s holds 2.08 rad/s, which is below
+the 3 rad/s cap -- so at the default settings the `Maximum turn speed` slider
+does nothing at all. The window now says `inert` next to it whenever that is
+true, and the other four styles are chosen to reach their cap. The defaults were
+left alone rather than aligned, because changing them would move the baseline
+every measurement so far was taken against; the test asserts the quirk, so
+aligning them later fails loudly instead of passing quietly.
+
+The two lines under the menu are derived from the sliders, not from the table,
+so a hand-tuned body is described as honestly as a named one -- and a preset
+whose numbers are edited cannot keep advertising the behaviour it used to have.
+
+## The trail, and the control for it
+
+Whether the field exists and whether an agent can smell it are separate
+questions, and only the second one changes what the brain has to solve.
+`Trails` in the Physics panel has three settings, and `--trail off|visual|sensed`
+matches them:
+
+| Setting | Field kept and drawn | Antennae read it |
+|---|---|---|
+| Off | no | no |
+| Draw only | yes | no |
+| Draw and smell | yes | yes |
+
+**The middle one is the point.** It is the control for every claim this project
+makes about the trail: the marks are still on screen, agents still lay them, and
+the three ground antennae read a flat zero, so the nine trail inputs are dead
+weights rather than a channel. A behaviour that survives `Draw only` was never
+coming from the field, whatever the run looked like. It is also the simpler
+model to reach for when the trail is not what is being studied -- the marks stay
+useful for a person watching a replay without being part of what is evolving.
+
+`compute_smoke` asserts exactly that: the same marked cell under the same
+antenna, with the field present and deposited into, produces the same step as no
+field at all -- not merely a step that also happens not to turn.
+
+**The input vector keeps all 61 slots in every setting.** Removing the nine
+inputs outright was the other way to write this, and it would change the genome
+length: a population trained with trails could then not be loaded into a run
+without them, and two runs could not be compared at all. Nine dead weights cost
+one dot product per agent per step and buy exchangeability, which is the better
+trade here. What it means in practice is that a blind run still drifts those
+weights, so a genome moved from `Draw only` to `Draw and smell` starts with
+whatever random opinion drift left it -- not with nothing.
+
+**`Scent relay` has no other way home.** It is the one world whose objective is
+only reachable by following a trail, so running it blind is not an ablation but
+an impossibility, and its fitness curve looks like a hard task rather than an
+unreachable one. The scenario declares that it needs the trail and the window
+says so next to the setting, with a button to turn it back on.
+
 ## World and beacon scenarios
 
 | Control | Variants | Behaviour |
@@ -84,7 +184,8 @@ only work from one spawn position or heading.
 | Beacon scenario | Scent relay | The same collect-and-deliver cycle, but home emits no light and lays no trail: it can only be found by dead reckoning or by a path the agents themselves marked. |
 | Beacon scenario | Two doors | The same cycle across a wall with two gaps, one of which is a dead end. Which one swaps every trial -- or every generation, as an option -- and from the home side they are identical. Retuned after it went unsolved for 450 generations; see Two gaps for the measurement. |
 | Beacon scenario | Shuttle | Fetch and carry back, over and over until the trial ends, around a short wall that closes the straight line between the two beacons. |
-| Beacon scenario | Puck push | A round puck shared by every agent in a logical world, starting on one side of the centre line. Push it at least across the line, and at best into the lit disc in the middle whose radius is a slider. |
+| Beacon scenario | Puck push | A round puck shared by every agent in a logical world, starting on one side of the centre line. Push it toward the lit disc in the middle; the objective is a ladder of quarters along that journey. |
+| Beacon scenario | Gate and plate | A wall with one opening, shut by a gate that runs only while somebody stands on the plate in front of it. Press, cross, bring it back -- the gate has to be open both ways. How long it keeps running after the plate is let go is a slider, and at zero it cannot be done alone. |
 | Beacon scenario | Two gaps | The same repeated cycle across a wall with two ways through, neither a dead end, with an option to make the two ends trade places every other generation. |
 
 Changing the world size, shape, or beacon scenario resets the evolution because
@@ -403,14 +504,35 @@ counted deliveries, and this one counts distance. What a delivery is worth in
 *fitness* was deliberately held where it was, so a run before the change and a
 run after it are still comparable on the thing being selected for.
 
-**Why the push is a velocity and not an overlap.** The obvious model sums
-penetration depths and pushes the puck out of them. That cannot work here: the
-agent step resolves its own overlap first, so by the time the puck is integrated
-there is no penetration left to read. The push is taken from the approach speed
-along the contact normal instead -- which is what a push is -- and measured
-*relative to the puck*, so an agent cannot push something already outrunning it.
-That relative term is what bounds the puck's speed by the agents' own, and the
-smoke test asserts the bound rather than the formula.
+**Why the push is a pressure and not an impact.** Two models were tried. The
+obvious one sums penetration depths and pushes the puck out of them; that cannot
+work here, because the agent step resolves its own overlap first, so by the time
+the puck is integrated there is no penetration left to read.
+
+The second took the push from the *approach speed* along the contact normal,
+which is what an impact is. It worked, and it taught the wrong thing. With the
+friction floor low a single agent could run at the puck and knock it along, so
+the world was solved by charging it; with the floor raised the agents did gather
+around the puck -- and then stopped, because an agent already in contact has no
+approach speed left. Standing on the puck and leaning, which is exactly the
+behaviour the floor was meant to select for, registered as zero push. The world
+punished the thing it was asking for.
+
+The push is the agent's own motor drive projected on the contact normal instead:
+`drive * dot(heading, normal)`, clamped at zero. Drive is what the brain asked
+the wheels for, so an agent that has run out of room to accelerate still presses
+at full strength -- a tugboat against a hull, not a hammer. Contact is a
+geometric overlap test with a small skin, so leaning counts and passing by does
+not, and alignment makes pushing straight worth more than pushing at an angle.
+
+Three consequences follow. Pressure is dimensionless and per agent, so the
+friction floor below is literally a count of agents rather than a speed in metres
+per second. The sum is an acceleration rather than a velocity, so nothing in the
+formulation bounds the puck any more -- enough agents would keep feeding a puck
+they can no longer keep up with, and the world would be solved by launching it
+once, so the pass clamps the puck to the agents' own speed limit and the smoke
+test asserts the clamp. And a drag term, not the model, is what brings a released
+puck to rest.
 
 **Why the puck emits light.** The first version of this world did not learn at
 all, and the reason is worth keeping: the photoreceptors see beacons and other
@@ -457,8 +579,8 @@ motor effort, and it evolved accordingly.
 The fix is deliberately not "reward the agents pushing from the correct side".
 That hands over the answer, and this world exists to ask the question. It is to
 pay each agent for the work it actually did, which is a physical quantity rather
-than an opinion: the same approach speed `puck_step.comp` integrates, projected
-onto the direction the puck still has to travel. An agent wedged between the
+than an opinion: the same pressure `puck_step.comp` integrates, projected onto
+the direction the puck still has to travel. An agent wedged between the
 puck and the middle projects negative and earns nothing -- but nothing told it
 that side was wrong, only that its pushing does not move the puck where the puck
 has to go. Pushing at an angle pays less than pushing straight, so getting
@@ -485,6 +607,41 @@ also what makes the sharing sweep below meaningful rather than circular.
 a wider contact arc for several agents to push at once, and a larger thing to
 find. Both sliders -- `Puck radius` and `Target radius` -- take effect on reset.
 
+**Whether one agent is enough is a slider.** `--puck-breakaway` (and `Breakaway
+push`) is a friction floor on the puck, counted in agents leaning on it head-on:
+how hard the *whole world* has to press before it moves at all. One agent at full
+throttle, square to the contact normal, is exactly 1.0. Below one, a single
+agent solves the world alone, a group is only a convenience, and the question
+this world exists to ask -- can selection produce agents that push together -- is
+one it never puts. Above one, no single agent can start it however hard it tries.
+
+Not a mass, deliberately. Mass makes one agent slower, not powerless: the puck
+still creeps, the score still rises, and the population still learns to solve it
+alone. A floor is a threshold, which is what "two or more" means. It is
+subtracted from the push rather than switching it on and off, so a pair that
+barely clears it moves the puck slowly instead of the world flipping between
+nothing and everything -- selection needs an increment here for the same reason
+the journey is a fraction rather than a completion.
+
+Pushes are summed as vectors before the floor is measured, so two agents on
+opposite faces cancel and move nothing however hard they try, and two pushing at
+an angle add up to less than two. A threshold of 2.0 therefore asks for more than
+exactly two bodies: it asks for two pushing the same way.
+
+The work reward follows the puck rather than the pushing, because with a floor in
+the world a lone agent can lean on a stuck puck at full drive for a whole trial.
+Paying for that would teach exactly the futile pushing the floor exists to rule
+out, so the reward is scaled by whether the puck is actually moving.
+
+**Where the puck starts is an option.** By default it is on the arena's axis with
+the agents spawned on its side, so the first thing they do is reach it -- and
+every measurement so far was taken that way. `--puck-scatter` (and `Scatter the
+puck`) instead places it anywhere in a ring, a different place for every world
+and a different place each generation, so finding it is part of the task and no
+one layout can be memorised. The placement comes from the same hash the
+relocating home already uses, seeded by the world and the generation, so a
+replayed generation is the same generation.
+
 **This is the world the sharing option was built for.** `--fitness-sharing`
 blends a genome's score with its world's average, which is meant to make helping
 a neighbour pay -- and until now every world scored an individual's own
@@ -504,6 +661,101 @@ The puck is saved in world snapshots, unlike the trail field: the trail is
 derived and recovers in a few half-lives, the puck's position is the state of
 the experiment, and a resume that put it back at the start would read as a run
 that had lost ground it had not lost.
+
+## Gate and plate
+
+```
+              resource
+   +-----------------------------+
+   |              .              |
+   |#########  ###[]#############|   the wall, the gate in its opening
+   |                             |
+   |     (plate)                 |
+   |   o     o        o     o    |   everyone starts on this side
+   +-----------------------------+
+```
+
+Three legs in a fixed order across two places. Press the plate, cross to the
+resource, bring it back to the plate. Standing on the plate scores nothing.
+Nothing about "press, then go" can be read off the current sensor values, so a
+network that maps light to motors cannot do it -- "I have already opened it" has
+to be held. That is the same claim the two-door world makes, except that here it
+is held for seconds rather than latched once, and here somebody else can hold it
+for you.
+
+**Why it is a round trip and not a crossing.** Getting through was the first
+version, and it is half a task: an agent that is through is done, the plate
+behind it stops mattering to it, and the door being held is worth something
+exactly once. Coming back makes the gate a thing that has to be open *twice*, so
+whoever is holding it is worth something for as long as anybody is still out.
+
+The plate is also home, which is what closes the cycle without a fourth
+landmark: pressing it on the way back is the same act as pressing it on the way
+out, and re-opens the gate for the next trip. Both reasons to head for the plate
+-- "I have to open it" and "I am coming home" -- point at the same place, so the
+world needs only its two beacons.
+
+**This world wants about 1800 steps per generation**, twice the default. A leg is
+2.1 m and a round trip about 840 steps at the speed limit, so the nominal two
+trips do not fit in 900 -- the reported ratio would flatten near half with
+nothing looking wrong. The scenario declares that number rather than leaving it
+in a comment: the window says so beside the trial-length slider and offers a
+button, and `vkneuro_headless` uses it when `--steps` is not given. The unit test
+asserts both directions of it, because the geometry is what would quietly break
+it.
+
+**The latch is the difficulty, and it is one number.** `--gate-latch` (and the
+`Gate latch (s)` slider) says how long the gate keeps running after the plate is
+released.
+
+- **Above zero** one agent presses and runs. Nothing has to be shared and no
+  cooperation is needed; this is the end to start at, and the end that says
+  whether the two-leg structure is learnable at all.
+- **At zero** the gate shuts the instant the plate is let go. Only the far side
+  scores, so somebody has to stay behind for nothing. That is the condition
+  group fitness sharing exists for, reached by moving a slider rather than by
+  adding a scenario.
+
+**Why several agents in one arena is the point rather than a problem.** With a
+dozen agents wandering, somebody stands on the plate by accident about an eighth
+of the time, and those accidents are the world's bootstrap: the first crossings
+happen because somebody happened to be standing in the right place. What
+selection does with that is the question. At a positive latch it can learn to
+press deliberately and go; at zero it has to keep somebody there, and the agent
+that stays cannot be paid for it out of its own score.
+
+**The reported number is round trips against the two a trial has room for.**
+Uncapped in the score and capped in the report, the way every repeating world
+here does it, so a quicker agent still gains from the extra trips. Lingering on
+either end counts once: pressing the plate is positional and happens by standing
+there, so only a carrying agent closes a trip. At a latch of zero the agent
+holding the door completes none of its own, and that missing share is the cost of
+the door being held.
+
+**Where it is unlike the puck.** The gate is not a body agents move; it is a
+fact about the room, computed fresh every step from where everybody is standing.
+There is no gate buffer, no gate pass and no shared record to keep in step: the
+spatial grid is already a per-world index of every agent, so each agent scans
+the cells over the plate and reaches the same answer as its neighbours. They
+cannot disagree because they are not communicating, they are recomputing. What
+does have to be carried is the latch countdown, and each agent carries its own
+copy in the slot this world does not use for a base beacon.
+
+**What is on screen.** The plate is drawn as a disc at the radius the press test
+actually reads, and lights up while the gate is running. It is a beacon as well,
+because agents have to be able to find it -- but a beacon is drawn at the one
+fixed visual radius every beacon uses, six centimetres against the plate's
+twenty, so left at that the picture showed a dot where the rule tests a disc and
+standing beside the dot looked like standing on the plate.
+
+**What the assertions cover.** That the plate is not in the doorway, so the two
+legs are two places. That a shut gate leaves the resource invisible from the
+side the agents start on, and an open one shows it from 19 per cent of that side
+-- the same figure as the two-gap wall that was learned, measured by the same
+sweep. That the latch reloads on a press, runs down on release, stops at zero,
+and at a latch of zero is open exactly during the step the plate is held. A gate
+leaf that never parks and a latch that never runs down each fail a different one
+of them.
 
 ## Group fitness sharing
 

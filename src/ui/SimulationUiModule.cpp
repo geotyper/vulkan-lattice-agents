@@ -1,6 +1,7 @@
 #include "vkexp/ui/SimulationUiModule.hpp"
 
 #include "vkexp/neuro/NeuralNetwork.hpp"
+#include "vkexp/simulation/Locomotion.hpp"
 #include "vkexp/profiling/Profiler.hpp"
 #include "vkexp/ui/ImGuiModule.hpp"
 #include "vkexp/worlds/WorldScenario.hpp"
@@ -99,6 +100,23 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                          ImGuiSliderFlags_Logarithmic)) {
         state_.controls.stepsPerGeneration = static_cast<std::uint32_t>(generationSteps);
         state_.controls.resetRequested = true;
+    }
+    // A world that needs a longer trial than the one it is being run in reports a
+    // completion ratio that cannot reach one, and nothing about the picture says
+    // so. The scenario carries the number it needs; this is where it gets said.
+    const std::uint32_t nominalSteps =
+        scenarioDefinition(state_.physics.beaconScenario).nominalStepsPerGeneration;
+    if (state_.controls.stepsPerGeneration < nominalSteps) {
+        ImGui::TextColored(ImVec4(1.0F, 0.75F, 0.25F, 1.0F),
+                           "%s needs %u steps to complete its objectives",
+                           scenarioDefinition(state_.physics.beaconScenario).name, nominalSteps);
+        ImGui::SameLine();
+        char label[32];
+        std::snprintf(label, sizeof(label), "Use %u", nominalSteps);
+        if (ImGui::SmallButton(label)) {
+            state_.controls.stepsPerGeneration = nominalSteps;
+            state_.controls.resetRequested = true;
+        }
     }
     // The step stays the control, because a replay is reproduced by step count.
     // Seconds are shown beside it so arena size, speed and trial length can be
@@ -237,10 +255,45 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                                "%.2f of arena")) {
             state_.controls.resetRequested = true;
         }
-        ImGui::SetItemTooltip("The disc in the middle the puck has to end up in. Reaching the "
-                              "halfway line already counts for half; this is what the other half "
-                              "costs. Widen it to see whether the task is being solved at all, "
-                              "narrow it to ask for the puck to be placed rather than shoved.");
+        ImGui::SetItemTooltip("The disc in the middle the puck has to end up in, and the end of "
+                              "the journey the rungs are quarters of. Widen it to see whether the "
+                              "task is being solved at all, narrow it to ask for the puck to be "
+                              "placed rather than shoved.");
+        if (ImGui::SliderFloat("Breakaway push", &state_.physics.puckBreakawayPushes, 0.0F, 6.0F,
+                               "%.2f agents")) {
+            state_.controls.resetRequested = true;
+        }
+        ImGui::SetItemTooltip("How hard the whole world has to push before the puck moves at all, "
+                              "counted in agents leaning on it head-on at full throttle. Below one, a single agent "
+                              "solves the world alone and a group is only a convenience. Above "
+                              "one it cannot start the puck however hard it tries, and two have "
+                              "to be touching at the same time and pushing the same way -- so "
+                              "this is what turns the world from one that permits cooperation "
+                              "into one that requires it. Pushes from opposite sides cancel "
+                              "before it is measured, and two agents pushing at an angle add up "
+                              "to less than two, so a threshold of 2.0 asks for more than exactly "
+                              "two bodies.");
+        if (ImGui::Checkbox("Scatter the puck", &state_.physics.puckRandomStart)) {
+            state_.controls.resetRequested = true;
+        }
+        ImGui::SetItemTooltip("Off, the puck starts on the arena's axis with the agents spawned "
+                              "on its side, so the first thing they do is reach it. On, it is "
+                              "placed anywhere in a ring each generation and the agents start "
+                              "where they always do, so finding it is part of the task and no "
+                              "one layout can be memorised. Off is what every measurement so far "
+                              "was taken on.");
+    }
+    if (scenario.tunables.gateLatch) {
+        if (ImGui::SliderFloat("Gate latch (s)", &state_.physics.gateLatchSeconds, 0.0F, 8.0F,
+                               "%.1f s")) {
+            state_.controls.resetRequested = true;
+        }
+        ImGui::SetItemTooltip("How long the gate keeps running after the plate is released, and "
+                              "the whole difficulty of this world in one number. Above zero one "
+                              "agent presses and runs, and nothing has to be shared. At zero the "
+                              "gate shuts the instant the plate is let go: only the far side "
+                              "scores, so somebody has to stay behind for nothing, and whether "
+                              "that can be selected for is what group fitness sharing is about.");
     }
     if (scenario.tunables.blockedDoorPerGeneration) {
         if (ImGui::Checkbox("Dead end changes by generation",
@@ -306,13 +359,77 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::Text("Body %.1f cm across, arena %.2f m wide",
                 static_cast<double>(units::metresToCentimetres(agentBodyRadius * 2.0F)),
                 static_cast<double>(state_.physics.worldRadius * 2.0F));
-    ImGui::SliderFloat("Thrust (m/s2)", &state_.physics.thrust, 0.2F, 4.0F);
-    ImGui::SliderFloat("Turn (rad/s2)", &state_.physics.turnAcceleration, 0.5F, 10.0F);
-    ImGui::SliderFloat("Linear drag (1/s)", &state_.physics.linearDrag, 0.1F, 5.0F);
-    ImGui::SliderFloat("Angular drag (1/s)", &state_.physics.angularDrag, 0.1F, 6.0F);
+    // Locomotion presets. The four sliders below are still the truth and still
+    // editable one at a time; this only names five points along the one axis
+    // that separates a body you command from a body you steer. "Custom" is what
+    // the combo says once a slider has been dragged off a preset, rather than
+    // the combo keeping a label the numbers no longer support.
+    const LocomotionPreset* const current = currentLocomotionPreset(state_.physics);
+    std::array<const char*, locomotionStyleCount + 1> locomotionNames{};
+    for (std::size_t index = 0; index < locomotionStyleCount; ++index) {
+        locomotionNames[index] = locomotionPresets[index].name;
+    }
+    locomotionNames[locomotionStyleCount] = "Custom";
+    int locomotion = current != nullptr ? static_cast<int>(current->style)
+                                        : static_cast<int>(locomotionStyleCount);
+    if (ImGui::Combo("Locomotion", &locomotion, locomotionNames.data(),
+                     static_cast<int>(locomotionNames.size()))) {
+        if (locomotion < static_cast<int>(locomotionStyleCount)) {
+            applyLocomotionPreset(state_.physics,
+                                  static_cast<LocomotionStyle>(static_cast<std::uint32_t>(locomotion)));
+        }
+    }
+    ImGui::SetItemTooltip(
+        "How much the body carries. A preset moves the four sliders below and "
+        "nothing else -- in particular it never touches the two speed caps, so "
+        "every style tops out at the same speed and the same turn rate, and the "
+        "only thing that changes is how long it takes to get there and how far "
+        "it goes after the motors stop. %s",
+        current != nullptr ? current->description
+                           : "The sliders are not on any preset at the moment.");
+    // What those four numbers come to, in units that can be judged by eye.
+    // Derived from the sliders and not from the preset, so a hand-tuned body is
+    // described as honestly as a named one.
+    const LocomotionResponse response = locomotionResponse(state_.physics);
+    ImGui::TextDisabled("%.2f m/s in %.2f s, coasts %.1f cm (%.0f bodies)",
+                        static_cast<double>(response.topSpeed),
+                        static_cast<double>(response.timeToTopSpeed),
+                        static_cast<double>(units::metresToCentimetres(response.coastDistance)),
+                        static_cast<double>(response.coastDistance / agentBodyDiameter));
+    ImGui::TextDisabled("%.2f rad/s in %.2f s, spins on %.0f deg after%s",
+                        static_cast<double>(response.topTurnRate),
+                        static_cast<double>(response.timeToTopTurnRate),
+                        static_cast<double>(response.spinCoast * 180.0F / 3.14159265F),
+                        response.turnCapBinds ? "" : " -- drag caps the turn, not the slider");
+    ImGui::SliderFloat("Thrust (m/s2)", &state_.physics.thrust, 0.2F, 20.0F, "%.2f",
+                       ImGuiSliderFlags_Logarithmic);
+    ImGui::SliderFloat("Turn (rad/s2)", &state_.physics.turnAcceleration, 0.5F, 80.0F, "%.2f",
+                       ImGuiSliderFlags_Logarithmic);
+    // Logarithmic, and far wider than they were: the whole ladder from a body
+    // that answers in one step to one that mostly glides lives in these two,
+    // and it spans a factor of thirty. A linear slider over that range has no
+    // usable resolution at the end where the defaults sit.
+    ImGui::SliderFloat("Linear drag (1/s)", &state_.physics.linearDrag, 0.1F, 20.0F, "%.2f",
+                       ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("Response time constant %.0f ms; the step applies it as "
+                          "exp(-drag * dt), so this is also the coast.",
+                          static_cast<double>(1000.0F / std::max(state_.physics.linearDrag, 1.0e-3F)));
+    ImGui::SliderFloat("Angular drag (1/s)", &state_.physics.angularDrag, 0.1F, 20.0F, "%.2f",
+                       ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("Response time constant %.0f ms.",
+                          static_cast<double>(1000.0F /
+                                              std::max(state_.physics.angularDrag, 1.0e-3F)));
     ImGui::SliderFloat("Maximum speed (m/s)", &state_.physics.maximumSpeed, 0.10F, 1.50F);
     ImGui::SliderFloat("Maximum turn speed (rad/s)", &state_.physics.maximumAngularSpeed, 0.25F,
                        8.0F);
+    if (!response.turnCapBinds) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4{0.95F, 0.75F, 0.25F, 1.0F}, "inert");
+        ImGui::SetItemTooltip("Turn acceleration against angular drag holds %.2f rad/s, below "
+                              "this cap, so the cap never comes into play. Raise Turn (rad/s2) "
+                              "or lower Angular drag to make it mean something.",
+                              static_cast<double>(response.topTurnRate));
+    }
     ImGui::SliderFloat("Collision restitution", &state_.physics.collisionRestitution, 0.0F, 1.0F);
     ImGui::SliderFloat("Contact stiffness (1/s)", &state_.physics.contactStiffness, 5.0F, 300.0F);
     ImGui::SetItemTooltip(
@@ -323,9 +440,41 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                        "%.2f");
     ImGui::Checkbox("Agent collisions", &state_.physics.agentCollisionsEnabled);
     ImGui::SeparatorText("Trail field");
-    if (ImGui::Checkbox("Leave trails", &state_.physics.trailEnabled)) {
+    // Three settings, not a checkbox: whether the field exists and whether an
+    // agent can smell it are different questions, and the middle one is the
+    // control. "Draw only" keeps the marks on screen and feeds the three ground
+    // antennae a flat zero, so a behaviour that survives it was never coming
+    // from the trail.
+    int trailMode = static_cast<int>(state_.physics.trailMode);
+    constexpr const char* trailModes[] = {"Off", "Draw only", "Draw and smell"};
+    if (ImGui::Combo("Trails", &trailMode, trailModes, static_cast<int>(trailModeCount))) {
+        state_.physics.trailMode = static_cast<TrailMode>(static_cast<std::uint32_t>(trailMode));
         state_.controls.resetRequested = true;
     }
+    ImGui::SetItemTooltip(
+        "Off: no field at all. Draw only: the field is kept, deposited into and "
+        "drawn, but the nine trail inputs read zero -- the simpler brain, and "
+        "the control for every claim about the trail. Draw and smell: the "
+        "antennae read it. The input vector keeps all 61 slots either way, so a "
+        "population trained under one setting still loads under another.");
+    if (state_.physics.trailMode == TrailMode::Visual) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4{0.95F, 0.75F, 0.25F, 1.0F}, "blind");
+    }
+    // A world whose objective is only reachable by following a trail, run with
+    // the antennae switched off, is a world with no route to its objective --
+    // and the fitness curve looks like a hard task rather than an impossible
+    // one. The scenario says it needs the trail; this is where it gets said.
+    if (scenario.tunables.needsTrail && !trailSensed(state_.physics.trailMode)) {
+        ImGui::TextColored(ImVec4{1.0F, 0.75F, 0.25F, 1.0F}, "%s has no other way home",
+                           scenario.name);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Smell it")) {
+            state_.physics.trailMode = TrailMode::Sensed;
+            state_.controls.resetRequested = true;
+        }
+    }
+    ImGui::BeginDisabled(!trailFieldActive(state_.physics.trailMode));
     ImGui::SliderFloat("Trail deposit / s", &state_.physics.trailDepositRate, 0.0F, 24.0F, "%.2f");
     ImGui::SliderFloat("Beacon deposit / s", &state_.physics.beaconTrailDepositRate, 0.0F, 64.0F,
                        "%.2f");
@@ -372,6 +521,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
         static_cast<double>(units::metresToCentimetres(state_.physics.trailCellSize)), trailWidth,
         trailWidth, fieldBytes / (1024.0 * 1024.0));
     ImGui::TextDisabled("decay traffic %.0f MB per step", 2.0 * fieldBytes / (1024.0 * 1024.0));
+    ImGui::EndDisabled();
     // A snapshot is the fast way back to a run worth looking at, so it sits with
     // the run controls rather than in an export menu. Everything except the trail
     // field is stored; the field rebuilds itself within a couple of half-lives.
@@ -416,7 +566,11 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
         state_.controls.genomePath = genomePath.data();
     }
     ImGui::BeginDisabled(state_.controls.genomePath.empty());
-    if (ImGui::Button("Save champion")) {
+    ImGui::Checkbox("Whole population", &state_.controls.saveWholePopulation);
+    ImGui::SetItemTooltip("Off, the button writes the best genome alone -- a small file to load "
+                          "back and watch. On, it writes every genome, which is what a run is "
+                          "resumed from without carrying the agents and the world with it.");
+    if (ImGui::Button(state_.controls.saveWholePopulation ? "Save population" : "Save champion")) {
         state_.controls.saveGenomesRequested = true;
     }
     ImGui::SetItemTooltip("Writes the best genome of the last evaluated generation to a .vkng "

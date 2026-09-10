@@ -19,6 +19,30 @@ namespace vkexp {
 // for the rate it runs at; declared in BrainKernel.inl so the shader gets the
 // same numbers. See there for what each one is and why Gated contains the other
 // two as special cases.
+// What the trail field is for. Three settings and not two: "the field exists"
+// and "an agent can smell it" are separate claims, and only the second changes
+// what the brain has to solve. Declared in TrailKernel.inl so the shader reads
+// the same numbers; see there for why the input vector keeps its width in all
+// three.
+enum class TrailMode : std::uint32_t {
+    Off = trail::kernel::TrailModeOff,
+    Visual = trail::kernel::TrailModeVisual,
+    Sensed = trail::kernel::TrailModeSensed,
+};
+
+inline constexpr std::size_t trailModeCount = 3;
+
+// Whether a field has to be allocated, faded and deposited into at all.
+[[nodiscard]] constexpr bool trailFieldActive(const TrailMode mode) {
+    return mode != TrailMode::Off;
+}
+
+// Whether the three ground antennae read it. When false they read a flat zero,
+// so the nine trail inputs are dead weights rather than a channel.
+[[nodiscard]] constexpr bool trailSensed(const TrailMode mode) {
+    return mode == TrailMode::Sensed;
+}
+
 enum class NeuronModel : std::uint32_t {
     Reactive = neuro::kernel::NeuronModelReactive,
     TimeConstant = neuro::kernel::NeuronModelTimeConstant,
@@ -49,9 +73,10 @@ enum class BeaconScenario : std::uint32_t {
     Shuttle = 7,
     TwoGaps = 8,
     PuckPush = 9,
+    GatePlate = 10,
 };
 
-inline constexpr std::size_t beaconScenarioCount = 10;
+inline constexpr std::size_t beaconScenarioCount = 11;
 
 // Body radius in metres: a 4.4 cm disc, roughly an e-puck-class table robot.
 // Stored per agent in `pose.w`, so a scenario may vary it; this is the spawn
@@ -348,6 +373,28 @@ struct SimulationStep {
     // thing to find -- so it is the first knob to reach for when the world is
     // not being learned at all.
     float puckRadiusRatio{puck::kernel::PuckRadiusRatio};
+    // How hard the whole world has to press before the puck moves at all, counted
+    // in agents leaning on it head-on at full drive (one such agent is exactly
+    // 1.0). Below one, a single agent solves the world
+    // alone and cooperation is never asked for; above one it cannot start the
+    // puck however hard it tries, and two have to be in contact at once and
+    // pushing the same way. This is the knob that turns the puck world from one
+    // that permits a group into one that requires it.
+    float puckBreakawayPushes{puck::kernel::PuckBreakawayPushes};
+    // Where the puck is placed. Off, it starts on the arena's axis with the
+    // agents spawned on its side, so the first thing they do is reach it. On, it
+    // is scattered anywhere in a ring and the agents start where the driver puts
+    // them, so finding it is part of the task and the journey is a different
+    // length every generation. An option and not the default: the axis version
+    // is the one every measurement so far was taken on.
+    bool puckRandomStart{false};
+    // Gate world: how long the gate keeps running after the plate is released.
+    // This is the difficulty of the world in one number. Above zero one agent
+    // presses and runs, and nothing has to be shared; at zero the gate shuts the
+    // instant the plate is let go, only the far side scores, and somebody has to
+    // stay behind for nothing -- which is the condition group fitness sharing
+    // exists for, reached by moving a slider rather than by adding a scenario.
+    float gateLatchSeconds{4.0F}; // s
     // Trail field. The deposit is per second and the lifetime is a half-life in
     // seconds, so neither becomes a function of the step rate.
     // Deposit rates come from what a single pass has to leave behind, not from a
@@ -367,7 +414,7 @@ struct SimulationStep {
     // diameter, so a full cell is never wider than whatever left the mark.
     float trailRenderWidth{1.0F};
     float trailCellSize{trailCellSizeForBodyFraction(trailCellFractionCoarsest)};
-    bool trailEnabled{true};
+    TrailMode trailMode{TrailMode::Sensed};
     FitnessWeights fitness{};
     std::uint32_t beaconMotionSeed{};
     WorldShape worldShape{WorldShape::Circle};
@@ -487,7 +534,7 @@ struct alignas(16) GpuStepParameters {
     float beaconTrailDeposit{};
     std::uint32_t trailWidth{};
     std::uint32_t trailCellsPerWorld{};
-    std::uint32_t trailEnabled{};
+    std::uint32_t trailMode{};
     std::uint32_t agentsPerWorld{}; // lets one agent per world deposit the beacon
     GpuFitnessWeights fitness;
     ScenarioParameterBlock scenario;

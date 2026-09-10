@@ -53,7 +53,7 @@ struct StepParameters {
     float beaconTrailDeposit;
     uint trailWidth;
     uint trailCellsPerWorld;
-    uint trailEnabled;
+    uint trailMode;
     uint agentsPerWorld;
     FitnessWeights fitness;
     ScenarioParameters scenario;

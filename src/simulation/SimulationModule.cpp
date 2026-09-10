@@ -66,12 +66,13 @@ void SimulationModule::onUpdate(AppContext& context, const FrameInfo&) {
             // The first entry: evolve() writes the ranked survivors to the front
             // of the next population, champion first, which is the same genome
             // the headless runner's --save-champion writes.
+            const std::size_t saved = state_.controls.saveWholePopulation ? population.size() : 1;
             saveGenomeArchive(
-                state_.controls.genomePath, population.first(1),
+                state_.controls.genomePath, population.first(saved),
                 genomeArchiveMetadata(state_, driver_,
                                       scenarioDefinition(state_.physics.beaconScenario).brain));
             state_.controls.snapshotStatus =
-                "Saved the champion of generation " +
+                "Saved " + std::to_string(saved) + " genome(s) from generation " +
                 std::to_string(driver_.evolution().generation()) + " to " +
                 state_.controls.genomePath;
         } catch (const std::exception& error) {

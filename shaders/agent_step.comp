@@ -67,15 +67,18 @@ float nearestBeaconDistance(Agent agent, vec2 position) {
                                   params.worldRadius, params.beaconCount, params.scenario);
 }
 
+// Above the step hooks, because one of them reads the grid: the gate world has
+// to answer "is anybody standing on the plate", which is a reduction over a
+// world and the grid is the only per-world index there is.
+ivec2 gridCoordinate(vec2 position) {
+    return clamp(ivec2(floor((position + vec2(params.worldRadius)) / params.gridCellSize)),
+                 ivec2(0), ivec2(int(params.gridWidth) - 1));
+}
+
 #include "worlds/scenario_steps.glsl"
 
 float rangeFalloff(float distanceToLight) {
     return brainRangeFalloff(distanceToLight, params.lightSensorRange);
-}
-
-ivec2 gridCoordinate(vec2 position) {
-    return clamp(ivec2(floor((position + vec2(params.worldRadius)) / params.gridCellSize)),
-                 ivec2(0), ivec2(int(params.gridWidth) - 1));
 }
 
 void recordTouch(inout Agent agent, uint sector, float strength, bool wall) {
@@ -261,7 +264,7 @@ void main() {
             trailCellIndex(tip, params.worldRadius, params.trailCellSize, params.trailWidth);
         for (uint channel = 0u; channel < BrainAntennaChannels; ++channel) {
             const float deposit =
-                params.trailEnabled == 0u
+                !trailSensed(params.trailMode)
                     ? 0.0
                     : float(trailValues[trailValueIndex(world, params.trailCellsPerWorld, cell,
                                                         channel)]) /
@@ -381,6 +384,12 @@ void main() {
     // tactile channel: to the network a thing you cannot walk through is a thing
     // you cannot walk through, whether or not it moves when you lean on it.
     if (params.puckEnabled != 0u) {
+        // What this agent is asking its motors for, normalised, for the puck
+        // pass to read as a pressure. Published here rather than recomputed
+        // there because the pass sees the agent record and not the brain, and
+        // guarded by the puck flag rather than by a scenario number: internal.x
+        // is the cargo slot in the delivery worlds, and no world has both.
+        agent.internal.x = clamp(drive / max(params.thrust, 1.0e-4), 0.0, 1.0);
         const uint world = uint(max(agent.penalties.w, 0.0) + 0.5);
         const Puck puck = pucks[world];
         // Mirrored onto the agent so the fitness and the progress shaping, which
