@@ -136,6 +136,7 @@ void spawn(AgentState& agent, const SimulationStep& settings) {
     // approach against a puck the agent believes is already moving.
     agent.target.x = 0.0F;
     agent.target.y = 0.0F;
+    agent.internal.x = 0.0F; // no drive published yet
 }
 
 // floats0 = {target radius ratio, puck radius ratio, breakaway pushes, unused}.

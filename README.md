@@ -404,14 +404,36 @@ counted deliveries, and this one counts distance. What a delivery is worth in
 *fitness* was deliberately held where it was, so a run before the change and a
 run after it are still comparable on the thing being selected for.
 
-**Why the push is a velocity and not an overlap.** The obvious model sums
-penetration depths and pushes the puck out of them. That cannot work here: the
-agent step resolves its own overlap first, so by the time the puck is integrated
-there is no penetration left to read. The push is taken from the approach speed
-along the contact normal instead -- which is what a push is -- and measured
-*relative to the puck*, so an agent cannot push something already outrunning it.
-That relative term is what bounds the puck's speed by the agents' own, and the
-smoke test asserts the bound rather than the formula.
+**Why the push is a pressure and not an impact.** Two models were tried. The
+obvious one sums penetration depths and pushes the puck out of them; that cannot
+work here, because the agent step resolves its own overlap first, so by the time
+the puck is integrated there is no penetration left to read.
+
+The second took the push from the *approach speed* along the contact normal,
+which is what an impact is. It worked, and it taught the wrong thing. With the
+friction floor low a single agent could run at the puck and knock it along, so
+the world was solved by charging it; with the floor raised the agents did gather
+around the puck -- and then stopped, because an agent already in contact has no
+approach speed left. Standing on the puck and leaning, which is exactly the
+behaviour the floor was meant to select for, registered as zero push. The world
+punished the thing it was asking for.
+
+The push is the agent's own motor drive projected on the contact normal instead:
+`drive * dot(heading, normal)`, clamped at zero. Drive is what the brain asked
+the wheels for, so an agent that has run out of room to accelerate still presses
+at full strength -- a tugboat against a hull, not a hammer. Contact is a
+geometric overlap test with a small skin, so leaning counts and passing by does
+not, and alignment makes pushing straight worth more than pushing at an angle.
+
+Three consequences follow. Pressure is dimensionless and per agent, so the
+friction floor below is literally a count of agents rather than a speed in metres
+per second. The sum is an acceleration rather than a velocity, so nothing in the
+formulation bounds the puck any more -- enough agents would keep feeding a puck
+they can no longer keep up with, and the world would be solved by launching it
+once, so the pass clamps the puck to the agents' own speed limit and the smoke
+test asserts the clamp. And a drag term, not the model, is what brings a released
+puck to rest.
+
 
 **Why the puck emits light.** The first version of this world did not learn at
 all, and the reason is worth keeping: the photoreceptors see beacons and other
@@ -458,8 +480,8 @@ motor effort, and it evolved accordingly.
 The fix is deliberately not "reward the agents pushing from the correct side".
 That hands over the answer, and this world exists to ask the question. It is to
 pay each agent for the work it actually did, which is a physical quantity rather
-than an opinion: the same approach speed `puck_step.comp` integrates, projected
-onto the direction the puck still has to travel. An agent wedged between the
+than an opinion: the same pressure `puck_step.comp` integrates, projected onto
+the direction the puck still has to travel. An agent wedged between the
 puck and the middle projects negative and earns nothing -- but nothing told it
 that side was wrong, only that its pushing does not move the puck where the puck
 has to go. Pushing at an angle pays less than pushing straight, so getting
@@ -487,8 +509,9 @@ a wider contact arc for several agents to push at once, and a larger thing to
 find. Both sliders -- `Puck radius` and `Target radius` -- take effect on reset.
 
 **Whether one agent is enough is a slider.** `--puck-breakaway` (and `Breakaway
-push`) is a friction floor on the puck, counted in agents at the speed limit: how
-hard the *whole world* has to push before it moves at all. Below one, a single
+push`) is a friction floor on the puck, counted in agents leaning on it head-on:
+how hard the *whole world* has to press before it moves at all. One agent at full
+throttle, square to the contact normal, is exactly 1.0. Below one, a single
 agent solves the world alone, a group is only a convenience, and the question
 this world exists to ask -- can selection produce agents that push together -- is
 one it never puts. Above one, no single agent can start it however hard it tries.
@@ -507,7 +530,7 @@ an angle add up to less than two. A threshold of 2.0 therefore asks for more tha
 exactly two bodies: it asks for two pushing the same way.
 
 The work reward follows the puck rather than the pushing, because with a floor in
-the world a lone agent can lean on a stuck puck at full speed for a whole trial.
+the world a lone agent can lean on a stuck puck at full drive for a whole trial.
 Paying for that would teach exactly the futile pushing the floor exists to rule
 out, so the reward is scaled by whether the puck is actually moving.
 

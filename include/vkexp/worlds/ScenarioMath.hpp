@@ -120,15 +120,15 @@ inline void rewardPuckProximity(AgentState& agent, const SimulationStep& setting
 // and is therefore the same number for all twelve agents sharing it; this one
 // separates them, so selection can tell a pusher from a passenger.
 //
-// The puck's velocity rides on the agent in target.xy for the same reason its
-// position rides in penalties.yz: the hook sees one agent and the puck is world
-// state. Both are written by the agent step, before this runs.
+// The pressure is the agent's own -- its forward command in internal.x, aimed by
+// its heading -- so this reads nothing about the puck but where it is and how
+// fast it is going, both mirrored onto the agent by the step before this runs.
 //
 // Mirrored by puckPushScenarioAfterStep in shaders/worlds/steps/puck_push.glsl.
 inline void rewardPuckWork(AgentState& agent, const SimulationStep& settings) {
     const float contribution = puck::kernel::puckPushContribution(
-        {agent.pose.x, agent.pose.y}, {agent.motion.x, agent.motion.y}, agent.pose.w,
-        {agent.penalties.y, agent.penalties.z}, {agent.target.x, agent.target.y},
+        {agent.pose.x, agent.pose.y}, {std::cos(agent.pose.z), std::sin(agent.pose.z)},
+        agent.internal.x, agent.pose.w, {agent.penalties.y, agent.penalties.z},
         puck::kernel::puckRadius(settings.worldRadius, settings.puckRadiusRatio));
     // Scaled by whether the puck is actually moving. With a friction floor in
     // the world a lone agent can lean on a stuck puck at full speed all trial,

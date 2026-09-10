@@ -384,6 +384,12 @@ void main() {
     // tactile channel: to the network a thing you cannot walk through is a thing
     // you cannot walk through, whether or not it moves when you lean on it.
     if (params.puckEnabled != 0u) {
+        // What this agent is asking its motors for, normalised, for the puck
+        // pass to read as a pressure. Published here rather than recomputed
+        // there because the pass sees the agent record and not the brain, and
+        // guarded by the puck flag rather than by a scenario number: internal.x
+        // is the cargo slot in the delivery worlds, and no world has both.
+        agent.internal.x = clamp(drive / max(params.thrust, 1.0e-4), 0.0, 1.0);
         const uint world = uint(max(agent.penalties.w, 0.0) + 0.5);
         const Puck puck = pucks[world];
         // Mirrored onto the agent so the fitness and the progress shaping, which

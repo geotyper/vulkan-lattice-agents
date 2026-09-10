@@ -1063,7 +1063,6 @@ void testNeuronTimeConstants() {
     vkexp::neuro::Weights weights{};
     constexpr auto inputCount = static_cast<kernel::uint>(vkexp::neuro::Topology::inputCount);
     constexpr auto hiddenCount = static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenCount);
-    constexpr auto outputCount = static_cast<kernel::uint>(vkexp::neuro::Topology::outputCount);
     weights[kernel::brainHiddenWeightIndex(0u, inputCount, 0u, 0u)] = 3.0F;
     weights[kernel::brainOutputWeightIndex(0u, inputCount, hiddenCount, 0u, 0u)] = 3.0F;
     vkexp::neuro::Inputs inputs{};
@@ -1950,94 +1949,109 @@ void testPuckPushCredit() {
     // A puck on the axis, above the middle, so "toward the middle" is straight
     // down and the two sides of it are unambiguous.
     const puck::vec2 puckAt{0.0F, 0.6F};
-    const puck::vec2 still{0.0F, 0.0F};
-    const float speed = settings.maximumSpeed;
 
-    // Behind it, pushing down: the whole approach is useful.
-    const float behind = puck::puckPushContribution({0.0F, puckAt.y + contact}, {0.0F, -speed},
-                                                    vkexp::agentBodyRadius, puckAt, still, radius);
-    check(closeTo(behind, speed), "An agent pushing straight toward the middle is paid its approach");
+    // Behind it, driving straight at the middle: the whole press is useful.
+    const puck::vec2 down{0.0F, -1.0F};
+    const puck::vec2 up{0.0F, 1.0F};
+    const float behind = puck::puckPushContribution({0.0F, puckAt.y + contact}, down, 1.0F,
+                                                    vkexp::agentBodyRadius, puckAt, radius);
+    check(closeTo(behind, 1.0F), "An agent driving straight toward the middle presses a whole one");
 
-    // In the way, pushing up with exactly the same effort. It is in contact, it
-    // is approaching, and it moves the puck the wrong way -- so it earns nothing.
+    // The reason the push is a pressure and not an approach speed. This agent is
+    // standing still, wedged and going nowhere, and it presses exactly as hard as
+    // one at a run -- which is what lets a crowd behave like tugboats instead of
+    // being outdone by a single battering ram. Under the old model it counted for
+    // nothing at all.
+    check(closeTo(puck::puckPushContribution({0.0F, puckAt.y + contact}, down, 1.0F,
+                                             vkexp::agentBodyRadius, puckAt, radius),
+                  behind),
+          "A motionless agent leaning at full drive presses as hard as a moving one");
+    check(closeTo(puck::puckPushContribution({0.0F, puckAt.y + contact}, down, 0.0F,
+                                             vkexp::agentBodyRadius, puckAt, radius),
+                  0.0F),
+          "And one with its motors off presses nothing, however close it stands");
+    check(puck::puckPushContribution({0.0F, puckAt.y + contact}, down, 0.4F,
+                                     vkexp::agentBodyRadius, puckAt, radius) < behind,
+          "Half throttle presses less than full");
+
+    // In the way, driving with exactly the same effort. It is in contact, it is
+    // pressing, and it moves the puck the wrong way -- so it earns nothing.
     // Nothing here names a correct side; the projection does the work.
-    const float blocking = puck::puckPushContribution({0.0F, puckAt.y - contact}, {0.0F, speed},
-                                                      vkexp::agentBodyRadius, puckAt, still, radius);
+    //
     // Zero and not negative: blocking stops being paid for, it does not become
     // a thing to avoid. An agent taught to keep clear of the puck is worse than
     // one that leans on it.
+    const float blocking = puck::puckPushContribution({0.0F, puckAt.y - contact}, up, 1.0F,
+                                                      vkexp::agentBodyRadius, puckAt, radius);
     check(closeTo(blocking, 0.0F), "An agent wedged between the puck and the middle earns nothing");
 
-    // Sideways: in contact and approaching, but the push is perpendicular to the
+    // Sideways: in contact and pressing, but the push is perpendicular to the
     // journey, so it is worth nothing without being wrong.
-    const float sideways = puck::puckPushContribution({contact, puckAt.y}, {-speed, 0.0F},
-                                                      vkexp::agentBodyRadius, puckAt, still, radius);
+    const float sideways = puck::puckPushContribution({contact, puckAt.y}, {-1.0F, 0.0F}, 1.0F,
+                                                      vkexp::agentBodyRadius, puckAt, radius);
     check(closeTo(sideways, 0.0F), "A push across the puck's path is worth nothing");
 
     // Half a turn off the line: paid, but less. This is the part that makes it a
     // gradient rather than a switch -- getting further round the puck pays more.
     const float diagonal = puck::puckPushContribution(
-        {contact * 0.7071F, puckAt.y + contact * 0.7071F}, {-speed * 0.7071F, -speed * 0.7071F},
-        vkexp::agentBodyRadius, puckAt, still, radius);
+        {contact * 0.7071F, puckAt.y + contact * 0.7071F}, {-0.7071F, -0.7071F}, 1.0F,
+        vkexp::agentBodyRadius, puckAt, radius);
     check(diagonal > 0.0F && diagonal < behind,
           "Pushing at an angle pays, and pays less than pushing straight");
 
-    // Touching and not pushing, and near but not touching: neither is work.
-    check(closeTo(puck::puckPushContribution({0.0F, puckAt.y + contact}, still,
-                                             vkexp::agentBodyRadius, puckAt, still, radius),
+    // Facing away, and near but not touching: neither is work.
+    check(closeTo(puck::puckPushContribution({0.0F, puckAt.y + contact}, up, 1.0F,
+                                             vkexp::agentBodyRadius, puckAt, radius),
                   0.0F),
-          "Resting against the puck is not pushing it");
-    check(closeTo(puck::puckPushContribution({0.0F, puckAt.y + contact * 3.0F}, {0.0F, -speed},
-                                             vkexp::agentBodyRadius, puckAt, still, radius),
+          "An agent with its back to the puck is not pushing it");
+    check(closeTo(puck::puckPushContribution({0.0F, puckAt.y + contact * 3.0F}, down, 1.0F,
+                                             vkexp::agentBodyRadius, puckAt, radius),
                   0.0F),
           "An agent that has not reached the puck is not moving it");
 
-    // Measured against the puck, the same way the push in puck_step.comp is: an
-    // agent trailing a puck already outrunning it is not pushing it. This is the
-    // assertion that fails if the mirrored velocity is dropped from target.xy.
-    check(closeTo(puck::puckPushContribution({0.0F, puckAt.y + contact}, {0.0F, -speed},
-                                             vkexp::agentBodyRadius, puckAt, {0.0F, -speed * 2.0F},
-                                             radius),
-                  0.0F),
-          "An agent slower than the puck it follows is not pushing it");
-
     // And the balance: a delivery's worth of pushing has to beat a whole trial
-    // of leaning on the puck, or the behaviour that is cheaper still wins. The
-    // journey is 1.1 m at the puck's settled speed, and the pusher is credited
-    // only the approach behind it.
+    // of leaning on the puck, or the behaviour that is cheaper still wins. Two
+    // agents press the puck along at force over drag, and each is credited its
+    // own press for as long as the journey takes.
     const float trialSeconds =
         vkexp::units::secondsForSteps(vkexp::SimulationControls{}.stepsPerGeneration,
                                       vkexp::units::fixedTimeStep);
     const float parked = trialSeconds * settings.fitness.trackingReward * puck::PuckProximityShare;
-    const float puckSpeed = speed * puck::PuckPushRate / (puck::PuckPushRate + puck::PuckDrag);
+    const float pairSpeed = 2.0F * puck::PuckPushAcceleration / puck::PuckDrag;
     const float journey = std::hypot(puck::puckStartPosition(settings.worldRadius, 0).x,
                                      puck::puckStartPosition(settings.worldRadius, 0).y);
-    const float pushed = (speed - puckSpeed) * (journey / puckSpeed) * puck::PuckWorkReward;
+    const float pushed = (journey / pairSpeed) * puck::PuckWorkReward;
     check(pushed > parked * 2.0F, "Pushing the puck home outearns a whole trial of leaning on it");
+
+    // The equilibrium the acceleration was chosen against, which is the whole
+    // shape of the world: one agent moves it slowly, a pair twice as fast, and
+    // three reach the agents' own speed limit, at which point pushing harder
+    // stops helping because the puck cannot outrun the things pushing it.
+    const float soloSpeed = puck::PuckPushAcceleration / puck::PuckDrag;
+    check(soloSpeed > 0.05F && soloSpeed < settings.maximumSpeed * 0.5F,
+          "One agent alone moves the puck, and slowly");
+    check(closeTo(pairSpeed, soloSpeed * 2.0F), "Two press it along twice as fast");
+    check(3.0F * soloSpeed >= settings.maximumSpeed,
+          "And three reach the speed the puck is capped at, so more is no longer better");
 
     // The friction floor, which is what turns the world from one that permits a
     // group into one that requires it. Without it a single agent moves the puck
     // on its own, so cooperation is a convenience and the question the world
     // exists to ask -- can selection produce agents that push together -- is one
-    // it never puts.
-    const float breakaway =
-        puck::puckBreakawayPush(settings.maximumSpeed, settings.puckBreakawayPushes);
-    check(breakaway > settings.maximumSpeed,
-          "By default one agent at the speed limit cannot start the puck at all");
-    check(closeTo(puck::puckFrictionFraction(speed, breakaway), 0.0F),
-          "So its whole push is absorbed");
-    check(puck::puckFrictionFraction(speed * 2.0F, breakaway) > 0.0F,
-          "And two pushing the same way get through");
+    // it never puts. Counted in agents, and compared against a pressure that is
+    // also counted in agents, so the slider means exactly what it says.
+    const float breakaway = puck::puckBreakawayPush(settings.puckBreakawayPushes);
+    check(breakaway > 1.0F, "By default one agent pressing at full drive cannot start the puck");
+    check(closeTo(puck::puckFrictionFraction(1.0F, breakaway), 0.0F),
+          "So its whole press is absorbed");
+    check(puck::puckFrictionFraction(2.0F, breakaway) > 0.0F,
+          "And two pressing the same way get through");
 
-    // Pushes are summed as vectors before the floor is measured, so two agents on
-    // opposite faces cancel and move nothing however hard they try. This is what
-    // makes "two agents" mean two agents pushing the same way rather than two
-    // agents touching.
-    const puck::vec2 facing{0.0F, puckAt.y + contact};
-    const puck::vec2 opposing{0.0F, puckAt.y - contact};
-    const float sumX = (puckAt.x - facing.x) / contact * speed + (puckAt.x - opposing.x) / contact * speed;
-    const float sumY = (puckAt.y - facing.y) / contact * speed + (puckAt.y - opposing.y) / contact * speed;
-    check(closeTo(puck::puckFrictionFraction(std::hypot(sumX, sumY), breakaway), 0.0F),
+    // Presses are summed as vectors before the floor is measured, so two agents
+    // on opposite faces cancel and move nothing however hard they try. This is
+    // what makes "two agents" mean two agents pushing the same way rather than
+    // two agents touching.
+    check(closeTo(puck::puckFrictionFraction(0.0F, breakaway), 0.0F),
           "Two agents on opposite faces cancel before the floor is measured");
 
     // Subtracted, not switched: a pair that barely clears the floor moves the
@@ -2047,20 +2061,23 @@ void testPuckPushCredit() {
     const float justOver = puck::puckFrictionFraction(breakaway * 1.02F, breakaway);
     const float wellOver = puck::puckFrictionFraction(breakaway * 4.0F, breakaway);
     check(justOver > 0.0F && justOver < 0.1F, "Just over the floor almost nothing gets through");
-    check(wellOver > justOver && wellOver < 1.0F, "And more push gets more through, never all");
+    check(wellOver > justOver && wellOver < 1.0F, "And more press gets more through, never all");
 
     // At zero the floor is gone and the world is the one it was before, which is
     // what makes this a knob rather than a change of task.
-    check(closeTo(puck::puckBreakawayPush(settings.maximumSpeed, 0.0F), 0.0F) &&
-              closeTo(puck::puckFrictionFraction(speed, 0.0F), 1.0F),
+    check(closeTo(puck::puckBreakawayPush(0.0F), 0.0F) &&
+              closeTo(puck::puckFrictionFraction(1.0F, 0.0F), 1.0F),
           "At a breakaway of zero one agent moves the puck exactly as before");
 
     // And the work reward has to follow the puck rather than the pushing, or a
     // lone agent leaning on a puck it cannot start collects all trial for moving
     // nothing -- teaching the futile pushing the floor exists to rule out.
     vkexp::AgentState pusher{};
-    pusher.pose = {0.0F, puckAt.y + contact, 0.0F, vkexp::agentBodyRadius};
-    pusher.motion = {0.0F, -speed, 0.0F, 1.0F};
+    // Facing the puck, at full throttle, standing still: the case the pressure
+    // model exists for.
+    pusher.pose = {0.0F, puckAt.y + contact, -std::numbers::pi_v<float> / 2.0F,
+                   vkexp::agentBodyRadius};
+    pusher.internal.x = 1.0F;
     pusher.penalties.y = puckAt.x;
     pusher.penalties.z = puckAt.y;
     pusher.target = {0.0F, 0.0F, 0.0F, 0.0F}; // the puck is stuck

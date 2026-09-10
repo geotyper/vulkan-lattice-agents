@@ -10,13 +10,27 @@
 // which is exactly the setup group fitness sharing was built for and never
 // measured against.
 //
-// How it is pushed, and why it is not the obvious thing. The obvious thing is
-// to sum penetration depths: agent overlaps puck, puck moves out. That cannot
-// work here, because the agent step resolves its own overlap first, so by the
-// time the puck is integrated there is no penetration left to read. The push is
-// therefore taken from the *approach velocity* along the contact normal --
-// which is what a push is anyway -- and measured relative to the puck, so an
-// agent cannot push a puck that is already outrunning it.
+// How it is pushed, and why it is not either of the two obvious things.
+//
+// The first obvious model sums penetration depths: agent overlaps puck, puck
+// moves out. That cannot work here, because the agent step resolves its own
+// overlap first, so by the time the puck is integrated there is no penetration
+// left to read.
+//
+// The second was approach velocity along the contact normal, and it was what
+// this world ran on first. It is wrong in a way that only shows up once the
+// world asks for a group. Velocity is what an *impact* carries, so the model
+// rewarded a run-up: one agent charging in cleanly moved the puck further than
+// several leaning on it, because agents crowding a puck collide with each other
+// and lose most of their inward speed. The world was asking to be solved by a
+// battering ram at exactly the moment it was meant to start asking for tugboats.
+//
+// So the push is a *force*: how hard each agent in contact is driving into the
+// puck, which is its motor command projected on the contact normal, and nothing
+// to do with how fast it happens to be going. An agent wedged motionless in a
+// crowd still pushes with everything it has, forces from several agents add, and
+// a charge is worth no more than steady pressure. The puck's speed then follows
+// from force against its own drag, the way a towed thing does.
 
 // How big the puck is, as a fraction of the arena radius, so it scales with the
 // room the way every other length here does. Several bodies across on purpose:
@@ -54,15 +68,29 @@ const float PuckApproachReach = 6.0f;
 // reward off without touching what pushing pays.
 const float PuckProximityShare = 0.25f;
 
-// Per second, per agent in contact, applied to the approach speed. Chosen so
-// one agent at the speed limit settles the puck at roughly a third of its own
-// speed and a group moves it faster: cooperation has to pay, or the world is
-// not asking the question it exists to ask.
-const float PuckPushRate = 2.0f;  // 1/s
-const float PuckDrag = 3.0f;      // 1/s, applied as exp(-drag * dt)
+// What one agent pressing at full drive does to the puck, and what resists it.
+// Chosen against the equilibrium they settle at rather than picked: force over
+// drag, so one agent holds the puck at 0.18 m/s, two at 0.37 and three at 0.55,
+// which is the agents' own speed limit. Cooperation therefore pays linearly, and
+// the puck cannot be made to outrun the things pushing it.
+const float PuckPushAcceleration = 0.55f; // m/s^2 per agent pressing head-on
+const float PuckDrag = 3.0f;              // 1/s, applied as exp(-drag * dt)
+
+// How hard one agent presses, in agents: 1 is an agent driving at full throttle
+// straight at the puck's centre. Off-axis it presses by the cosine, and an agent
+// facing away presses nothing however close it is standing.
+//
+// `drive` is the agent's own forward command, already normalised, which is the
+// whole point: it does not fall when the agent is blocked, so leaning works.
+VKEXP_PUCK_FN float puckPressure(float drive, float alignment) {
+    if (drive <= 0.0f || alignment <= 0.0f) {
+        return 0.0f;
+    }
+    return drive * alignment;
+}
 
 // How hard the whole world has to push before the puck moves at all, counted in
-// agents: 1.0 is one agent at the speed limit shoving straight at it.
+// agents: 1.0 is one agent driving at full throttle straight at it.
 //
 // This is the knob that decides whether the world asks for cooperation or only
 // permits it. Without it one agent moves the puck on its own, so a group is a
@@ -81,8 +109,13 @@ const float PuckDrag = 3.0f;      // 1/s, applied as exp(-drag * dt)
 // not a completion: selection needs an increment, not a cliff.
 const float PuckBreakawayPushes = 1.60f; // agents at full speed
 
-VKEXP_PUCK_FN float puckBreakawayPush(float maximumSpeed, float breakawayPushes) {
-    return maximumSpeed * max(breakawayPushes, 0.0f);
+// In agents, and the pressure it is compared against is in agents too, so the
+// slider means exactly what it says. It did not, while the push was a velocity:
+// the threshold then had to be scaled by the speed limit and "two agents" meant
+// two agents *travelling at the limit*, which is not what standing on a puck
+// looks like.
+VKEXP_PUCK_FN float puckBreakawayPush(float breakawayPushes) {
+    return max(breakawayPushes, 0.0f);
 }
 
 // What fraction of the world's push survives the friction floor. Zero below it,
@@ -132,8 +165,8 @@ VKEXP_PUCK_FN float puckWorkMovingFraction(float puckSpeed, float maximumSpeed) 
 // Zero and not a penalty, deliberately. Blocking should stop being paid for; it
 // should not become a thing to actively avoid, or an agent learns to keep clear
 // of the puck rather than to get behind it.
-VKEXP_PUCK_FN float puckPushContribution(vec2 agentPosition, vec2 agentVelocity, float agentRadius,
-                                         vec2 puckPosition, vec2 puckVelocity, float radius) {
+VKEXP_PUCK_FN float puckPushContribution(vec2 agentPosition, vec2 agentHeading, float drive,
+                                         float agentRadius, vec2 puckPosition, float radius) {
     const float offsetX = puckPosition.x - agentPosition.x;
     const float offsetY = puckPosition.y - agentPosition.y;
     const float distance = length(vec2(offsetX, offsetY));
@@ -144,8 +177,10 @@ VKEXP_PUCK_FN float puckPushContribution(vec2 agentPosition, vec2 agentVelocity,
     }
     const float normalX = offsetX / distance;
     const float normalY = offsetY / distance;
-    const float approach = (agentVelocity.x - puckVelocity.x) * normalX +
-                           (agentVelocity.y - puckVelocity.y) * normalY;
+    // The same pressure the pass integrates, so the reward and the physics
+    // cannot answer differently about who is pushing.
+    const float approach =
+        puckPressure(drive, agentHeading.x * normalX + agentHeading.y * normalY);
     if (approach <= 0.0f) {
         return 0.0f;
     }

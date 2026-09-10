@@ -20,6 +20,7 @@
 //     read as a run that had lost ground it had not lost.
 
 #include "vkexp/compute/HeadlessComputeContext.hpp"
+#include "vkexp/neuro/BrainKernel.hpp"
 #include "vkexp/simulation/PuckKernel.hpp"
 #include "vkexp/simulation/SimulationDriver.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
@@ -41,6 +42,23 @@ void require(const bool condition, const std::string& message) {
     if (!condition) {
         throw std::runtime_error(message);
     }
+}
+
+// A genome that drives straight ahead at full throttle and turns nowhere: both
+// motor outputs pinned by their biases, every other weight zero. Staging a drive
+// into the agent record does not work, because the agent step recomputes it from
+// the brain every step -- so the brain has to be the thing that says "forward".
+vkexp::Genome forwardDrivingGenome() {
+    namespace brain = vkexp::neuro::kernel;
+    vkexp::Genome genome{};
+    genome.weights.fill(0.0F);
+    const auto inputs = static_cast<std::uint32_t>(vkexp::neuro::Topology::inputCount);
+    const auto hidden = static_cast<std::uint32_t>(vkexp::neuro::Topology::hiddenCount);
+    const auto outputs = static_cast<std::uint32_t>(vkexp::neuro::Topology::outputCount);
+    for (const std::uint32_t motor : {brain::BrainMotorLeftOutput, brain::BrainMotorRightOutput}) {
+        genome.weights[brain::brainOutputBiasIndex(0U, inputs, hidden, outputs, motor)] = 8.0F;
+    }
+    return genome;
 }
 
 int run() {
@@ -139,6 +157,9 @@ int run() {
         for (auto& puck : staged.pucks) {
             puck.motion = {};
         }
+        for (vkexp::Genome& genome : staged.genomes) {
+            genome = forwardDrivingGenome();
+        }
         for (std::size_t index = 0; index < staged.agents.size(); ++index) {
             const std::uint32_t world = vkexp::logicalWorldForAgent(
                 static_cast<std::uint32_t>(index), perWorld, trials);
@@ -149,10 +170,14 @@ int run() {
             const float outwardY = span > 1.0e-6F ? puck.pose.y / span : 1.0F;
             if ((index / trials) % perWorld == 0) {
                 // Behind the puck, on the far side from the middle, at exactly
-                // touching distance and driving inward.
+                // touching distance, facing it and at full throttle. The heading
+                // and the drive are what push now; the velocity is only there so
+                // it closes the last millimetre of the skin.
                 const float reach = puck.pose.z + vkexp::agentBodyRadius;
                 agent.pose.x = puck.pose.x + outwardX * reach;
                 agent.pose.y = puck.pose.y + outwardY * reach;
+                agent.pose.z = std::atan2(-outwardY, -outwardX);
+                agent.internal.x = 1.0F;
                 agent.motion.x = -outwardX * state.physics.maximumSpeed;
                 agent.motion.y = -outwardY * state.physics.maximumSpeed;
             } else {
@@ -160,6 +185,7 @@ int run() {
                 // agent is pushing and the puck's motion has one explanation.
                 agent.pose.x = -outwardX * (state.physics.worldRadius - vkexp::agentBodyRadius);
                 agent.pose.y = -outwardY * (state.physics.worldRadius - vkexp::agentBodyRadius);
+                agent.internal.x = 0.0F;
                 agent.motion.x = 0.0F;
                 agent.motion.y = 0.0F;
             }
@@ -185,12 +211,11 @@ int run() {
     // broke once when the puck was made bigger, which changed nothing about
     // whether the push works. The count is printed instead, to be read.
 
-    // A puck cannot outrun the agents pushing it. This is the whole reason the
-    // push is measured against the puck's own velocity rather than the agent's:
-    // with an absolute velocity the term never vanishes, so a puck in continuous
-    // contact keeps accelerating and ends up faster than anything in the world.
-    // The bound is the property that formulation buys, and it is what stops the
-    // task being solved by launching the puck once.
+    // A puck cannot outrun the agents pushing it. The push is a force now, so
+    // nothing about the formulation bounds this on its own -- enough agents would
+    // keep accelerating something they could no longer keep up with, and the task
+    // would be solved by launching the puck once. The pass clamps it, and this is
+    // what says the clamp is there.
     for (std::size_t world = 0; world < pushed.size(); ++world) {
         require(std::hypot(pushed[world].motion.x, pushed[world].motion.y) <=
                     state.physics.maximumSpeed * 1.05F,
@@ -254,6 +279,9 @@ int run() {
         for (auto& puck : staged.pucks) {
             puck.motion = {};
         }
+        for (vkexp::Genome& genome : staged.genomes) {
+            genome = forwardDrivingGenome();
+        }
         // Spread over a short arc behind the puck: far enough apart not to
         // overlap, close enough that their pushes still add rather than cancel.
         const std::array<float, 3> arc{0.0F, -0.44F, 0.44F};
@@ -270,11 +298,18 @@ int run() {
                 const float reach = puck.pose.z + vkexp::agentBodyRadius;
                 agent.pose.x = puck.pose.x + std::cos(angle) * reach;
                 agent.pose.y = puck.pose.y + std::sin(angle) * reach;
-                agent.motion.x = -std::cos(angle) * state.physics.maximumSpeed;
-                agent.motion.y = -std::sin(angle) * state.physics.maximumSpeed;
+                // Facing the puck at full throttle. Standing still on purpose:
+                // the point of the pressure model is that leaning works, so the
+                // staged pushers are not given any speed at all.
+                agent.pose.z = angle + 3.14159265F;
+                agent.internal.x = 1.0F;
+                agent.motion.x = 0.0F;
+                agent.motion.y = 0.0F;
             } else {
                 agent.pose.x = 0.0F;
                 agent.pose.y = -outward * (state.physics.worldRadius - vkexp::agentBodyRadius);
+                agent.pose.z = 0.0F;
+                agent.internal.x = 0.0F;
                 agent.motion.x = 0.0F;
                 agent.motion.y = 0.0F;
             }

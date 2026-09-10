@@ -349,8 +349,9 @@ struct SimulationStep {
     // thing to find -- so it is the first knob to reach for when the world is
     // not being learned at all.
     float puckRadiusRatio{puck::kernel::PuckRadiusRatio};
-    // How hard the whole world has to push before the puck moves at all, counted
-    // in agents at the speed limit. Below one, a single agent solves the world
+    // How hard the whole world has to press before the puck moves at all, counted
+    // in agents leaning on it head-on at full drive (one such agent is exactly
+    // 1.0). Below one, a single agent solves the world
     // alone and cooperation is never asked for; above one it cannot start the
     // puck however hard it tries, and two have to be in contact at once and
     // pushing the same way. This is the knob that turns the puck world from one

@@ -64,25 +64,35 @@ void main() {
             continue;
         }
         const vec2 normal = offset / distance;
-        // Relative to the puck, so an agent cannot push something already
-        // moving away from it faster than it can follow, and only pushing --
-        // never pulling -- so an agent leaving contact does not drag the puck.
-        const float approach = dot(agent.motion.xy - puck.motion.xy, normal);
-        if (approach <= 0.0) {
+        // How hard it is driving into the puck, not how fast it is going. An
+        // agent wedged motionless in a crowd still pushes with everything it
+        // has, which is what lets a group behave like tugboats rather than like
+        // one battering ram. internal.x carries its own forward command, written
+        // by the agent step; the heading says where that command points.
+        const vec2 heading = vec2(cos(agent.pose.z), sin(agent.pose.z));
+        const float press = puckPressure(agent.internal.x, dot(heading, normal));
+        if (press <= 0.0) {
             continue;
         }
-        push += normal * approach;
+        push += normal * press;
     }
 
-    // The friction floor, applied to the world's total push and not to any one
-    // agent's: pushes from opposite sides cancel before it is measured, which is
+    // The friction floor, applied to the world's total press and not to any one
+    // agent's: presses from opposite sides cancel before it is measured, which is
     // what makes "two agents" mean two agents pushing the same way.
-    const float breakaway =
-        puckBreakawayPush(params.maximumSpeed, params.scenario.floats0.z);
+    const float breakaway = puckBreakawayPush(params.scenario.floats0.z);
     push *= puckFrictionFraction(length(push), breakaway);
 
-    puck.motion.xy += push * PuckPushRate * params.deltaTime;
+    puck.motion.xy += push * PuckPushAcceleration * params.deltaTime;
     puck.motion.xy *= exp(-PuckDrag * params.deltaTime);
+    // A puck cannot be made to outrun the things pushing it. With the push a
+    // force rather than a relative velocity, nothing else caps this: enough
+    // agents would keep accelerating something they could no longer keep up
+    // with, and the world would be solved by launching it once.
+    const float puckSpeed = length(puck.motion.xy);
+    if (puckSpeed > params.maximumSpeed) {
+        puck.motion.xy *= params.maximumSpeed / puckSpeed;
+    }
     puck.pose.xy += puck.motion.xy * params.deltaTime;
 
     // The arena has the last word on containment, exactly as it does for an

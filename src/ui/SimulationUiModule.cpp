@@ -263,7 +263,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
             state_.controls.resetRequested = true;
         }
         ImGui::SetItemTooltip("How hard the whole world has to push before the puck moves at all, "
-                              "counted in agents at the speed limit. Below one, a single agent "
+                              "counted in agents leaning on it head-on at full throttle. Below one, a single agent "
                               "solves the world alone and a group is only a convenience. Above "
                               "one it cannot start the puck however hard it tries, and two have "
                               "to be touching at the same time and pushing the same way -- so "
