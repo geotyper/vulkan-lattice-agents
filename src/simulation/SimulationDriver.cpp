@@ -93,12 +93,22 @@ void SimulationDriver::createResources(const VkPhysicalDevice physicalDevice,
     resetGeneration();
 }
 
+// Everything a step needs on the device, made once and only once.
+//
+// "Once" is load-bearing rather than tidy. Five of the six buffers here are
+// dimensioned by the population size and the trial count, and both of those are
+// fixed when the driver is constructed -- so nothing that happens afterwards can
+// change their sizes, and every descriptor naming them stays correct for the
+// life of the driver. That is the invariant the renderer's sets, the three
+// compute sets and reconfiguration_smoke all rely on. The sixth, the genome
+// buffer, is the one that follows the brain plan; resizeGenomeBuffer is how it
+// changes, and it deliberately leaves the other five alone.
 void SimulationDriver::createStepResources() {
+    ++stepResourceBuilds_;
     const auto genomeCount = static_cast<std::uint32_t>(evolution_.population().size());
     const std::uint32_t agentCount = genomeCount * config_.trialsPerGenome;
     const VkDeviceSize agentBytes = sizeof(AgentState) * agentCount;
-    const VkDeviceSize genomeBytes =
-        sizeof(float) * evolution_.settings().weightCount * genomeCount;
+    const VkDeviceSize genomeBytes = genomeBufferBytes();
     const VkDeviceSize stepParameterBytes =
         sizeof(GpuStepParameters) * config_.maximumStepsPerBatch;
     agentBuffers_.create(physicalDevice_, device_,
@@ -117,6 +127,15 @@ void SimulationDriver::createStepResources() {
     // arena across every world the population can be split into is 150 MB against
     // a 256 MiB budget. A fixed allocation makes the whole class of bug
     // unreachable instead of patching each holder of a handle.
+    //
+    // "Never reallocated" is a claim about this function's call sites, not about
+    // this line, and it has been false once already: giving the genome its own
+    // length added two more callers, and each of them freed this buffer under
+    // descriptors that were still naming it. reconfiguration_smoke now counts the
+    // builds across a plan change, so the claim is tested rather than merely
+    // written down -- and counted rather than inferred from the handle, which
+    // comes back unchanged from a reallocation at the same size and so proves
+    // nothing.
     trailField_.create(physicalDevice_, device_,
                        {trailFieldBudget(),
                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT});
@@ -127,10 +146,6 @@ void SimulationDriver::createStepResources() {
     //
     // Host-visible, unlike the trail field: a snapshot has to carry the pucks,
     // and at a few kilobytes read once per save that is cheaper than staging a
-    // copy. The trail field is device-local because it is 256 MiB and derived.
-    //
-    // Host-visible, unlike the trail field: a snapshot has to carry the pucks,
-    // and at a few kilobytes read once per save that is cheaper than a staging
     // copy. The trail field is device-local because it is 256 MiB and derived.
     puckField_.create(
         physicalDevice_, device_,
@@ -266,6 +281,45 @@ void SimulationDriver::createStepResources() {
                      0};
 }
 
+VkDeviceSize SimulationDriver::genomeBufferBytes() const {
+    return sizeof(float) * evolution_.settings().weightCount * evolution_.population().size();
+}
+
+// Adopting a brain plan changes how long a genome is, and nothing else. So this
+// remakes the one buffer whose size followed, and rewrites the one descriptor
+// that names it -- rather than calling createStepResources again, which is what
+// it used to do.
+//
+// The difference is not the 256 MiB of trail field that got freed and
+// reallocated on every scenario switch, wasteful as that was. It is that
+// createStepResources also freed the agent, trail and puck buffers, while the
+// renderer's descriptor sets went on naming them: the next frame read memory the
+// driver had already handed back, and the GPU hung. Resizing only what changed
+// size makes those handles stable again, which is what every holder of them was
+// written to assume.
+//
+// Callers wait for the device to go idle first -- SimulationModule does it
+// around restart, and headless restores before its loop begins -- so the sets
+// rewritten here are not in use.
+void SimulationDriver::resizeGenomeBuffer() {
+    // The population is rebuilt around the new length but never resized: the
+    // count comes from EvolutionSettings, which adoptBrainPlan carries across.
+    // Were that to stop holding, the agent buffers would be wrong too and this
+    // narrow path would be the wrong one -- so it is checked rather than assumed.
+    const auto genomeCount = static_cast<std::uint32_t>(evolution_.population().size());
+    if (genomeCount != state_.agents.genomeCount) {
+        throw std::logic_error("Brain plan changed the population size, which is fixed at launch");
+    }
+    genomeBuffer_.create(physicalDevice_, device_,
+                         {genomeBufferBytes(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
+    for (const VkDescriptorSet set : stepDescriptorSets_) {
+        DescriptorSetWriter{}
+            .writeBuffer(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, genomeBuffer_.buffer(), 0,
+                         genomeBuffer_.size())
+            .update(device_, set);
+    }
+}
+
 void SimulationDriver::destroyResources() {
     state_.agents = {};
     state_.trail = {};
@@ -397,12 +451,13 @@ void SimulationDriver::resetGeneration() {
 
 void SimulationDriver::restart() {
     // A restart is where a new brain plan takes hold: it changes how long a
-    // genome is, so the population and the buffer holding it are both remade.
+    // genome is, so the population and the buffer holding it are both remade --
+    // that buffer and no other, because nothing else here is sized by the plan.
     const std::size_t previous = evolution_.settings().weightCount;
     adoptBrainPlan();
     evolution_.reset();
     if (evolution_.settings().weightCount != previous && device_ != VK_NULL_HANDLE) {
-        createStepResources();
+        resizeGenomeBuffer();
     }
     state_.statistics = {};
     state_.history.bestFitness.clear();
@@ -475,7 +530,7 @@ void SimulationDriver::restoreSnapshot(const WorldSnapshot& snapshot) {
     const std::size_t previousWeights = evolution_.settings().weightCount;
     adoptBrainPlan();
     if (evolution_.settings().weightCount != previousWeights && device_ != VK_NULL_HANDLE) {
-        createStepResources();
+        resizeGenomeBuffer();
     }
     evolution_.setPopulation(snapshot.genomes, snapshot.generation);
     updateWorldLayout();

@@ -83,10 +83,26 @@ public:
     [[nodiscard]] const GeneticAlgorithm& evolution() const { return evolution_; }
     [[nodiscard]] std::span<const AgentState> agents() const { return agents_; }
     [[nodiscard]] const SimulationDriverConfig& config() const { return config_; }
+    // How many times the fixed step resources have been built. Exposed for
+    // reconfiguration_smoke, which needs to assert that the answer stays one.
+    //
+    // Comparing published handles across a reconfiguration does not settle it:
+    // freeing a buffer and immediately allocating one of the same size usually
+    // hands back the same VkBuffer, so a test written that way passes while the
+    // buffers are being destroyed under live descriptors. That is not a
+    // hypothetical -- the trail assertion here did exactly that. A count of
+    // builds is the invariant itself rather than a proxy for it.
+    [[nodiscard]] std::uint32_t stepResourceBuilds() const { return stepResourceBuilds_; }
 
 private:
     void adoptBrainPlan();
     void createStepResources();
+    // The one step resource whose size follows the brain plan rather than the
+    // launch configuration. Split out of createStepResources so that adopting a
+    // plan resizes this buffer alone: see the note there for why remaking the
+    // rest is not merely wasteful but unsound.
+    [[nodiscard]] VkDeviceSize genomeBufferBytes() const;
+    void resizeGenomeBuffer();
     void resetGeneration();
     void uploadPopulation();
     void ensureGridCapacity();
@@ -106,6 +122,7 @@ private:
 
     VkPhysicalDevice physicalDevice_{};
     VkDevice device_{};
+    std::uint32_t stepResourceBuilds_{};
 
     PingPongBuffer agentBuffers_;
     BufferResource genomeBuffer_;

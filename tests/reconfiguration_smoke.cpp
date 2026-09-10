@@ -17,7 +17,9 @@
 #include "vkexp/simulation/SimulationDriver.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
 
+#include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -35,11 +37,31 @@ void require(const bool condition, const std::string& message) {
 }
 
 // Runs a short generation and checks the population actually moved through it.
-// The field is allocated once and never resized, so its handle is the same for
-// the life of the driver. That invariant is what makes every descriptor holding
-// it -- three compute sets and the renderer's two -- correct by construction
-// rather than by remembering to refresh them, which is what went wrong twice.
-VkBuffer expectedTrailBuffer = VK_NULL_HANDLE;
+// The buffers below are allocated once and never resized, so their handles are
+// the same for the life of the driver. That invariant is what makes every
+// descriptor holding them -- three compute sets and the renderer's three --
+// correct by construction rather than by remembering to refresh them, which is
+// what went wrong twice.
+//
+// Checking the trail alone was not enough, and it failed twice over. Giving the
+// genome its own length made a plan change call createStepResources again, which
+// freed the agent and puck buffers as well; the renderer kept naming all three
+// and the GPU hung on the next frame. Nothing here changed the brain plan, so
+// the path was never walked -- and when it was walked deliberately, the trail
+// handle came back identical anyway, because a buffer freed and reallocated at
+// the same size is usually the same VkBuffer. An assertion that can only fail
+// when an allocator declines to reuse a handle is not an assertion.
+//
+// So the count of builds is what carries the invariant, and the handles are
+// checked beside it: they catch the other failure, which is publishing a handle
+// that no longer names what the driver is using.
+struct PublishedBuffers {
+    VkBuffer trail{};
+    VkBuffer puck{};
+    std::array<VkBuffer, 2> agents{};
+};
+PublishedBuffers expectedBuffers{};
+bool expectedBuffersCaptured = false;
 
 void stepAndCheck(vkexp::HeadlessComputeContext& context, vkexp::SimulationDriver& driver,
                   vkexp::SimulationState& state, const std::string& what) {
@@ -47,11 +69,31 @@ void stepAndCheck(vkexp::HeadlessComputeContext& context, vkexp::SimulationDrive
               << state.trail.width << "x" << state.trail.width << " cells of "
               << state.physics.trailCellSize << " m" << std::endl;
     require(state.trail.buffer != VK_NULL_HANDLE, what + ": trail field is published");
-    if (expectedTrailBuffer == VK_NULL_HANDLE) {
-        expectedTrailBuffer = state.trail.buffer;
+    require(state.puck.buffer != VK_NULL_HANDLE, what + ": puck field is published");
+    require(state.agents.buffers[0] != VK_NULL_HANDLE &&
+                state.agents.buffers[1] != VK_NULL_HANDLE,
+            what + ": both agent buffers are published");
+    const PublishedBuffers published{
+        state.trail.buffer, state.puck.buffer, {state.agents.buffers[0], state.agents.buffers[1]}};
+    if (!expectedBuffersCaptured) {
+        expectedBuffers = published;
+        expectedBuffersCaptured = true;
     }
-    require(state.trail.buffer == expectedTrailBuffer,
+    // The invariant itself, ahead of the handle checks below, which are only a
+    // proxy for it: a buffer freed and immediately reallocated at the same size
+    // usually comes back as the same VkBuffer, so comparing handles can pass
+    // while the driver is destroying buffers under live descriptors. It did --
+    // when the bug this test now covers was reintroduced deliberately, the trail
+    // and puck handles matched and only the agent pair differed. The count does
+    // not depend on an allocator's habits.
+    require(driver.stepResourceBuilds() == 1,
+            what + ": the fixed step resources were built once and not rebuilt");
+    require(published.trail == expectedBuffers.trail,
             what + ": trail field was not reallocated, so no descriptor went stale");
+    require(published.puck == expectedBuffers.puck,
+            what + ": puck field was not reallocated, so no descriptor went stale");
+    require(published.agents == expectedBuffers.agents,
+            what + ": agent buffers were not reallocated, so no descriptor went stale");
     require(state.trail.cellsPerWorld > 0, what + ": trail field has cells");
     require(state.worlds.worldCount > 0, what + ": at least one logical world");
 
@@ -138,7 +180,35 @@ int run() {
         stepAndCheck(context, driver, state, "trail resolution");
     }
 
-    // 4. Every arena against every group size the UI offers, at both ends of the
+    // 4. The brain plan. This is the reconfiguration that resizes a buffer for a
+    //    reason that has nothing to do with the arena: a different number of
+    //    hidden layers is a different genome length. It used to remake every step
+    //    resource, which freed the agent, trail and puck buffers under the
+    //    renderer's descriptors and hung the GPU on the next frame.
+    //
+    //    Each plan is checked for having actually changed the genome length,
+    //    because a case that quietly resized nothing would walk none of this and
+    //    still pass.
+    {
+        std::size_t previousWeights = driver.evolution().settings().weightCount;
+        for (const std::array<std::uint32_t, 3> plan : {std::array<std::uint32_t, 3>{12, 8, 8},
+                                                        std::array<std::uint32_t, 3>{10, 10, 0},
+                                                        std::array<std::uint32_t, 3>{32, 0, 0},
+                                                        std::array<std::uint32_t, 3>{0, 0, 0}}) {
+            state.physics.hiddenLayers = plan;
+            driver.restart();
+            const std::size_t weights = driver.evolution().settings().weightCount;
+            const std::string label = "brain plan " + std::to_string(plan[0]) + "," +
+                                      std::to_string(plan[1]) + "," + std::to_string(plan[2]);
+            require(weights != previousWeights, label + ": genome length actually changed");
+            require(driver.evolution().population().front().weights.size() == weights,
+                    label + ": the population was rebuilt at the new length");
+            previousWeights = weights;
+            stepAndCheck(context, driver, state, label);
+        }
+    }
+
+    // 5. Every arena against every group size the UI offers, at both ends of the
     //    resolution range. The reported crash was on a medium arena below 25
     //    agents per world at the *coarsest* grid, where the field is 31 MB --
     //    which is what ruled capacity out and pointed back at lifetimes.
