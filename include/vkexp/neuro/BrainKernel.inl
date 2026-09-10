@@ -240,7 +240,8 @@ VKEXP_BRAIN_MATH_FN float brainIntegrateNeuron(float state, float activation, fl
 const uint NeuronModelReactive = 0u;
 const uint NeuronModelTimeConstant = 1u;
 const uint NeuronModelGated = 2u;
-const uint NeuronModelCount = 3u;
+const uint NeuronModelSpiking = 3u;
+const uint NeuronModelCount = 4u;
 
 // --- genome addressing: one dense network laid out flat ----------------------
 //

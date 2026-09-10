@@ -627,7 +627,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     // under all of them -- so this is a live ablation rather than a choice
     // between networks, and a population stays meaningful across a switch.
     int neuronModel = static_cast<int>(state_.physics.neuronModel);
-    constexpr const char* neuronModels[] = {"Reactive", "Time constant", "Gated"};
+    constexpr const char* neuronModels[] = {"Reactive", "Time constant", "Gated", "Spiking (LIF)"};
     static_assert(std::size(neuronModels) == neuronModelCount);
     if (ImGui::Combo("Neuron model", &neuronModel, neuronModels,
                      static_cast<int>(neuronModelCount))) {
@@ -651,6 +651,11 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                               "tells it to. The gate asks for a time constant, so driving it up "
                               "holds and leaving it low follows. Feed it a constant and this is "
                               "the row above, exactly.");
+        break;
+    case NeuronModel::Spiking:
+        ImGui::SetItemTooltip("Leaky Integrate-and-Fire (LIF) spiking neurons: membrane potential "
+                              "accumulates input current and decays over time. When potential "
+                              "exceeds threshold, a discrete spike pulse is emitted.");
         break;
     }
     const ScenarioDefinition& brainScenario = scenarioDefinition(state_.physics.beaconScenario);

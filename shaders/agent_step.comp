@@ -323,7 +323,7 @@ void main() {
             // through the same mapping the gene uses.
             const uint global = stateOffset + neuron;
             float timeConstant = params.deltaTime;
-            if (params.neuronModel == NeuronModelTimeConstant) {
+            if (params.neuronModel == NeuronModelTimeConstant || params.neuronModel == NeuronModelSpiking) {
                 timeConstant = brainTimeConstant(weights[brainTimeConstantGeneIndex(
                     base, inputCount, layers, outputCount, global)]);
             } else if (params.neuronModel == NeuronModelGated) {
@@ -336,10 +336,22 @@ void main() {
                 }
                 timeConstant = brainTimeConstant(gate);
             }
-            const float state = brainIntegrateNeuron(agentHiddenState(agent, global), activation,
+            float state = brainIntegrateNeuron(agentHiddenState(agent, global), activation,
                                                      timeConstant, params.deltaTime);
+            if (params.neuronModel == NeuronModelSpiking) {
+                if (state >= 1.0) {
+                    produced[neuron] = 1.0;
+                    state = 0.0;
+                } else {
+                    produced[neuron] = 0.0;
+                    if (state < -1.0) {
+                        state = -1.0;
+                    }
+                }
+            } else {
+                produced[neuron] = brainActivation(state);
+            }
             agent.hidden[global >> 2u][global & 3u] = state;
-            produced[neuron] = brainActivation(state);
         }
         for (uint neuron = 0; neuron < width; ++neuron) {
             source[neuron] = produced[neuron];

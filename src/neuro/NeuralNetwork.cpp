@@ -49,7 +49,7 @@ Outputs evaluate(const std::span<const float> weights, const Inputs& inputs,
             // gate is exactly the fixed-time-constant neuron.
             const kernel::uint global = stateOffset + neuron;
             float timeConstant = deltaTime;
-            if (model == kernel::NeuronModelTimeConstant) {
+            if (model == kernel::NeuronModelTimeConstant || model == kernel::NeuronModelSpiking) {
                 timeConstant = kernel::brainTimeConstant(weights[kernel::brainTimeConstantGeneIndex(
                     base, inputCount, layers, outputCount, global)]);
             } else if (model == kernel::NeuronModelGated) {
@@ -65,7 +65,19 @@ Outputs evaluate(const std::span<const float> weights, const Inputs& inputs,
             }
             state[global] =
                 kernel::brainIntegrateNeuron(state[global], activation, timeConstant, deltaTime);
-            produced[neuron] = kernel::brainActivation(state[global]);
+            if (model == kernel::NeuronModelSpiking) {
+                if (state[global] >= 1.0F) {
+                    produced[neuron] = 1.0F;
+                    state[global] = 0.0F;
+                } else {
+                    produced[neuron] = 0.0F;
+                    if (state[global] < -1.0F) {
+                        state[global] = -1.0F;
+                    }
+                }
+            } else {
+                produced[neuron] = kernel::brainActivation(state[global]);
+            }
         }
         for (kernel::uint neuron = 0; neuron < width; ++neuron) {
             source[neuron] = produced[neuron];

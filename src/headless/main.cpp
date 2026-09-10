@@ -129,13 +129,11 @@ void printHelp(const char* executable) {
                  "  --trail <mode>           off|visual|sensed. visual keeps the field and draws\n"
                  "                           it while the antennae read zero, which is the\n"
                  "                           control for any claim about the trail\n"
-                 "  --neuron-model <name>    reactive|time|gated: where a hidden neuron's "
+                 "  --neuron-model <name>    reactive|time|gated|spiking: where a hidden neuron's "
                  "time\n"
-                 "                           constant comes from. reactive pins it to the step, "
-                 "which\n"
-                 "                           is the memoryless network exactly; gated recomputes "
-                 "it\n"
-                 "                           from the inputs every step (default time)\n\n"
+                 "                           constant comes from. reactive pins it to the step;\n"
+                 "                           spiking uses leaky integrate-and-fire pulses;\n"
+                 "                           gated recomputes it from inputs (default time)\n\n"
                  "Trail field:\n"
                  "  --trail-deposit <x>      agent mark laid per second (default 4.0)\n"
                  "  --beacon-deposit <x>     beacon mark laid per second (default 12.0)\n"
@@ -274,7 +272,10 @@ vkexp::BeaconScenario parseScenario(const std::string_view name) {
     if (name == "gated") {
         return vkexp::NeuronModel::Gated;
     }
-    fail("Unknown neuron model '" + std::string{name} + "'; expected reactive, time or gated");
+    if (name == "spiking") {
+        return vkexp::NeuronModel::Spiking;
+    }
+    fail("Unknown neuron model '" + std::string{name} + "'; expected reactive, time, gated or spiking");
 }
 
 // The short form, for files rather than for reading.
@@ -286,6 +287,8 @@ vkexp::BeaconScenario parseScenario(const std::string_view name) {
         return "time";
     case vkexp::NeuronModel::Gated:
         return "gated";
+    case vkexp::NeuronModel::Spiking:
+        return "spiking";
     }
     return "time";
 }
@@ -298,6 +301,8 @@ vkexp::BeaconScenario parseScenario(const std::string_view name) {
         return "time constant (one evolved rate per neuron)";
     case vkexp::NeuronModel::Gated:
         return "gated (rate recomputed from the inputs each step)";
+    case vkexp::NeuronModel::Spiking:
+        return "spiking (leaky integrate-and-fire discrete pulses)";
     }
     return "unknown";
 }
