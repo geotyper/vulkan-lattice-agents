@@ -149,7 +149,7 @@ void saveWorldSnapshot(const std::filesystem::path& path, const WorldSnapshot& s
     const SnapshotHeader header{snapshotMagic,
                                 worldSnapshotVersion,
                                 static_cast<std::uint32_t>(snapshot.genomes.size()),
-                                static_cast<std::uint32_t>(neuro::Topology::weightCount),
+                                static_cast<std::uint32_t>(snapshot.genomes.front().weights.size()),
                                 static_cast<std::uint32_t>(snapshot.agents.size()),
                                 static_cast<std::uint32_t>(sizeof(AgentState)),
                                 static_cast<std::uint32_t>(snapshot.pucks.size()),
@@ -218,9 +218,13 @@ WorldSnapshot loadWorldSnapshot(const std::filesystem::path& path) {
     if (header.version != worldSnapshotVersion) {
         throw WorldSnapshotError("Unsupported world snapshot version in " + path.string());
     }
-    if (header.weightCount != neuro::Topology::weightCount) {
-        throw WorldSnapshotError("World snapshot was written for a different brain topology: " +
-                                 path.string());
+    // The length is the file's own now, not one number every run shares, so what
+    // is checked here is only that it is a length this build could produce. The
+    // brain plan itself travels in the settings below and is compared where it
+    // can be explained -- see the physics block and the archive's structure.
+    if (header.weightCount == 0 || header.weightCount > neuro::Topology::maximumWeightCount) {
+        throw WorldSnapshotError("World snapshot claims a genome length no plan this build can "
+                                 "run produces: " + path.string());
     }
     if (header.agentStateBytes != sizeof(AgentState)) {
         throw WorldSnapshotError("World snapshot was written for a different agent layout: " +
@@ -275,7 +279,8 @@ WorldSnapshot loadWorldSnapshot(const std::filesystem::path& path) {
     }
     snapshot.physics.neuronModel = static_cast<NeuronModel>(integers.neuronModel);
 
-    snapshot.genomes.resize(header.genomeCount);
+    snapshot.genomes.assign(header.genomeCount,
+                            Genome{neuro::Weights(header.weightCount, 0.0F)});
     for (Genome& genome : snapshot.genomes) {
         readExactly(stream, genome.weights.data(), genome.weights.size() * sizeof(float), path);
     }

@@ -201,7 +201,7 @@ public:
         outputAgents.create(context.physicalDevice(), context.device(),
                             {agentBytes, storage, hostMemory});
         genomes.create(context.physicalDevice(), context.device(),
-                       {sizeof(float) * vkexp::neuro::Topology::weightCount * genomeCount, storage,
+                       {sizeof(float) * vkexp::neuro::maximumBrainShape.weightCount() * genomeCount, storage,
                         hostMemory});
         gridHeads.create(
             context.physicalDevice(), context.device(),
@@ -377,8 +377,21 @@ void compareAgents(const vkexp::AgentState& expected, const vkexp::AgentState& a
     }
 }
 
+// The genome buffer wants one contiguous run of floats. A genome is a vector
+// now, so `sizeof` on it is the vector object and an array of them is an array
+// of pointers -- both of which compile, write the wrong bytes, and produce a
+// plausible-looking run. Flattening is written once, here.
+template <typename Genomes>
+std::vector<float> flattenGenomes(const Genomes& genomes) {
+    std::vector<float> flat;
+    for (const vkexp::neuro::Weights& genome : genomes) {
+        flat.insert(flat.end(), genome.begin(), genome.end());
+    }
+    return flat;
+}
+
 vkexp::neuro::Weights makeTestWeights(const float scale = 0.31F) {
-    vkexp::neuro::Weights weights{};
+    vkexp::neuro::Weights weights = vkexp::neuro::makeWeights(vkexp::neuro::maximumBrainShape);
     for (std::size_t index = 0; index < weights.size(); ++index) {
         weights[index] = std::sin(static_cast<float>(index) * 0.37F) * scale;
     }
@@ -424,7 +437,7 @@ void runTrajectoryParity(vkexp::HeadlessComputeContext& context,
     }
 
     StepHarness harness{context, 1, 1, 1, 1, base.worldRadius};
-    harness.genomes.write(weights.data(), sizeof(weights));
+    harness.genomes.write(weights.data(), weights.size() * sizeof(float));
 
     vkexp::AgentState agent{};
     agent.pose = {0.42F, -0.31F, 0.7F, vkexp::agentBodyRadius};
@@ -529,7 +542,7 @@ void runTrailFieldProbe(vkexp::HeadlessComputeContext& context) {
     namespace bk = vkexp::neuro::kernel;
     const auto inputCount = static_cast<bk::uint>(brain.inputCount);
     const bk::uint layers = brain.packedLayers();
-    std::vector<float> genome(vkexp::neuro::Topology::weightCount, 0.0F);
+    std::vector<float> genome(brain.weightCount(), 0.0F);
     const bk::uint leftGreen = bk::brainAntennaChannelIndex(0u, 1u);
     const bk::uint rightGreen = bk::brainAntennaChannelIndex(bk::BrainAntennaCount - 1u, 1u);
     genome[bk::brainLayerWeightIndex(0, inputCount, layers, 0u, 0u, leftGreen)] = 4.0F;
@@ -619,7 +632,8 @@ void runGenomeAddressingProbe(vkexp::HeadlessComputeContext& context) {
     const auto outputCount = static_cast<kernel::uint>(brain.outputCount);
 
     // Genome g biases both motors so that tanh(bias) is a value unique to g.
-    std::vector<vkexp::neuro::Weights> genomes(genomeCount);
+    std::vector<vkexp::neuro::Weights> genomes(
+        genomeCount, vkexp::neuro::makeWeights(vkexp::neuro::maximumBrainShape));
     std::array<float, genomeCount> expectedDrive{};
     for (std::uint32_t genome = 0; genome < genomeCount; ++genome) {
         const float bias = -1.0F + 0.4F * static_cast<float>(genome);
@@ -632,7 +646,8 @@ void runGenomeAddressingProbe(vkexp::HeadlessComputeContext& context) {
     }
 
     StepHarness harness{context, agentCount, genomeCount, 1, 1, settings.worldRadius};
-    harness.genomes.write(genomes.data(), genomes.size() * sizeof(vkexp::neuro::Weights));
+    const std::vector<float> flatGenomes = flattenGenomes(genomes);
+    harness.genomes.write(flatGenomes.data(), flatGenomes.size() * sizeof(float));
 
     std::vector<vkexp::AgentState> agents(agentCount);
     for (std::uint32_t index = 0; index < agentCount; ++index) {
@@ -679,7 +694,7 @@ void runMultiAgentDeterminism(vkexp::HeadlessComputeContext& context) {
     base.beaconScenario = vkexp::BeaconScenario::Rotating;
 
     StepHarness harness{context, agentCount, 1, 1, 1, base.worldRadius};
-    harness.genomes.write(weights.data(), sizeof(weights));
+    harness.genomes.write(weights.data(), weights.size() * sizeof(float));
 
     const auto makeAgents = [&] {
         std::vector<vkexp::AgentState> agents(agentCount);
@@ -786,7 +801,7 @@ void runNeuralStepParity(
     }
 
     StepHarness harness{context, 1, 1, 1, 1, settings.worldRadius};
-    harness.genomes.write(weights.data(), sizeof(weights));
+    harness.genomes.write(weights.data(), weights.size() * sizeof(float));
     harness.inputAgents.write(&initial, sizeof(initial));
     const std::array<vkexp::AgentState, 1> agents{initial};
     harness.buildGrid(agents, settings.worldRadius);
@@ -834,6 +849,9 @@ void runAgentInteractionTest(vkexp::HeadlessComputeContext& context, const bool 
     const kernel::uint centerRedInput = kernel::brainLightChannelIndex(centerReceptor, 0u);
 
     std::array<vkexp::neuro::Weights, agentCount> genomes{};
+    for (vkexp::neuro::Weights& genome : genomes) {
+        genome = vkexp::neuro::makeWeights(brain);
+    }
     genomes[0][kernel::brainLayerWeightIndex(0u, inputCount, layers, 0u, 0u, centerRedInput)] =
         4.0F;
     genomes[0][kernel::brainOutputWeightIndex(0u, inputCount, layers,
@@ -841,7 +859,8 @@ void runAgentInteractionTest(vkexp::HeadlessComputeContext& context, const bool 
 
     const std::uint32_t worldCount = isolatedWorlds ? 2U : 1U;
     StepHarness harness{context, agentCount, agentCount, worldCount, 1, settings.worldRadius};
-    harness.genomes.write(genomes.data(), sizeof(genomes));
+    const std::vector<float> flatGenomes = flattenGenomes(genomes);
+    harness.genomes.write(flatGenomes.data(), flatGenomes.size() * sizeof(float));
     harness.inputAgents.write(initial.data(), sizeof(initial));
     harness.buildGrid(initial, settings.worldRadius);
     const vkexp::GpuStepParameters parameters = makeStepParameters(

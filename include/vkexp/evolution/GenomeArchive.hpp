@@ -27,8 +27,13 @@ struct GenomeArchiveMetadata {
     float bestFitness{};
     float meanFitness{};
     std::uint32_t brainInputCount{};
+    // Hidden neurons in total, and the layer plan they are divided into, packed
+    // six bits per layer the way the shader receives it. The total is kept
+    // separate because it is what a reader wants for "how big is this brain",
+    // and because a file written before plans existed has only that.
     std::uint32_t brainHiddenCount{};
     std::uint32_t brainOutputCount{};
+    std::uint32_t brainHiddenLayers{};
 };
 
 struct GenomeArchive {
@@ -44,9 +49,11 @@ struct GenomeArchive {
     bool describedStructure{};
 };
 
-// 2 added the structure block. Version 1 files still load: their weights are
-// laid out the same way, they simply do not say so.
-inline constexpr std::uint32_t genomeArchiveVersion = 2;
+// 2 added the structure block; 3 added the hidden layer plan, because a genome
+// is now as long as its own network rather than one length everything shares.
+// Older files still load: a file without a plan is one hidden layer, which is
+// what every file written before plans existed holds.
+inline constexpr std::uint32_t genomeArchiveVersion = 3;
 inline constexpr std::uint32_t genomeArchiveOldestVersion = 1;
 
 // Writes a versioned little-endian archive, followed by the JSON structure the

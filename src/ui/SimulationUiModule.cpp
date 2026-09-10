@@ -662,12 +662,10 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     }
     ImGui::Text("%zu inputs -> %s tanh -> %zu outputs", brain.inputCount, layerText.c_str(),
                 brain.outputCount);
-    ImGui::TextDisabled("%zu active weights / %zu genome capacity", brain.weightCount(),
-                        neuro::Topology::weightCount);
+    ImGui::TextDisabled("%zu weights per genome", brain.weightCount());
     if (state_.physics.neuronModel != NeuronModel::Reactive) {
         ImGui::TextDisabled("gate block %zu of %zu genes",
-                            brain.hiddenCount * (brain.inputCount + 1),
-                            neuro::Topology::weightCount);
+                            brain.hiddenTotal() * (brain.inputCount + 1), brain.weightCount());
     }
     ImGui::TextDisabled("time constants %.0f ms .. %.1f s",
                         static_cast<double>(neuro::kernel::BrainTimeConstantMinimum * 1000.0F),
@@ -871,7 +869,7 @@ void SimulationUiModule::drawBrainWindow(const ScenarioDefinition& scenario,
                           "narrower path with more turns in it: the same neurons composed rather "
                           "than laid side by side.");
 
-    const auto capacity = static_cast<int>(neuro::Topology::hiddenCount);
+    const auto capacity = static_cast<int>(neuro::Topology::hiddenNeuronCapacity);
     int total = 0;
     for (int layer = 0; layer < layerCount; ++layer) {
         const auto slot = static_cast<std::size_t>(layer);
@@ -899,13 +897,15 @@ void SimulationUiModule::drawBrainWindow(const ScenarioDefinition& scenario,
     planned.secondHiddenCount = static_cast<std::size_t>(draft[1]);
     planned.thirdHiddenCount = static_cast<std::size_t>(draft[2]);
     const bool fits = planned.fitsCapacity();
-    ImGui::TextDisabled("%d of %d neurons, %zu of %zu weights", total, capacity,
-                        fits ? planned.weightCount() : 0, neuro::Topology::weightCount);
-    // What the genome costs is worth seeing beside the plan: the stride is fixed
-    // at the widest plan the capacity allows, so a narrower one carries weights
-    // it never reads, and a deeper one is usually cheaper than it looks.
-    ImGui::TextDisabled("the genome is always %zu long; the rest goes unread",
-                        neuro::Topology::weightCount);
+    // The genome is exactly as long as the plan needs, so this number is what a
+    // run actually costs and what a file of it will hold -- not a share of some
+    // fixed capacity. A deeper plan is usually cheaper than it looks: the first
+    // matrix dominates, and a narrow first layer shrinks it.
+    ImGui::TextDisabled("%d of %d neurons, %zu weights per genome", total, capacity,
+                        fits ? planned.weightCount() : 0);
+    if (fits && planned.weightCount() != brain.weightCount()) {
+        ImGui::TextDisabled("currently %zu", brain.weightCount());
+    }
 
     const bool changed = planned.hiddenCount != brain.hiddenCount ||
                          planned.secondHiddenCount != brain.secondHiddenCount ||

@@ -3,6 +3,7 @@
 #include "vkexp/neuro/BrainKernel.hpp"
 
 #include <array>
+#include <vector>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -23,15 +24,19 @@ struct Topology {
     static constexpr std::size_t taskInputCount = kernel::BrainTaskInputCount;
     static constexpr std::size_t recurrentMemoryCount = kernel::BrainRecurrentCount;
     static constexpr std::size_t inputCount = kernel::BrainInputCapacity;
-    static constexpr std::size_t hiddenCount = kernel::BrainHiddenNeuronCapacity;
+    // How many hidden neurons there may be at most, over all layers, and how
+    // many layers. Both size arrays, so both are compile-time.
+    static constexpr std::size_t hiddenNeuronCapacity = kernel::BrainHiddenNeuronCapacity;
     static constexpr std::size_t hiddenLayerCount = kernel::BrainHiddenLayerCapacity;
+    // What a scenario gets when it does not ask for anything else.
+    static constexpr std::size_t defaultHiddenCount = kernel::BrainDefaultHiddenWidth;
     static constexpr std::size_t actuatorOutputCount = kernel::BrainActuatorOutputCount;
     static constexpr std::size_t outputCount = kernel::BrainOutputCapacity;
-    // The genome stride: sized for the widest plan the capacity allows, which
-    // is one layer using every neuron. A plan that spends them differently uses
-    // fewer, and the tail simply goes unread -- one length means one buffer and
-    // one loadable population across every plan.
-    static constexpr std::size_t weightCount = kernel::brainWeightCount(
+    // The longest genome the capacity can produce: every neuron in one layer.
+    // Nothing is sized by it any more -- a genome is as long as its own plan --
+    // but it is what bounds a buffer allocation and what a sanity check compares
+    // against, so it is still worth having a name for.
+    static constexpr std::size_t maximumWeightCount = kernel::brainWeightCount(
         kernel::BrainInputCapacity,
         kernel::brainPackHiddenLayers(kernel::BrainHiddenNeuronCapacity, 0u, 0u),
         kernel::BrainOutputCapacity);
@@ -119,23 +124,27 @@ struct BrainShape {
                 ended = true;
                 continue;
             }
-            if (ended || width > Topology::hiddenCount) {
+            if (ended || width > Topology::hiddenNeuronCapacity) {
                 return false;
             }
         }
-        return hiddenLayerCount() > 0 && hiddenTotal() <= Topology::hiddenCount &&
-               weightCount() <= Topology::weightCount;
+        return hiddenLayerCount() > 0 && hiddenTotal() <= Topology::hiddenNeuronCapacity &&
+               weightCount() <= Topology::maximumWeightCount;
     }
 };
 
-// The widest plan: every neuron in one layer. Also what sizes the genome.
-inline constexpr BrainShape maximumBrainShape{Topology::inputCount, Topology::hiddenCount,
+// The widest plan the capacity allows: every neuron in one layer. Nothing runs
+// it by default -- it is the bound a buffer allocation and a sanity check are
+// written against.
+inline constexpr BrainShape maximumBrainShape{Topology::inputCount, Topology::hiddenNeuronCapacity,
                                               Topology::outputCount};
 
-// What every scenario ran before plans existed, and still the default: one
-// hidden layer of twenty. Named so a scenario can say it means this rather than
-// happening to write the same number.
-inline constexpr std::size_t defaultHiddenWidth = 20;
+// Every sensor, every actuator, and the one hidden layer of twenty this network
+// had before plans existed. This is what a scenario means by "the full brain",
+// and it is deliberately not the maximum: widening the capacity must not widen
+// every world's brain behind its back.
+inline constexpr BrainShape defaultBrainShape{Topology::inputCount, Topology::defaultHiddenCount,
+                                              Topology::outputCount};
 
 [[nodiscard]] constexpr std::uint32_t packBrainLayout(const BrainShape shape) {
     return kernel::brainPackLayout(static_cast<kernel::uint>(shape.inputCount),
@@ -150,10 +159,11 @@ inline constexpr std::size_t defaultHiddenWidth = 20;
 }
 
 static_assert(maximumBrainShape.fitsCapacity());
+static_assert(defaultBrainShape.fitsCapacity());
 // The preset has to stay expressible in the packed layout the GPU receives.
 static_assert(Topology::inputCount <= kernel::BrainCountMask,
               "Input count no longer fits the packed brain layout");
-static_assert(Topology::hiddenCount <= kernel::BrainLayerSizeMask,
+static_assert(Topology::hiddenNeuronCapacity <= kernel::BrainLayerSizeMask,
               "A hidden layer no longer fits its field in the packed layer plan");
 static_assert(Topology::hiddenLayerCount == kernel::BrainHiddenLayerCapacity,
               "The C++ view and the shared kernel disagree on how many layers there may be");
@@ -162,10 +172,21 @@ static_assert(Topology::outputCount <= kernel::BrainOutputCountMask,
 
 using Inputs = std::array<float, Topology::inputCount>;
 using Outputs = std::array<float, Topology::outputCount>;
-using Weights = std::array<float, Topology::weightCount>;
+// One genome's weights, exactly as long as its plan needs. It used to be an
+// array sized for the widest plan the capacity allowed, so every run carried a
+// tail it never read; the length is a property of the network now, and a file
+// says which network it holds rather than relying on one length for everything.
+using Weights = std::vector<float>;
+
+// A zeroed genome of the right length for a plan. Worth a name because "the
+// right length" is a question with an answer, and writing the answer out at each
+// call site is how two of them come to disagree.
+[[nodiscard]] inline Weights makeWeights(const BrainShape shape) {
+    return Weights(shape.weightCount(), 0.0F);
+}
 
 // The continuous-time state of one brain's hidden layer, carried between steps.
-using HiddenState = std::array<float, Topology::hiddenCount>;
+using HiddenState = std::array<float, Topology::hiddenNeuronCapacity>;
 
 // Single-network evaluator for tests, inspection and champion replay. It builds
 // the network from the same genome addressing the shader uses, so it is a way to
@@ -176,14 +197,14 @@ using HiddenState = std::array<float, Topology::hiddenCount>;
 // chooses where the time constant comes from; the integrator is the same one in
 // every case, which is what makes switching models an ablation rather than a
 // swap between two networks. `model` is a kernel::NeuronModel* value.
-[[nodiscard]] Outputs evaluate(std::span<const float, Topology::weightCount> weights,
+[[nodiscard]] Outputs evaluate(std::span<const float> weights,
                                const Inputs& inputs, HiddenState& state, float deltaTime,
                                kernel::uint model, BrainShape shape = maximumBrainShape);
 
 // Stateless convenience for the tests and inspections that ask what a brain does
 // to one input vector with no history. Defined in terms of the above with a
 // fresh state and the reactive model, so there is one evaluator and not two.
-[[nodiscard]] Outputs evaluate(std::span<const float, Topology::weightCount> weights,
+[[nodiscard]] Outputs evaluate(std::span<const float> weights,
                                const Inputs& inputs, BrainShape shape = maximumBrainShape);
 
 } // namespace vkexp::neuro

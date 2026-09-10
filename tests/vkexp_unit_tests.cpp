@@ -219,7 +219,7 @@ void testPingPongState() {
 }
 
 void testNeuralNetworkContract() {
-    vkexp::neuro::Weights weights{};
+    vkexp::neuro::Weights weights = vkexp::neuro::makeWeights(vkexp::neuro::maximumBrainShape);
     vkexp::neuro::Inputs inputs{};
     inputs.fill(1.0F);
     const vkexp::neuro::Outputs outputs = vkexp::neuro::evaluate(weights, inputs);
@@ -239,7 +239,8 @@ void testNeuralNetworkContract() {
     check(vkexp::neuro::Topology::outputCount ==
               kernel::BrainActuatorOutputCount + kernel::BrainRecurrentCount,
           "Output capacity is actuators plus recurrent cells");
-    check(vkexp::neuro::Topology::weightCount == vkexp::neuro::maximumBrainShape.weightCount(),
+    check(vkexp::neuro::Topology::maximumWeightCount ==
+              vkexp::neuro::maximumBrainShape.weightCount(),
           "Genome capacity matches the widest brain shape");
 
     // The sensor blocks must tile the input vector without gaps or overlaps.
@@ -446,7 +447,8 @@ void testForageCycleAndMemory() {
     agent.pose.y = beacons.values[0].position.y;
     agent.metrics = {};
 
-    vkexp::neuro::Weights weights{};
+    vkexp::neuro::Weights weights =
+        vkexp::neuro::makeWeights(vkexp::scenarioDefinition(settings.beaconScenario).brain);
     // Asked of the kernel rather than multiplied out here: with layers in the
     // picture the hand-written product was one plan's answer, not the layout.
     const vkexp::neuro::BrainShape forageBrain =
@@ -483,7 +485,8 @@ void testForageCycleAndMemory() {
     radiusProbe.target = {1.0F, 0.0F, 0.0F, 0.0F};
     radiusProbe.metrics = {vkexp::beaconVisualRadius * 2.0F, vkexp::beaconVisualRadius * 2.0F, 0.0F,
                            0.0F};
-    vkexp::neuro::Weights zeroWeights{};
+    const vkexp::neuro::Weights zeroWeights =
+        vkexp::neuro::makeWeights(vkexp::neuro::maximumBrainShape);
     settings.arrivalRadiusMultiplier = 1.0F;
     vkexp::stepAgentCpu(radiusProbe, zeroWeights, settings);
     check(radiusProbe.internal.y < 0.5F,
@@ -503,7 +506,8 @@ void testWallCollisionPenalty() {
     vkexp::SimulationStep settings{};
     settings.worldShape = vkexp::WorldShape::Square;
     settings.wallCollisionPenalty = 0.1F;
-    const vkexp::neuro::Weights weights{};
+    const vkexp::neuro::Weights weights =
+        vkexp::neuro::makeWeights(vkexp::neuro::maximumBrainShape);
 
     vkexp::stepAgentCpu(agent, weights, settings);
 
@@ -537,7 +541,7 @@ void testFixedStepIndependence() {
     const auto inputCount = static_cast<vkexp::neuro::kernel::uint>(brain.inputCount);
     const auto outputCount = static_cast<vkexp::neuro::kernel::uint>(brain.outputCount);
     const vkexp::neuro::kernel::uint layers = brain.packedLayers();
-    vkexp::neuro::Weights drivingWeights{};
+    vkexp::neuro::Weights drivingWeights = vkexp::neuro::makeWeights(brain);
     for (const vkexp::neuro::kernel::uint motor : {vkexp::neuro::kernel::BrainMotorLeftOutput,
                                                    vkexp::neuro::kernel::BrainMotorRightOutput}) {
         drivingWeights[vkexp::neuro::kernel::brainOutputBiasIndex(0, inputCount, layers,
@@ -602,7 +606,8 @@ void testScenarioRegistryContract() {
               label + ": declared beacon count matches the beacons it reports");
 
         // Every scenario must be steppable without the caller knowing which it is.
-        const vkexp::neuro::Weights zeroWeights{};
+        const vkexp::neuro::Weights zeroWeights =
+            vkexp::neuro::makeWeights(vkexp::neuro::maximumBrainShape);
         vkexp::AgentState stepped = agent;
         stepped.pose.w = vkexp::agentBodyRadius;
         vkexp::stepAgentCpu(stepped, zeroWeights, settings);
@@ -701,7 +706,7 @@ void testLayeredBrain() {
     const vkexp::neuro::BrainShape holed{8, 4, 6, 0, 2};
     check(!holed.fitsCapacity(), "A plan with a hole in the middle is refused");
     const vkexp::neuro::BrainShape overspent{
-        8, vkexp::neuro::Topology::hiddenCount, 6, vkexp::neuro::Topology::hiddenCount, 0};
+        8, vkexp::neuro::Topology::hiddenNeuronCapacity, 6, vkexp::neuro::Topology::hiddenNeuronCapacity, 0};
     check(!overspent.fitsCapacity(), "A plan spending more neurons than there are is refused");
     check(deep.fitsCapacity() && flat.fitsCapacity(), "and the plans that do fit are accepted");
 
@@ -736,7 +741,7 @@ void testLayeredBrain() {
     // only the one before it. Under the reactive model the state is the
     // activation outright, so the whole network is a composition of tanh and the
     // expected value can be written down.
-    vkexp::neuro::Weights weights{};
+    vkexp::neuro::Weights weights = vkexp::neuro::makeWeights(deep);
     const auto inputs8 = static_cast<bk::uint>(deep.inputCount);
     weights[bk::brainLayerWeightIndex(0u, inputs8, layers, 0u, 0u, 0u)] = 1.5F;
     weights[bk::brainLayerWeightIndex(0u, inputs8, layers, 1u, 0u, 0u)] = 1.25F;
@@ -771,6 +776,28 @@ void testLayeredBrain() {
     }
     check(std::abs(settled[0]) > 0.0F && std::abs(settled[4]) > 0.0F,
           "Neurons in the second layer carry state of their own");
+    // The regression this constant exists to prevent, asserted rather than
+    // remembered: raising how many neurons there *may* be must not widen any
+    // world's brain behind its back. Every scenario runs twenty hidden neurons
+    // unless it is asked for something else, and the capacity is a separate
+    // number that happens to be larger.
+    check(vkexp::neuro::defaultBrainShape.hiddenTotal() == 20 &&
+              vkexp::neuro::Topology::hiddenNeuronCapacity > 20,
+          "The default width and the neuron capacity are different numbers");
+    for (const vkexp::ScenarioDefinition* const definition : vkexp::scenarioRegistry()) {
+        check(definition->brain.hiddenLayerCount() == 1 && definition->brain.hiddenTotal() == 20,
+              std::string{"Scenario "} + definition->key + " still declares one layer of twenty");
+    }
+
+    // And the genome is as long as the plan reading it, not as long as the
+    // widest plan there could be. This is what lets a file say which network it
+    // holds instead of every run sharing one length.
+    const vkexp::neuro::BrainShape wide{61, vkexp::neuro::Topology::hiddenNeuronCapacity, 8};
+    check(deep.weightCount() < vkexp::neuro::defaultBrainShape.weightCount() &&
+              vkexp::neuro::defaultBrainShape.weightCount() < wide.weightCount(),
+          "A deeper plan is shorter than the flat default, which is shorter than the widest");
+    check(vkexp::neuro::makeWeights(deep).size() == deep.weightCount(),
+          "A genome is made exactly as long as its own plan");
 }
 
 void testBrainDescription() {
@@ -921,14 +948,17 @@ void testBrainDescription() {
 void testGenomeArchiveRoundTrip() {
     const std::filesystem::path path =
         std::filesystem::temp_directory_path() / "vkexp_archive_test" / "population.vkng";
-    std::vector<vkexp::Genome> genomes(3);
+    std::vector<vkexp::Genome> genomes(
+        3, vkexp::Genome{vkexp::neuro::makeWeights(vkexp::neuro::BrainShape{52, 20, 8})});
     for (std::size_t index = 0; index < genomes.size(); ++index) {
         for (std::size_t weight = 0; weight < genomes[index].weights.size(); ++weight) {
             genomes[index].weights[weight] =
                 std::sin(static_cast<float>(index * 31 + weight) * 0.017F);
         }
     }
-    const vkexp::GenomeArchiveMetadata metadata{42, 4, 0xC0FFEEU, 1.5F, 0.25F, 52, 20, 8};
+    const vkexp::neuro::BrainShape archivePlan{52, 20, 8};
+    const vkexp::GenomeArchiveMetadata metadata{42,   4,  0xC0FFEEU, 1.5F, 0.25F, 52, 20, 8,
+                                               archivePlan.packedLayers()};
     vkexp::saveGenomeArchive(path, genomes, metadata);
 
     const vkexp::GenomeArchive loaded = vkexp::loadGenomeArchive(path);
@@ -976,21 +1006,21 @@ void testGenomeArchiveRoundTrip() {
 
     // Version 1 files predate the structure block and still load: the weights
     // were laid out the same way, the file simply does not say so. Built by
-    // surgery on a version 2 file, because there is no writer for the old format
-    // any more -- version at byte 4, structure length at byte 52, header 56.
+    // surgery on a current file, because there is no writer for the old format
+    // any more -- version at byte 4, structure length at byte 60, header 64.
     const std::filesystem::path legacy = path.parent_path() / "legacy.vkng";
     {
         std::ifstream input{path, std::ios::binary};
         std::string contents{std::istreambuf_iterator<char>{input},
                              std::istreambuf_iterator<char>{}};
         std::uint32_t structureBytes = 0;
-        std::memcpy(&structureBytes, contents.data() + 52, sizeof(structureBytes));
-        check(structureBytes > 0, "A version 2 file records how long its structure block is");
+        std::memcpy(&structureBytes, contents.data() + 60, sizeof(structureBytes));
+        check(structureBytes > 0, "A current file records how long its structure block is");
         const std::uint32_t one = 1;
         std::memcpy(contents.data() + 4, &one, sizeof(one));
         const std::uint32_t none = 0;
-        std::memcpy(contents.data() + 52, &none, sizeof(none));
-        contents.erase(56, structureBytes);
+        std::memcpy(contents.data() + 60, &none, sizeof(none));
+        contents.erase(64, structureBytes);
         std::ofstream output{legacy, std::ios::binary | std::ios::trunc};
         output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
     }
@@ -1000,6 +1030,26 @@ void testGenomeArchiveRoundTrip() {
           "A version 1 archive still loads its weights");
     check(!old.describedStructure,
           "and says plainly that nothing about its structure was checked");
+
+    // A file holds whatever network it was written under, and says which. This
+    // is what replaced one compiled-in genome length: interchangeability now
+    // comes from the file describing itself, so an archive of a three-layer
+    // brain is a perfectly good file even in a run set up for a flat one.
+    const vkexp::neuro::BrainShape deepPlan{61, 12, 8, 8, 8};
+    const std::filesystem::path deepPath = path.parent_path() / "deep.vkng";
+    std::vector<vkexp::Genome> deepGenomes(2, vkexp::Genome{vkexp::neuro::makeWeights(deepPlan)});
+    deepGenomes.front().weights.front() = 0.5F;
+    const vkexp::GenomeArchiveMetadata deepMetadata{
+        7, 5, 1U, 0.5F, 0.25F, 61, static_cast<std::uint32_t>(deepPlan.hiddenTotal()), 8,
+        deepPlan.packedLayers()};
+    vkexp::saveGenomeArchive(deepPath, deepGenomes, deepMetadata);
+    const vkexp::GenomeArchive deepLoaded = vkexp::loadGenomeArchive(deepPath);
+    check(deepLoaded.genomes.front().weights.size() == deepPlan.weightCount(),
+          "An archive of a three-layer brain comes back at that brain's length");
+    check(deepLoaded.description.hiddenLayers == std::vector<std::uint32_t>{12, 8, 8},
+          "and says which three layers they were");
+    check(deepLoaded.genomes.front().weights.front() == 0.5F,
+          "and the weights survive it");
 
     // A corrupted magic must fail loudly rather than load noise as a population.
     const std::filesystem::path corrupted = path.parent_path() / "corrupted.vkng";
@@ -1369,9 +1419,9 @@ void testNeuronTimeConstants() {
 
     // The evaluator honours both, and the stateless overload is the memory-off
     // one rather than a second network.
-    vkexp::neuro::Weights weights{};
+    vkexp::neuro::Weights weights = vkexp::neuro::makeWeights(vkexp::neuro::maximumBrainShape);
     constexpr auto inputCount = static_cast<kernel::uint>(vkexp::neuro::Topology::inputCount);
-    constexpr auto hiddenCount = static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenCount);
+    constexpr auto hiddenCount = static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity);
     constexpr kernel::uint layers = kernel::brainPackHiddenLayers(hiddenCount, 0u, 0u);
     weights[kernel::brainLayerWeightIndex(0u, inputCount, layers, 0u, 0u, 0u)] = 3.0F;
     weights[kernel::brainOutputWeightIndex(0u, inputCount, layers, 0u, 0u)] = 3.0F;
@@ -1409,12 +1459,12 @@ void testNeuronTimeConstants() {
 void testGatedNeurons() {
     namespace kernel = vkexp::neuro::kernel;
     constexpr auto inputCount = static_cast<kernel::uint>(vkexp::neuro::Topology::inputCount);
-    constexpr auto hiddenCount = static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenCount);
+    constexpr auto hiddenCount = static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity);
     constexpr auto outputCount = static_cast<kernel::uint>(vkexp::neuro::Topology::outputCount);
     constexpr kernel::uint layers = kernel::brainPackHiddenLayers(hiddenCount, 0u, 0u);
     const float step = vkexp::units::fixedTimeStep;
 
-    vkexp::neuro::Weights weights{};
+    vkexp::neuro::Weights weights = vkexp::neuro::makeWeights(vkexp::neuro::maximumBrainShape);
     weights[kernel::brainLayerWeightIndex(0u, inputCount, layers, 0u, 0u, 0u)] = 3.0F;
     weights[kernel::brainOutputWeightIndex(0u, inputCount, layers, 0u, 0u)] = 3.0F;
     vkexp::neuro::Inputs inputs{};
@@ -1468,15 +1518,15 @@ void testGatedNeurons() {
     // Asserted against the widest plan, which is what the genome is sized for:
     // under a narrower plan the genome has a tail nothing reads, by design.
     constexpr kernel::uint widest =
-        kernel::brainPackHiddenLayers(static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenCount),
+        kernel::brainPackHiddenLayers(static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity),
                                       0u, 0u);
     constexpr auto capacityInputs =
         static_cast<kernel::uint>(vkexp::neuro::Topology::inputCount);
     constexpr auto capacityOutputs =
         static_cast<kernel::uint>(vkexp::neuro::Topology::outputCount);
     check(kernel::brainGateBiasIndex(0u, capacityInputs, widest, capacityOutputs, 0u,
-                                     static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenCount) -
-                                         1u) == vkexp::neuro::Topology::weightCount - 1u,
+                                     static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity) -
+                                         1u) == vkexp::neuro::Topology::maximumWeightCount - 1u,
           "The gate block ends exactly at the end of the genome");
     check(kernel::brainGateWeightIndex(0u, inputCount, layers, outputCount, 0u, 0u, 0u) >
               kernel::brainTimeConstantGeneIndex(0u, inputCount, layers, outputCount,

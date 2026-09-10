@@ -7,7 +7,7 @@
 
 namespace vkexp {
 
-void stepAgentCpu(AgentState& agent, std::span<const float, neuro::Topology::weightCount> weights,
+void stepAgentCpu(AgentState& agent, std::span<const float> weights,
                   const SimulationStep& settings);
 
 // Scores a finished trial with the scenario's own fitness function.

@@ -37,6 +37,12 @@ const uint BrainActuatorOutputCount = 6u; // left, right, R, G, B, intensity
 const uint BrainHiddenNeuronCapacity = 32u;
 const uint BrainHiddenLayerCapacity = 3u;
 
+// The one hidden layer this network had before plans existed, and still what a
+// scenario means when it does not say otherwise. Separate from the capacity on
+// purpose: raising how many neurons there *may* be must not quietly widen every
+// world's brain, which is exactly what sharing one constant would have done.
+const uint BrainDefaultHiddenWidth = 20u;
+
 // --- derived layout: never edited by hand ------------------------------------
 
 const uint BrainLightBlockSize = BrainLightReceptorCount * BrainLightChannels;

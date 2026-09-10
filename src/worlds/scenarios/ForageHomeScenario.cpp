@@ -45,7 +45,7 @@ ScenarioParameterBlock gpuParameters(const SimulationStep& settings) {
             {settings.beaconMotionSeed, 0U, 0U, 0U}};
 }
 
-constexpr neuro::BrainShape brain = neuro::maximumBrainShape;
+constexpr neuro::BrainShape brain = neuro::defaultBrainShape;
 static_assert(brain.fitsCapacity());
 
 } // namespace

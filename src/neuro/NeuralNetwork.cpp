@@ -5,11 +5,14 @@
 
 namespace vkexp::neuro {
 
-Outputs evaluate(const std::span<const float, Topology::weightCount> weights, const Inputs& inputs,
+Outputs evaluate(const std::span<const float> weights, const Inputs& inputs,
                  HiddenState& state, const float deltaTime, const kernel::uint model,
                  const BrainShape shape) {
     if (!shape.fitsCapacity()) {
         throw std::invalid_argument("Neural-network shape exceeds genome capacity");
+    }
+    if (weights.size() < shape.weightCount()) {
+        throw std::invalid_argument("Genome is shorter than the plan it is evaluated under");
     }
     const auto inputCount = static_cast<kernel::uint>(shape.inputCount);
     const auto outputCount = static_cast<kernel::uint>(shape.outputCount);
@@ -30,7 +33,7 @@ Outputs evaluate(const std::span<const float, Topology::weightCount> weights, co
     for (kernel::uint layer = 0; layer < layerCount; ++layer) {
         const kernel::uint width = kernel::brainHiddenLayerSize(layers, layer);
         const kernel::uint stateOffset = kernel::brainHiddenLayerStateOffset(layers, layer);
-        std::array<float, Topology::hiddenCount> produced{};
+        std::array<float, Topology::hiddenNeuronCapacity> produced{};
         for (kernel::uint neuron = 0; neuron < width; ++neuron) {
             float activation =
                 weights[kernel::brainLayerBiasIndex(base, inputCount, layers, layer, neuron)];
@@ -84,7 +87,7 @@ Outputs evaluate(const std::span<const float, Topology::weightCount> weights, co
     return outputs;
 }
 
-Outputs evaluate(const std::span<const float, Topology::weightCount> weights, const Inputs& inputs,
+Outputs evaluate(const std::span<const float> weights, const Inputs& inputs,
                  const BrainShape shape) {
     HiddenState state{};
     // Any positive step works: the reactive model assigns the activation

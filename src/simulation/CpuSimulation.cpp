@@ -30,7 +30,7 @@ void recordWallContact(AgentState& agent, const float directionX, const float di
 } // namespace
 
 void stepAgentCpu(AgentState& agent,
-                  const std::span<const float, neuro::Topology::weightCount> weights,
+                  const std::span<const float> weights,
                   const SimulationStep& settings) {
     const ScenarioDefinition& scenario = scenarioDefinition(settings.beaconScenario);
     if (scenario.beforeStep != nullptr) {

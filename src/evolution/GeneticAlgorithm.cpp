@@ -19,7 +19,7 @@ GeneticAlgorithm::GeneticAlgorithm(EvolutionSettings settings)
 void GeneticAlgorithm::reset() {
     random_.seed(settings_.seed);
     generation_ = 0;
-    population_.assign(settings_.populationSize, {});
+    population_.assign(settings_.populationSize, Genome{neuro::Weights(settings_.weightCount, 0.0F)});
     std::normal_distribution<float> initialWeight{0.0F, 0.55F};
     for (Genome& genome : population_) {
         for (float& weight : genome.weights) {
@@ -32,6 +32,14 @@ void GeneticAlgorithm::setPopulation(const std::span<const Genome> genomes,
                                      const std::uint64_t generation) {
     if (genomes.size() != population_.size()) {
         throw std::invalid_argument("Loaded genome count must match the configured population");
+    }
+    for (const Genome& genome : genomes) {
+        if (!genomeFits(genome, settings_.weightCount)) {
+            throw std::invalid_argument(
+                "Loaded genome is " + std::to_string(genome.weights.size()) +
+                " weights long, this run's brain plan needs " +
+                std::to_string(settings_.weightCount));
+        }
     }
     population_.assign(genomes.begin(), genomes.end());
     generation_ = generation;
@@ -85,7 +93,8 @@ GenerationSummary GeneticAlgorithm::evolve(const std::span<const float> fitness)
                               sum / static_cast<float>(fitness.size()),
                               sortedFitness[sortedFitness.size() / 2], ranking.front()};
 
-    std::vector<Genome> next(population_.size());
+    std::vector<Genome> next(population_.size(),
+                             Genome{neuro::Weights(settings_.weightCount, 0.0F)});
     for (std::size_t index = 0; index < settings_.eliteCount; ++index) {
         next[index] = population_[ranking[index]];
     }
@@ -98,7 +107,7 @@ GenerationSummary GeneticAlgorithm::evolve(const std::span<const float> fitness)
         const Genome& first = population_[tournament(fitness)];
         const Genome& second = population_[tournament(fitness)];
         const bool useCrossover = crossover(random_);
-        for (std::size_t weight = 0; weight < neuro::Topology::weightCount; ++weight) {
+        for (std::size_t weight = 0; weight < settings_.weightCount; ++weight) {
             float value = first.weights[weight];
             if (useCrossover && inheritSecond(random_)) {
                 value = second.weights[weight];

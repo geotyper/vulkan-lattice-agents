@@ -894,8 +894,8 @@ inputs 61                            hidden 20            outputs 8
   2 recurrent cells fed back           =  2
 ```
 
-The genome is one flat vector of 4264 floats. Under the default plan -- one
-hidden layer of twenty -- 2668 of them are in use, in seven blocks:
+The genome is one flat vector, as long as the plan needs. Under the default plan
+-- one hidden layer of twenty -- that is 2668 floats in seven blocks:
 
 | Block | Size | Read by |
 | --- | --- | --- |
@@ -909,9 +909,8 @@ hidden layer of twenty -- 2668 of them are in use, in seven blocks:
 
 A deeper plan has one weights-and-bias pair per layer, and one gate pair to
 mirror it; the output layer always reads the last hidden layer. `12,8,8` comes to
-1940 weights in fifteen blocks, which is *fewer* than the flat default: the first
-matrix is what dominates, and a narrow first layer makes the whole network
-cheaper even as it makes it deeper.
+1940 weights in fifteen blocks -- *fewer* than the flat default, because the
+first matrix is what dominates.
 
 Every model carries every block, whichever one is selected. That is deliberate:
 it makes switching a parameter change rather than a reinterpretation of the
@@ -954,12 +953,22 @@ cases at `12,8,8` and at `16,6` precisely because every other case in the file
 runs the single layer the network always had: a shader that read the plan even
 slightly differently would drift there and nowhere else.
 
-**The genome is one length whatever the plan.** It is sized for the widest plan
-the capacity allows -- one 32-wide layer, 4264 weights -- so a narrower or deeper
-plan carries a tail it never reads. That is the same trade the gate block makes
-and for the same reason: one buffer size and one genome length is what lets a
-population stay loadable across plans and two plans be compared at all. The
-window shows both numbers side by side.
+**The genome is exactly as long as its plan.** There is no fixed stride and no
+tail: the flat default is 2668 weights, `12,8,8` is 1940, and a single 32-wide
+layer is 4264. Interchangeability comes from the file saying which network it
+holds, not from every run sharing one length -- an archive records the plan in
+its header and the structure block beside it, and refuses to load into a build
+that lays that network out differently, naming the block that moved.
+
+A deeper plan is usually *cheaper* than a flat one, which is worth knowing before
+reaching for it: the first matrix dominates, so a narrow first layer shrinks the
+whole network even as it makes it deeper.
+
+**The default width and the capacity are separate numbers**, and a test says so.
+Sharing one constant would mean that raising how many neurons there *may* be
+widens every world's brain behind its back -- which is exactly what happened once
+while this was being built. Every scenario declares one layer of twenty; the
+capacity is thirty-two and nothing runs it unless asked.
 
 **Each layer holds its own state.** The time constants are per neuron, numbered
 across all layers end to end, so a deep plan is not just a longer path but a path
@@ -1021,19 +1030,22 @@ the kernel's own index function puts them. A description that merely looked
 right would be worse than none, because the loader below acts on it.
 
 **Both file formats notice a brain that changed shape**, and one of them can now
-say how. A genome archive carries this document, and refuses to load into a build
-whose network differs, naming the block: *"input block 'antennae' is missing"*
-rather than *"2668 weights, expected 2530"*. Archives are version 2 for that;
-version 1 files still load, and say plainly that nothing but their weight count
-was checked. World snapshots carry a version of their own, currently 13.
+say how. A genome archive carries this document plus the layer plan in its
+header, so a file states which network it holds; it refuses to load into a build
+that lays that network out differently, naming the block: *"input block
+'antennae' is missing"* rather than *"2668 weights, expected 2530"*. Archives are
+version 3 for that; version 1 files still load and say plainly that nothing but
+their length was checked. World snapshots carry a version of their own, currently
+14.
 
-**What this is not, yet.** It describes the structure; it does not choose it.
-GLSL sizes its arrays with compile-time constants, so capacity stays in
-`BrainKernel.inl` and a file cannot invent a sensor. What a file can already
-carry is the active shape inside that capacity, which is a runtime parameter the
-GPU already reads. Making the connections themselves data -- a genome with its
-own topology -- is a different change: it takes the arithmetic away from the
-shader, and needs structural mutation and speciation to go with it.
+**What this is not, yet.** The layers are chosen; the *connections* are not. A
+plan says how many layers and how wide, and every layer is still fully connected
+to the one before it. A genome with its own topology -- connections as data,
+added and removed by mutation -- is a different change: it takes the arithmetic
+away from the shader, and needs structural mutation and speciation to go with
+it. Capacity also stays compiled in, because GLSL sizes its arrays with
+compile-time constants, so a file cannot invent a sensor or a thirty-third
+neuron.
 
 ## Replay
 
