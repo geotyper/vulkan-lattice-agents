@@ -191,42 +191,44 @@ if(BUILD_TESTING)
     # A short real evolution run: proves the headless path drives the same
     # driver end to end and that archives round-trip through the runner.
     add_test(NAME vklat_headless_smoke COMMAND vklat_headless
-        --scenario forage --generations 2 --steps 24 --population 32
-        --agents-per-world 8 --quiet
+        --generations 2 --steps 24 --population 32
+        --agents-per-world 8 --lattice 12x12x8 --quiet
         --save-population ${CMAKE_CURRENT_BINARY_DIR}/headless_population.vkng
         --save-champion ${CMAKE_CURRENT_BINARY_DIR}/headless_champion.vkng
-        --save-world ${CMAKE_CURRENT_BINARY_DIR}/headless_world.vknw)
+        --save-run ${CMAKE_CURRENT_BINARY_DIR}/headless_run.vklr)
     set_tests_properties(vklat_headless_smoke PROPERTIES SKIP_RETURN_CODE 77)
 
-    # The scenario with static geometry, driven end to end. The parity test
-    # covers one agent against one wall; this covers a population evolving in a
-    # world that has walls at all, where a spawn hook and an obstacle loop run
-    # every step for every agent.
-    add_test(NAME vklat_headless_doors COMMAND vklat_headless
-        --scenario doors --generations 2 --steps 48 --population 32
-        --agents-per-world 8 --quiet)
-    set_tests_properties(vklat_headless_doors PROPERTIES SKIP_RETURN_CODE 77)
+    # The other neighbourhood, driven end to end. The parity test covers the
+    # face-only reduction on one step; this covers a population evolving under
+    # it, where the reduction runs for every agent on every step and the
+    # distance metric it implies is what the shaping is measured against.
+    add_test(NAME vklat_headless_faces COMMAND vklat_headless
+        --generations 2 --steps 48 --population 32
+        --agents-per-world 8 --neighbourhood faces --lattice 12x12x8 --quiet)
+    set_tests_properties(vklat_headless_faces PROPERTIES SKIP_RETURN_CODE 77)
 
-    add_test(NAME vklat_headless_shuttle COMMAND vklat_headless
-        --scenario shuttle --generations 2 --steps 48 --population 32
-        --agents-per-world 8 --quiet)
-    set_tests_properties(vklat_headless_shuttle PROPERTIES SKIP_RETURN_CODE 77)
+    # A lattice crowded enough that the arbitration fires constantly: eight
+    # agents in 96 cells is 8% density, where a run spends most of its steps
+    # contesting cells rather than crossing empty ones.
+    add_test(NAME vklat_headless_crowded COMMAND vklat_headless
+        --generations 2 --steps 48 --population 32
+        --agents-per-world 8 --lattice 6x4x4 --contact-radius 0 --quiet)
+    set_tests_properties(vklat_headless_crowded PROPERTIES SKIP_RETURN_CODE 77)
 
     add_test(NAME vklat_headless_resume COMMAND vklat_headless
-        --scenario forage --generations 1 --steps 24 --population 32
-        --agents-per-world 8 --quiet
+        --generations 1 --steps 24 --population 32
+        --agents-per-world 8 --lattice 12x12x8 --quiet
         --load-population ${CMAKE_CURRENT_BINARY_DIR}/headless_population.vkng)
     set_tests_properties(vklat_headless_resume PROPERTIES
         SKIP_RETURN_CODE 77
         DEPENDS vklat_headless_smoke)
 
-    # No --scenario, no --world-size, no --steps: the snapshot carries the world
-    # it ran in, and a run that needed the command line to restate it would not
-    # be a resume.
-    add_test(NAME vklat_headless_resume_world COMMAND vklat_headless
+    # No --lattice and no --steps: the snapshot carries the world it ran in, and
+    # a run that needed the command line to restate it would not be a resume.
+    add_test(NAME vklat_headless_resume_run COMMAND vklat_headless
         --generations 1 --population 32 --agents-per-world 8 --quiet
-        --load-world ${CMAKE_CURRENT_BINARY_DIR}/headless_world.vknw)
-    set_tests_properties(vklat_headless_resume_world PROPERTIES
+        --load-run ${CMAKE_CURRENT_BINARY_DIR}/headless_run.vklr)
+    set_tests_properties(vklat_headless_resume_run PROPERTIES
         SKIP_RETURN_CODE 77
         DEPENDS vklat_headless_smoke)
 

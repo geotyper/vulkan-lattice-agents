@@ -46,13 +46,17 @@ bool samePopulation(const std::vector<vkexp::Genome>& left,
 
 int run() {
     vkexp::HeadlessComputeContext context{
-        vkexp::HeadlessComputeConfig{.applicationName = "vkneuro replay smoke"}};
+        vkexp::HeadlessComputeConfig{.applicationName = "vklat replay smoke"}};
 
     vkexp::SimulationState state{};
     state.controls.stepsPerGeneration = 24;
     state.worlds.requestedAgentsPerWorld = 16;
-    state.physics.worldRadius = vkexp::worldRadiusForSize(state.physics.worldSize);
-    state.physics.lightSensorRange = vkexp::lightRangeForWorld(state.physics);
+    // A small lattice, so the sixteen agents sharing one actually meet: a replay
+    // that repeats exactly in a world nobody contests would be a weaker claim
+    // than one that repeats with the arbitration firing every step.
+    state.settings.latticeWidth = 12;
+    state.settings.latticeHeight = 12;
+    state.settings.latticeDepth = 8;
 
     vkexp::SimulationDriver driver{state, vkexp::EvolutionSettings{.populationSize = 64}, {}};
     driver.createResources(context.physicalDevice(), context.device());
@@ -89,9 +93,9 @@ int run() {
     require(samePopulation(driver.evolution().population(), watched),
             "replay selects and mutates nothing");
 
-    // The strong claim: because nothing was selected and the beacon motion seed
-    // is the generation number, the next generation is the same one again rather
-    // than a similar one. Anything that leaked evolution or advanced the seed
+    // The strong claim: because nothing was selected and the beacon seed is
+    // derived from the generation number, the next generation is the same one
+    // again rather than a similar one. Anything that leaked evolution or advanced the seed
     // would show up here as a different ending, not as a worse number.
     stepGeneration();
     const std::vector<vkexp::AgentState> secondRun = driver.snapshot().agents;
@@ -108,7 +112,7 @@ int run() {
     driver.beginSweep();
     require(!state.controls.replay, "starting a sweep leaves replay mode");
     require(state.sweep.running && state.sweep.stages.size() == 1, "a sweep arms its first stage");
-    require(std::abs(state.physics.fitness.groupSharing - 0.25F) < 1.0e-6F,
+    require(std::abs(state.settings.fitness.groupSharing - 0.25F) < 1.0e-6F,
             "a sweep applies its first value");
     require(driver.evolution().generation() == 0, "a sweep restarts evolution");
 
@@ -116,7 +120,7 @@ int run() {
         stepGeneration();
         driver.finishGeneration();
     }
-    require(std::abs(state.physics.fitness.groupSharing - 0.75F) < 1.0e-6F,
+    require(std::abs(state.settings.fitness.groupSharing - 0.75F) < 1.0e-6F,
             "a filled stage applies the next value");
     require(driver.evolution().generation() == 0,
             "each stage begins from the seeded population, not the previous stage's");
@@ -141,7 +145,7 @@ int run() {
     driver.finishGeneration();
     require(state.sweep.stages.back().arrivalRatio.size() == 2,
             "a stopped sweep records nothing further");
-    require(std::abs(state.physics.fitness.groupSharing - 0.75F) < 1.0e-6F,
+    require(std::abs(state.settings.fitness.groupSharing - 0.75F) < 1.0e-6F,
             "a stopped sweep leaves the last setting in place");
     require(driver.evolution().generation() == 3, "evolution continues after the sweep ends");
 

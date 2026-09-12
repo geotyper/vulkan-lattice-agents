@@ -1,11 +1,10 @@
 #include "vkexp/ui/SimulationUiModule.hpp"
 
+#include "vkexp/lattice/LatticeKernel.hpp"
 #include "vkexp/neuro/NeuralNetwork.hpp"
-#include "vkexp/worlds/WorldScenario.hpp"
-#include "vkexp/simulation/Locomotion.hpp"
 #include "vkexp/profiling/Profiler.hpp"
+#include "vkexp/simulation/Units.hpp"
 #include "vkexp/ui/ImGuiModule.hpp"
-#include "vkexp/worlds/WorldScenario.hpp"
 
 #include <imgui.h>
 
@@ -15,7 +14,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -60,6 +58,24 @@ std::pair<float, float> stackedRange(const std::vector<SweepStage>& stages,
     return {minimum, maximum};
 }
 
+// One slider per axis, and a reset on any change: the lattice is a buffer
+// dimension, so a new box is a new run rather than a live adjustment. Returns
+// whether the extent moved, so the caller raises the reset once for all three.
+bool latticeExtentSlider(const char* label, std::uint32_t& extent) {
+    int value = static_cast<int>(extent);
+    if (!ImGui::SliderInt(label, &value, static_cast<int>(latticeMinimumExtent),
+                          static_cast<int>(latticeMaximumExtent), "%d",
+                          ImGuiSliderFlags_Logarithmic)) {
+        return false;
+    }
+    const std::uint32_t clamped = clampLatticeExtent(static_cast<std::uint32_t>(value));
+    if (clamped == extent) {
+        return false;
+    }
+    extent = clamped;
+    return true;
+}
+
 } // namespace
 
 SimulationUiModule::SimulationUiModule(SimulationState& state, ImGuiModule& imgui,
@@ -79,460 +95,135 @@ void SimulationUiModule::syncTexture() {
 }
 
 void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
-    auto cpuScope = context.profiler.cpu().scope(metric_);
+    auto scope = context.profiler.cpu().scope(metric_);
     syncTexture();
+    (void)frame;
 
     ImGui::SetNextWindowPos(ImVec2(16.0F, 16.0F), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(330.0F, 470.0F), ImGuiCond_FirstUseEver);
     ImGui::Begin("Simulation");
-    ImGui::Text("Generation %llu", static_cast<unsigned long long>(state_.statistics.generation));
-    ImGui::ProgressBar(static_cast<float>(state_.statistics.step) /
-                           static_cast<float>(std::max(state_.controls.stepsPerGeneration, 1U)),
-                       ImVec2(-1.0F, 0.0F));
-    ImGui::Text("GPU agents: %u  Genomes: %u x %u trials", state_.agents.agentCount,
-                state_.agents.genomeCount, state_.agents.trialsPerGenome);
-    ImGui::Text("Frame %.2f ms", frame.deltaSeconds * 1000.0F);
-    ImGui::Checkbox("Pause", &state_.controls.paused);
+
+    ImGui::Checkbox("Paused", &state_.controls.paused);
     int stepsPerFrame = static_cast<int>(state_.controls.stepsPerFrame);
-    if (ImGui::SliderInt("Steps / frame", &stepsPerFrame, 1, 32)) {
+    if (ImGui::SliderInt("Steps / frame", &stepsPerFrame, 1, 64)) {
         state_.controls.stepsPerFrame = static_cast<std::uint32_t>(stepsPerFrame);
     }
-    int generationSteps = static_cast<int>(state_.controls.stepsPerGeneration);
-    if (ImGui::SliderInt("Steps / generation", &generationSteps, 120, 15000, "%d",
+    ImGui::SetItemTooltip("How much simulation one displayed frame advances. It changes how fast "
+                          "a run goes, never what it computes: a step is the unit of "
+                          "reproducibility and nothing here is a function of wall-clock time.");
+    int stepsPerGeneration = static_cast<int>(state_.controls.stepsPerGeneration);
+    if (ImGui::SliderInt("Steps / generation", &stepsPerGeneration, 60, 3000, "%d",
                          ImGuiSliderFlags_Logarithmic)) {
-        state_.controls.stepsPerGeneration = static_cast<std::uint32_t>(generationSteps);
+        state_.controls.stepsPerGeneration = static_cast<std::uint32_t>(stepsPerGeneration);
+    }
+    ImGui::TextDisabled(
+        "trial %.1f s at %.0f Hz (%.1f ms per step)",
+        static_cast<double>(units::secondsForSteps(state_.controls.stepsPerGeneration,
+                                                   state_.settings.deltaTime)),
+        static_cast<double>(1.0F / state_.settings.deltaTime),
+        static_cast<double>(state_.settings.deltaTime * 1000.0F));
+
+    ImGui::SeparatorText("The lattice");
+    // Every extent is a buffer dimension, so a change here can only take effect
+    // on a reset. They are sliders and not fixed because what the plan leaves
+    // open is exactly how much room the neighbourhood work needs -- and the
+    // answer is different for a chain than for a formation.
+    bool latticeChanged = latticeExtentSlider("Width", state_.settings.latticeWidth);
+    latticeChanged |= latticeExtentSlider("Height", state_.settings.latticeHeight);
+    latticeChanged |= latticeExtentSlider("Depth", state_.settings.latticeDepth);
+    if (latticeChanged) {
         state_.controls.resetRequested = true;
     }
-    // A world that needs a longer trial than the one it is being run in reports a
-    // completion ratio that cannot reach one, and nothing about the picture says
-    // so. The scenario carries the number it needs; this is where it gets said.
-    const std::uint32_t nominalSteps =
-        scenarioDefinition(state_.physics.beaconScenario).nominalStepsPerGeneration;
-    if (state_.controls.stepsPerGeneration < nominalSteps) {
-        ImGui::TextColored(ImVec4(1.0F, 0.75F, 0.25F, 1.0F),
-                           "%s needs %u steps to complete its objectives",
-                           scenarioDefinition(state_.physics.beaconScenario).name, nominalSteps);
+    // Cells per world times worlds is what the fixed allocation has to hold, and
+    // the driver shrinks the box rather than growing the buffer -- so the numbers
+    // here are what is running, not what was asked for.
+    const std::uint32_t cells = latticeCellsPerWorld(state_.settings);
+    const double gridBytes = static_cast<double>(cells) * state_.worlds.worldCount *
+                             sizeof(std::int32_t);
+    ImGui::TextDisabled("%u cells per world, %u worlds, %.1f MB of occupancy", cells,
+                        state_.worlds.worldCount, gridBytes / (1024.0 * 1024.0));
+    if (state_.worlds.agentsPerWorld > 0 && cells > 0) {
+        ImGui::TextDisabled("density %.2f%% -- agents meet below about 1%%",
+                            100.0 * static_cast<double>(state_.worlds.agentsPerWorld) /
+                                static_cast<double>(cells));
+    }
+
+    int neighborhood = static_cast<int>(state_.settings.neighborhood);
+    constexpr const char* neighborhoods[] = {"Faces only (6)", "Moore (26)"};
+    static_assert(std::size(neighborhoods) == neighborhoodCount);
+    if (ImGui::Combo("Neighbourhood", &neighborhood, neighborhoods,
+                     static_cast<int>(neighborhoodCount))) {
+        state_.settings.neighborhood = static_cast<Neighborhood>(neighborhood);
+        state_.controls.resetRequested = true;
+    }
+    ImGui::SetItemTooltip("Whether a step may be diagonal. The input vector is 26 cells wide "
+                          "under both -- how many directions can be seen and how many can be "
+                          "walked are separate questions -- so a population trained under one "
+                          "setting still loads under the other. It also changes what distance "
+                          "means: Chebyshev under Moore, Manhattan under faces.");
+    ImGui::TextDisabled("longest journey %u moves", latticeMaximumDistance(state_.settings));
+
+    ImGui::SliderFloat("Move threshold", &state_.settings.moveThreshold, 0.0F, 0.95F, "%.2f");
+    ImGui::SetItemTooltip("How sure a drive has to be before it becomes a step. This is the whole "
+                          "of the decision to stand still: at zero an agent moves every step "
+                          "whatever it thinks, and near one it has to commit.");
+
+    int contactRadius = static_cast<int>(state_.settings.beaconContactRadius);
+    if (ImGui::SliderInt("Contact radius", &contactRadius, 0, 6)) {
+        state_.settings.beaconContactRadius = static_cast<std::uint32_t>(contactRadius);
+    }
+    ImGui::SetItemTooltip("How near the beacon counts as having reached it. A cell holds one "
+                          "agent, so at zero eleven of twelve lose the objective however well "
+                          "they steered -- which measures the arbitration rule rather than the "
+                          "policy. Widen it to let a group crowd the beacon.");
+    if (state_.settings.beaconContactRadius == 0) {
         ImGui::SameLine();
-        char label[32];
-        std::snprintf(label, sizeof(label), "Use %u", nominalSteps);
-        if (ImGui::SmallButton(label)) {
-            state_.controls.stepsPerGeneration = nominalSteps;
-            state_.controls.resetRequested = true;
-        }
+        ImGui::TextColored(ImVec4{0.95F, 0.75F, 0.25F, 1.0F}, "one winner per world");
     }
-    // The step stays the control, because a replay is reproduced by step count.
-    // Seconds are shown beside it so arena size, speed and trial length can be
-    // read against each other in the units they are actually expressed in.
-    ImGui::Text("Trial %.1f s at %.1f Hz (dt %.2f ms)",
-                static_cast<double>(units::secondsForSteps(state_.controls.stepsPerGeneration,
-                                                           state_.physics.deltaTime)),
-                static_cast<double>(1.0F / state_.physics.deltaTime),
-                static_cast<double>(state_.physics.deltaTime * 1000.0F));
-    ImGui::SeparatorText("World");
-    int requestedAgentsPerWorld = static_cast<int>(state_.worlds.requestedAgentsPerWorld);
-    const int populationSize = static_cast<int>(std::max(state_.agents.genomeCount, 1U));
-    const int minimumGroupSize = std::min(static_cast<int>(minimumAgentsPerWorld), populationSize);
-    if (ImGui::SliderInt("Agents / world", &requestedAgentsPerWorld, minimumGroupSize,
-                         populationSize)) {
-        state_.worlds.requestedAgentsPerWorld = static_cast<std::uint32_t>(requestedAgentsPerWorld);
-        state_.controls.resetRequested = true;
-    }
-    if (ImGui::Button("12 agents")) {
-        state_.worlds.requestedAgentsPerWorld = std::min(12U, state_.agents.genomeCount);
-        state_.controls.resetRequested = true;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("All agents")) {
-        state_.worlds.requestedAgentsPerWorld = state_.agents.genomeCount;
-        state_.controls.resetRequested = true;
-    }
-    ImGui::TextDisabled("%u groups x %u trials = %u worlds", state_.worlds.groupCount,
-                        state_.agents.trialsPerGenome, state_.worlds.worldCount);
-    int worldSize = static_cast<int>(state_.physics.worldSize);
-    constexpr const char* worldSizes[] = {"Small (x1)", "Medium (x1.5)", "Large (x3)"};
-    if (ImGui::Combo("World size", &worldSize, worldSizes, 3)) {
-        state_.physics.worldSize = static_cast<WorldSize>(worldSize);
-        state_.physics.worldRadius = worldRadiusForSize(state_.physics.worldSize);
-        state_.physics.lightSensorRange = lightRangeForWorld(state_.physics);
-        state_.controls.resetRequested = true;
-    }
-    int worldShape = static_cast<int>(state_.physics.worldShape);
-    constexpr const char* worldShapes[] = {"Circle", "Square"};
-    if (ImGui::Combo("World shape", &worldShape, worldShapes, 2)) {
-        state_.physics.worldShape = static_cast<WorldShape>(worldShape);
-        state_.controls.resetRequested = true;
-    }
-    ImGui::Text("World span: %.2f", state_.physics.worldRadius * 2.0F);
-    // Every scenario control below is driven by the scenario definition, so a new
-    // scenario appears here without editing this file.
-    const std::span<const ScenarioDefinition* const> registry = scenarioRegistry();
-    int beaconScenario = static_cast<int>(state_.physics.beaconScenario);
-    std::vector<const char*> beaconScenarios(registry.size());
-    for (std::size_t index = 0; index < registry.size(); ++index) {
-        beaconScenarios[index] = registry[index]->name;
-    }
-    if (ImGui::Combo("Beacon scenario", &beaconScenario, beaconScenarios.data(),
-                     static_cast<int>(beaconScenarios.size()))) {
-        state_.physics.beaconScenario = static_cast<BeaconScenario>(beaconScenario);
-        state_.controls.resetRequested = true;
-    }
-    const ScenarioDefinition& scenario = scenarioDefinition(state_.physics.beaconScenario);
-    if (ImGui::SliderFloat("Arrival radius multiplier", &state_.physics.arrivalRadiusMultiplier,
-                           0.1F, 5.0F, "x%.2f")) {
-        state_.controls.resetRequested = true;
-    }
-    ImGui::TextDisabled("Arrival distance %.3f (x1 = beacon circle)",
-                        beaconArrivalRadius(state_.physics));
-    if (scenario.tunables.beaconRadiusRatio) {
-        float beaconRadius = state_.physics.beaconRadiusRatio * state_.physics.worldRadius;
-        if (ImGui::SliderFloat(scenario.radiusLabel, &beaconRadius,
-                               state_.physics.worldRadius * 0.10F,
-                               state_.physics.worldRadius * 0.90F, "%.2f")) {
-            state_.physics.beaconRadiusRatio = beaconRadius / state_.physics.worldRadius;
-            state_.controls.resetRequested = true;
-        }
-    }
-    if (scenario.phaseForStep != nullptr) {
-        const std::uint32_t phase = beaconPhaseForStep(scenario.id, state_.statistics.step,
-                                                       state_.controls.stepsPerGeneration) +
-                                    1U;
-        ImGui::TextDisabled("Active phase: %u / %u", phase, scenario.objectivesPerAgent);
-    }
-    if (scenario.tunables.beaconAngularSpeed) {
-        if (ImGui::SliderAngle("Rotation speed", &state_.physics.beaconAngularSpeed, -90.0F, 90.0F,
-                               "%.1f deg/s")) {
-            state_.controls.resetRequested = true;
-        }
-        if (std::abs(state_.physics.beaconAngularSpeed) > 0.0001F) {
-            constexpr float tau = 6.28318530718F;
-            ImGui::TextDisabled("Orbit period: %.1f s",
-                                tau / std::abs(state_.physics.beaconAngularSpeed));
-        }
-    }
-    if (scenario.tunables.beaconRandomMotion) {
-        if (ImGui::SliderFloat("Wander speed", &state_.physics.beaconRandomSpeed, 0.0F, 0.75F,
-                               "%.2f")) {
-            state_.controls.resetRequested = true;
-        }
-        float teleportPercent = state_.physics.beaconTeleportProbability * 100.0F;
-        if (ImGui::SliderFloat("Teleport chance", &teleportPercent, 0.0F, 100.0F, "%.0f%%")) {
-            state_.physics.beaconTeleportProbability = teleportPercent * 0.01F;
-            state_.controls.resetRequested = true;
-        }
-    }
-    if (scenario.tunables.forageCargoDecay) {
-        if (ImGui::SliderFloat("Cargo decay / second", &state_.physics.forageCargoDecayRate, 0.0F,
-                               0.25F, "%.3f")) {
-            state_.controls.resetRequested = true;
-        }
-        if (ImGui::SliderFloat("Pickup reward", &state_.physics.foragePickupReward, 0.0F, 2.0F,
-                               "%.2f")) {
-            state_.controls.resetRequested = true;
-        }
-        if (ImGui::SliderFloat("Delivery reward", &state_.physics.forageDeliveryReward, 0.0F, 12.0F,
-                               "%.2f")) {
-            state_.controls.resetRequested = true;
-        }
-        ImGui::TextDisabled("Home relocates every %.0f seconds", forageHomeRelocationSeconds);
-    }
-    if (scenario.beaconCount >= 2) {
-        if (ImGui::Checkbox("Beacons share one colour", &state_.physics.uniformBeaconColor)) {
-            state_.controls.resetRequested = true;
-        }
-        ImGui::SetItemTooltip("Ablation: both ends emit the average of the two colours, so they "
-                              "stay lit and stop being told apart by hue. The control for whether "
-                              "a solution reads the colour at all -- one that does not will score "
-                              "the same with this on.");
-    }
-    if (scenario.puck) {
-        if (ImGui::SliderFloat("Puck radius", &state_.physics.puckRadiusRatio, 0.02F, 0.20F,
-                               "%.3f of arena")) {
-            state_.controls.resetRequested = true;
-        }
-        ImGui::SetItemTooltip("How big the puck is. Bigger is easier twice over: a wider contact "
-                              "arc for several agents to push at once, and a larger thing to find "
-                              "in the first place. The first knob to reach for when nothing is "
-                              "being learned at all.");
-        if (ImGui::SliderFloat("Target radius", &state_.physics.puckTargetRadiusRatio, 0.05F, 0.60F,
-                               "%.2f of arena")) {
-            state_.controls.resetRequested = true;
-        }
-        ImGui::SetItemTooltip("The disc in the middle the puck has to end up in, and the end of "
-                              "the journey the rungs are quarters of. Widen it to see whether the "
-                              "task is being solved at all, narrow it to ask for the puck to be "
-                              "placed rather than shoved.");
-        if (ImGui::SliderFloat("Breakaway push", &state_.physics.puckBreakawayPushes, 0.0F, 6.0F,
-                               "%.2f agents")) {
-            state_.controls.resetRequested = true;
-        }
-        ImGui::SetItemTooltip("How hard the whole world has to push before the puck moves at all, "
-                              "counted in agents leaning on it head-on at full throttle. Below one, a single agent "
-                              "solves the world alone and a group is only a convenience. Above "
-                              "one it cannot start the puck however hard it tries, and two have "
-                              "to be touching at the same time and pushing the same way -- so "
-                              "this is what turns the world from one that permits cooperation "
-                              "into one that requires it. Pushes from opposite sides cancel "
-                              "before it is measured, and two agents pushing at an angle add up "
-                              "to less than two, so a threshold of 2.0 asks for more than exactly "
-                              "two bodies.");
-        if (ImGui::Checkbox("Scatter the puck", &state_.physics.puckRandomStart)) {
-            state_.controls.resetRequested = true;
-        }
-        ImGui::SetItemTooltip("Off, the puck starts on the arena's axis with the agents spawned "
-                              "on its side, so the first thing they do is reach it. On, it is "
-                              "placed anywhere in a ring each generation and the agents start "
-                              "where they always do, so finding it is part of the task and no "
-                              "one layout can be memorised. Off is what every measurement so far "
-                              "was taken on.");
-    }
-    if (scenario.tunables.gateLatch) {
-        if (ImGui::SliderFloat("Gate latch (s)", &state_.physics.gateLatchSeconds, 0.0F, 8.0F,
-                               "%.1f s")) {
-            state_.controls.resetRequested = true;
-        }
-        ImGui::SetItemTooltip("How long the gate keeps running after the plate is released, and "
-                              "the whole difficulty of this world in one number. Above zero one "
-                              "agent presses and runs, and nothing has to be shared. At zero the "
-                              "gate shuts the instant the plate is let go: only the far side "
-                              "scores, so somebody has to stay behind for nothing, and whether "
-                              "that can be selected for is what group fitness sharing is about.");
-    }
-    if (scenario.tunables.blockedDoorPerGeneration) {
-        if (ImGui::Checkbox("Dead end changes by generation",
-                            &state_.physics.blockedDoorPerGeneration)) {
-            state_.controls.resetRequested = true;
-        }
-        ImGui::SetItemTooltip("Off, the dead end swaps every trial, so one genome meets both "
-                              "layouts and always turning the same way caps at half the trials. "
-                              "On, the whole population trains on one door and its successors on "
-                              "the other: selection inside a generation is undiluted, at the risk "
-                              "of the population thrashing between the two.");
-    }
-    if (scenario.tunables.swapDeliveryEnds) {
-        if (ImGui::Checkbox("Swap ends each generation", &state_.physics.swapDeliveryEnds)) {
-            state_.controls.resetRequested = true;
-        }
-        ImGui::SetItemTooltip("The resource and home trade places on odd generations. A heading is "
-                              "then worth nothing and the beacon colour is the only thing that "
-                              "says which end is which, so a genome cannot win by always carrying "
-                              "the same way. Learn it with this off first: a run that has not "
-                              "solved the fixed layout says nothing about the swapped one.");
-    }
-    if (scenario.description != nullptr) {
-        ImGui::TextDisabled("%s", scenario.description);
-    }
-    // Shaping weights reach both the CPU reference and the shader as parameters,
-    // so a fitness experiment is a slider rather than a rebuild.
+    ImGui::TextDisabled("beacon seed %u, redrawn every generation",
+                        state_.settings.beaconSeed);
+
     ImGui::SeparatorText("Fitness shaping");
-    if (ImGui::SliderFloat("Objective bonus", &state_.physics.fitness.objectiveBonus, 0.0F, 10.0F,
-                           "%.2f")) {
-        state_.controls.resetRequested = true;
+    ImGui::SliderFloat("Tracking reward", &state_.settings.fitness.trackingReward, 0.0F, 4.0F,
+                       "%.2f");
+    ImGui::SetItemTooltip("What closing the distance is worth, scored once at the end against "
+                          "the nearest the agent ever got. Shaping and not the objective: an "
+                          "agent pushed off the beacon keeps this.");
+    ImGui::SliderFloat("Objective bonus", &state_.settings.fitness.objectiveBonus, 0.0F, 0.5F,
+                       "%.3f");
+    ImGui::SetItemTooltip("Score per step spent within the contact radius. Per step rather than "
+                          "per arrival, for the reason the contact radius exists.");
+    ImGui::SliderFloat("Motor cost", &state_.settings.fitness.motorCostWeight, 0.0F, 0.05F,
+                       "%.4f");
+    ImGui::SliderFloat("Refusal penalty", &state_.settings.fitness.refusalPenalty, 0.0F, 0.1F,
+                       "%.4f");
+    ImGui::SetItemTooltip("Charged per move that could not happen -- into a wall, into a "
+                          "neighbour, or lost to a lower-numbered agent. This is the whole of "
+                          "the pressure toward not crowding, so it wants to be larger than the "
+                          "cost of a move that worked.");
+    if (state_.settings.fitness.refusalPenalty < state_.settings.fitness.motorCostWeight) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4{0.95F, 0.75F, 0.25F, 1.0F}, "cheaper than moving");
     }
-    if (ImGui::SliderFloat("Motor cost weight", &state_.physics.fitness.motorCostWeight, 0.0F,
-                           0.02F, "%.4f")) {
-        state_.controls.resetRequested = true;
-    }
-    if (scenario.tunables.beaconAngularSpeed || scenario.tunables.beaconRandomMotion ||
-        scenario.puck) {
-        if (ImGui::SliderFloat("Tracking reward", &state_.physics.fitness.trackingReward, 0.0F,
-                               1.0F, "%.3f")) {
-            state_.controls.resetRequested = true;
-        }
-    }
-    if (ImGui::SliderFloat("Signal cost factor", &state_.physics.fitness.signalCostFactor, 0.0F,
-                           2.0F, "%.2f")) {
-        state_.controls.resetRequested = true;
-    }
-    if (ImGui::SliderFloat("Energy drain", &state_.physics.fitness.energyDrain, 0.0F, 0.005F,
-                           "%.4f")) {
-        state_.controls.resetRequested = true;
-    }
-    if (ImGui::SliderFloat("Group fitness sharing", &state_.physics.fitness.groupSharing, 0.0F,
+    ImGui::SliderFloat("Signal cost", &state_.settings.fitness.signalCostFactor, 0.0F, 2.0F,
+                       "%.2f");
+    ImGui::SetItemTooltip("What broadcasting costs, relative to moving. Signalling is free to a "
+                          "sender otherwise, and a channel nobody pays for is one every genome "
+                          "saturates.");
+    if (ImGui::SliderFloat("Group fitness sharing", &state_.settings.fitness.groupSharing, 0.0F,
                            1.0F, "%.2f")) {
         state_.controls.resetRequested = true;
     }
-    ImGui::SetItemTooltip("How much of a genome's score comes from the world it shares rather "
-                          "than from itself. At 0 selection is individual and a signal that only "
-                          "helps a neighbour is pure cost. At 1 the whole world is scored "
-                          "together. The plotted fitness stays individual either way, so runs at "
-                          "different settings stay comparable.");
+    ImGui::SetItemTooltip("0 is pure individual selection; 1 gives every genome sharing a lattice "
+                          "the same score, so selection acts on the group and a broadcast that "
+                          "only helps a neighbour finally pays its sender back. The plotted "
+                          "fitness stays individual either way, so runs at different settings "
+                          "stay comparable.");
 
-    ImGui::SeparatorText("Physics");
-    ImGui::Text("Body %.1f cm across, arena %.2f m wide",
-                static_cast<double>(units::metresToCentimetres(agentBodyRadius * 2.0F)),
-                static_cast<double>(state_.physics.worldRadius * 2.0F));
-    // Locomotion presets. The four sliders below are still the truth and still
-    // editable one at a time; this only names five points along the one axis
-    // that separates a body you command from a body you steer. "Custom" is what
-    // the combo says once a slider has been dragged off a preset, rather than
-    // the combo keeping a label the numbers no longer support.
-    const LocomotionPreset* const current = currentLocomotionPreset(state_.physics);
-    std::array<const char*, locomotionStyleCount + 1> locomotionNames{};
-    for (std::size_t index = 0; index < locomotionStyleCount; ++index) {
-        locomotionNames[index] = locomotionPresets[index].name;
-    }
-    locomotionNames[locomotionStyleCount] = "Custom";
-    int locomotion = current != nullptr ? static_cast<int>(current->style)
-                                        : static_cast<int>(locomotionStyleCount);
-    if (ImGui::Combo("Locomotion", &locomotion, locomotionNames.data(),
-                     static_cast<int>(locomotionNames.size()))) {
-        if (locomotion < static_cast<int>(locomotionStyleCount)) {
-            applyLocomotionPreset(state_.physics,
-                                  static_cast<LocomotionStyle>(static_cast<std::uint32_t>(locomotion)));
-        }
-    }
-    ImGui::SetItemTooltip(
-        "How much the body carries. A preset moves the four sliders below and "
-        "nothing else -- in particular it never touches the two speed caps, so "
-        "every style tops out at the same speed and the same turn rate, and the "
-        "only thing that changes is how long it takes to get there and how far "
-        "it goes after the motors stop. %s",
-        current != nullptr ? current->description
-                           : "The sliders are not on any preset at the moment.");
-    // What those four numbers come to, in units that can be judged by eye.
-    // Derived from the sliders and not from the preset, so a hand-tuned body is
-    // described as honestly as a named one.
-    const LocomotionResponse response = locomotionResponse(state_.physics);
-    ImGui::TextDisabled("%.2f m/s in %.2f s, coasts %.1f cm (%.0f bodies)",
-                        static_cast<double>(response.topSpeed),
-                        static_cast<double>(response.timeToTopSpeed),
-                        static_cast<double>(units::metresToCentimetres(response.coastDistance)),
-                        static_cast<double>(response.coastDistance / agentBodyDiameter));
-    ImGui::TextDisabled("%.2f rad/s in %.2f s, spins on %.0f deg after%s",
-                        static_cast<double>(response.topTurnRate),
-                        static_cast<double>(response.timeToTopTurnRate),
-                        static_cast<double>(response.spinCoast * 180.0F / 3.14159265F),
-                        response.turnCapBinds ? "" : " -- drag caps the turn, not the slider");
-    ImGui::SliderFloat("Thrust (m/s2)", &state_.physics.thrust, 0.2F, 20.0F, "%.2f",
-                       ImGuiSliderFlags_Logarithmic);
-    ImGui::SliderFloat("Turn (rad/s2)", &state_.physics.turnAcceleration, 0.5F, 80.0F, "%.2f",
-                       ImGuiSliderFlags_Logarithmic);
-    // Logarithmic, and far wider than they were: the whole ladder from a body
-    // that answers in one step to one that mostly glides lives in these two,
-    // and it spans a factor of thirty. A linear slider over that range has no
-    // usable resolution at the end where the defaults sit.
-    ImGui::SliderFloat("Linear drag (1/s)", &state_.physics.linearDrag, 0.1F, 20.0F, "%.2f",
-                       ImGuiSliderFlags_Logarithmic);
-    ImGui::SetItemTooltip("Response time constant %.0f ms; the step applies it as "
-                          "exp(-drag * dt), so this is also the coast.",
-                          static_cast<double>(1000.0F / std::max(state_.physics.linearDrag, 1.0e-3F)));
-    ImGui::SliderFloat("Angular drag (1/s)", &state_.physics.angularDrag, 0.1F, 20.0F, "%.2f",
-                       ImGuiSliderFlags_Logarithmic);
-    ImGui::SetItemTooltip("Response time constant %.0f ms.",
-                          static_cast<double>(1000.0F /
-                                              std::max(state_.physics.angularDrag, 1.0e-3F)));
-    ImGui::SliderFloat("Maximum speed (m/s)", &state_.physics.maximumSpeed, 0.10F, 1.50F);
-    ImGui::SliderFloat("Maximum turn speed (rad/s)", &state_.physics.maximumAngularSpeed, 0.25F,
-                       8.0F);
-    if (!response.turnCapBinds) {
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4{0.95F, 0.75F, 0.25F, 1.0F}, "inert");
-        ImGui::SetItemTooltip("Turn acceleration against angular drag holds %.2f rad/s, below "
-                              "this cap, so the cap never comes into play. Raise Turn (rad/s2) "
-                              "or lower Angular drag to make it mean something.",
-                              static_cast<double>(response.topTurnRate));
-    }
-    ImGui::SliderFloat("Collision restitution", &state_.physics.collisionRestitution, 0.0F, 1.0F);
-    ImGui::SliderFloat("Contact stiffness (1/s)", &state_.physics.contactStiffness, 5.0F, 300.0F);
-    ImGui::SetItemTooltip(
-        "Overlap resolved per step: %.0f%%",
-        static_cast<double>(100.0F * (1.0F - std::exp(-state_.physics.contactStiffness *
-                                                      state_.physics.deltaTime))));
-    ImGui::SliderFloat("Wall penalty / s", &state_.physics.wallCollisionPenalty, 0.0F, 6.0F,
-                       "%.2f");
-    ImGui::Checkbox("Agent collisions", &state_.physics.agentCollisionsEnabled);
-    ImGui::SeparatorText("Trail field");
-    // Three settings, not a checkbox: whether the field exists and whether an
-    // agent can smell it are different questions, and the middle one is the
-    // control. "Draw only" keeps the marks on screen and feeds the three ground
-    // antennae a flat zero, so a behaviour that survives it was never coming
-    // from the trail.
-    int trailMode = static_cast<int>(state_.physics.trailMode);
-    constexpr const char* trailModes[] = {"Off", "Draw only", "Draw and smell"};
-    // "Trail mode" rather than "Trails": the Show section already has a "Trails"
-    // checkbox, and ImGui derives a widget's identity from its label, so two of
-    // them in one window are one widget as far as it is concerned. They are also
-    // genuinely different questions -- this one is whether the field exists and
-    // is smelled, that one is whether it is painted -- so the labels are made to
-    // say so rather than separated by a hidden ##suffix.
-    if (ImGui::Combo("Trail mode", &trailMode, trailModes, static_cast<int>(trailModeCount))) {
-        state_.physics.trailMode = static_cast<TrailMode>(static_cast<std::uint32_t>(trailMode));
-        state_.controls.resetRequested = true;
-    }
-    ImGui::SetItemTooltip(
-        "Off: no field at all. Draw only: the field is kept, deposited into and "
-        "drawn, but the nine trail inputs read zero -- the simpler brain, and "
-        "the control for every claim about the trail. Draw and smell: the "
-        "antennae read it. The input vector keeps all 61 slots either way, so a "
-        "population trained under one setting still loads under another.");
-    if (state_.physics.trailMode == TrailMode::Visual) {
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4{0.95F, 0.75F, 0.25F, 1.0F}, "blind");
-    }
-    // A world whose objective is only reachable by following a trail, run with
-    // the antennae switched off, is a world with no route to its objective --
-    // and the fitness curve looks like a hard task rather than an impossible
-    // one. The scenario says it needs the trail; this is where it gets said.
-    if (scenario.tunables.needsTrail && !trailSensed(state_.physics.trailMode)) {
-        ImGui::TextColored(ImVec4{1.0F, 0.75F, 0.25F, 1.0F}, "%s has no other way home",
-                           scenario.name);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Smell it")) {
-            state_.physics.trailMode = TrailMode::Sensed;
-            state_.controls.resetRequested = true;
-        }
-    }
-    ImGui::BeginDisabled(!trailFieldActive(state_.physics.trailMode));
-    ImGui::SliderFloat("Trail deposit / s", &state_.physics.trailDepositRate, 0.0F, 24.0F, "%.2f");
-    ImGui::SliderFloat("Beacon deposit / s", &state_.physics.beaconTrailDepositRate, 0.0F, 64.0F,
-                       "%.2f");
-    ImGui::SliderFloat("Trail half-life (s)", &state_.physics.trailHalfLife, 0.25F, 30.0F, "%.2f",
-                       ImGuiSliderFlags_Logarithmic);
-    ImGui::SliderFloat("Trail width (cell)", &state_.physics.trailRenderWidth, 0.02F, 1.0F, "%.2f");
-    ImGui::SetItemTooltip("Drawn %.1f cm wide; the body is %.1f cm across. Display only -- the "
-                          "antennae read whole cells.",
-                          static_cast<double>(units::metresToCentimetres(
-                              state_.physics.trailCellSize * state_.physics.trailRenderWidth)),
-                          static_cast<double>(units::metresToCentimetres(agentBodyRadius * 2.0F)));
-    // Resolution is chosen in bodies, not centimetres: what decides whether a
-    // setting is useful is how many cells wide a track comes out.
-    constexpr const char* cellLabels[] = {"1/5 body", "1/4 body", "1/3 body", "1/2 body", "1 body"};
-    constexpr int cellChoiceCount = static_cast<int>(trailCellFractions.size());
-    int cellChoice = cellChoiceCount - 1;
-    for (int index = 0; index < cellChoiceCount; ++index) {
-        const auto slot = static_cast<std::size_t>(index);
-        if (std::abs(state_.physics.trailCellSize -
-                     trailCellSizeForBodyFraction(trailCellFractions[slot])) < 0.0005F) {
-            cellChoice = index;
-        }
-    }
-    if (ImGui::Combo("Trail resolution", &cellChoice, cellLabels, cellChoiceCount)) {
-        state_.physics.trailCellSize =
-            trailCellSizeForBodyFraction(trailCellFractions[static_cast<std::size_t>(cellChoice)]);
-        state_.controls.resetRequested = true;
-    }
-    ImGui::SetItemTooltip("A finer grid is bounded by bandwidth, not memory: the field is read and "
-                          "written in full every step, and there is one per logical world. The "
-                          "driver coarsens the choice when it will not fit, and the line below "
-                          "shows what is actually in force.");
-    const std::uint32_t trailWidth =
-        trailWidthForWorld(state_.physics.worldRadius, state_.physics.trailCellSize);
-    // Memory is the cheap half. The decay pass walks every value of every world
-    // on every step, so the traffic line is the one that decides whether a fine
-    // grid is affordable at this world count. The driver coarsens the choice on
-    // its own if it would not fit, so the label can disagree with the request.
-    const double fieldBytes = static_cast<double>(trailWidth) * trailWidth *
-                              trail::kernel::TrailChannels * sizeof(std::uint32_t) *
-                              state_.worlds.worldCount;
-    ImGui::TextDisabled(
-        "%.1f cm cells, %u x %u per world, %.0f MB total",
-        static_cast<double>(units::metresToCentimetres(state_.physics.trailCellSize)), trailWidth,
-        trailWidth, fieldBytes / (1024.0 * 1024.0));
-    ImGui::TextDisabled("decay traffic %.0f MB per step", 2.0 * fieldBytes / (1024.0 * 1024.0));
-    ImGui::EndDisabled();
     // A snapshot is the fast way back to a run worth looking at, so it sits with
-    // the run controls rather than in an export menu. Everything except the trail
-    // field is stored; the field rebuilds itself within a couple of half-lives.
+    // the run controls rather than in an export menu. Everything except the
+    // occupancy grid is stored; the grid is a function of where everybody stands
+    // and is rebuilt on load.
     ImGui::SeparatorText("Snapshot");
     std::array<char, 256> snapshotPath{};
     const std::size_t pathLength =
@@ -541,19 +232,18 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     if (ImGui::InputText("File", snapshotPath.data(), snapshotPath.size())) {
         state_.controls.snapshotPath = snapshotPath.data();
     }
-    const bool haveSnapshotPath = !state_.controls.snapshotPath.empty();
-    ImGui::BeginDisabled(!haveSnapshotPath);
-    if (ImGui::Button("Save world")) {
+    ImGui::BeginDisabled(state_.controls.snapshotPath.empty());
+    if (ImGui::Button("Save run")) {
         state_.controls.saveRequested = true;
     }
-    ImGui::SetItemTooltip("Population, agent positions, generation, step and every physics "
-                          "setting. Not the trail field.");
+    ImGui::SetItemTooltip("Population, every agent's cell, generation, step and every setting. "
+                          "Not the occupancy grid, which follows from the agents.");
     ImGui::SameLine();
-    if (ImGui::Button("Load world")) {
+    if (ImGui::Button("Load run")) {
         state_.controls.loadRequested = true;
     }
     ImGui::SetItemTooltip("Resumes on the step it was saved on. Needs the same population size "
-                          "and trial count as this run.");
+                          "and trial count as this run, and a lattice this run can allocate.");
     ImGui::EndDisabled();
 
     // Watching trained weights is a different job from training them, and the
@@ -582,27 +272,24 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
         state_.controls.saveGenomesRequested = true;
     }
     ImGui::SetItemTooltip("Writes the best genome of the last evaluated generation to a .vkng "
-                          "archive. This is the only way a run in this window produces a file "
-                          "the loader below can read: a world snapshot carries the champion too, "
-                          "but only as one of a whole population, and it can be resumed only into "
-                          "a run of the same size.");
+                          "archive.");
     ImGui::SameLine();
     if (ImGui::Button("Save structure")) {
         state_.controls.saveBrainStructureRequested = true;
     }
     ImGui::SetItemTooltip("Writes what the weights *mean*, as JSON next to the archive: which "
-                          "slot of the input vector is which sensor, which span of the genome is "
-                          "which weight block, and what connects to what. An archive already "
-                          "carries this and refuses to load into a build whose network differs, "
-                          "naming the block that moved -- this is the same document on its own, "
-                          "to read.");
+                          "slot of the input vector is which cell of the neighbourhood, which "
+                          "span of the genome is which weight block, and what connects to what. "
+                          "An archive already carries this and refuses to load into a build whose "
+                          "network differs, naming the block that moved -- this is the same "
+                          "document on its own, to read.");
     ImGui::SameLine();
     if (ImGui::Button("Load genomes")) {
         state_.controls.loadGenomesRequested = true;
     }
     ImGui::SetItemTooltip("Weights only, from a .vkng archive. A champion or a few elites are "
-                          "repeated across the whole population, so every agent you see runs the "
-                          "loaded brain. The world stays as it is set up here.");
+                          "repeated across the whole population, so every agent runs the loaded "
+                          "brain. The lattice stays as it is set up here.");
     ImGui::EndDisabled();
     ImGui::EndDisabled();
     if (!state_.controls.snapshotStatus.empty()) {
@@ -610,37 +297,26 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     }
 
     ImGui::SeparatorText("Show");
-    ImGui::Checkbox("Trails", &state_.display.trail);
-    ImGui::SameLine();
     ImGui::Checkbox("Agents", &state_.display.agents);
     ImGui::SameLine();
     ImGui::Checkbox("Beacons", &state_.display.beacons);
+    ImGui::SameLine();
+    ImGui::Checkbox("Bounds", &state_.display.bounds);
     ImGui::SliderFloat("Background", &state_.display.backgroundBrightness, 0.0F, 1.0F, "%.2f");
-    ImGui::SetItemTooltip("Dims the arena and the ground around it. Trails, agents and beacons "
-                          "are untouched, so pulling this down is how a faint mark becomes "
-                          "readable. 1 is the palette as designed; it only darkens.");
-    ImGui::Checkbox("Round trail marks", &state_.display.roundTrailMarks);
-    ImGui::SetItemTooltip("Off draws each cell as a square, which tiles exactly and shows the "
-                          "grid the field actually is.");
-    ImGui::SeparatorText("Sensors");
-    ImGui::SliderAngle("Sensor FOV", &state_.physics.sensorFieldOfView, 20.0F, 170.0F);
-    ImGui::SliderFloat("Light range (m)", &state_.physics.lightSensorRange, 0.25F,
-                       state_.physics.worldRadius * 2.0F);
-    ImGui::SliderFloat("Light exposure", &state_.physics.lightExposure, 0.1F, 4.0F);
-    ImGui::Checkbox("Perceive agent light", &state_.physics.agentLightEnabled);
+
     ImGui::SeparatorText("Brain contract");
-    // One integrator, three sources for the rate it runs at, and the same genome
+    // One integrator, four sources for the rate it runs at, and the same genome
     // under all of them -- so this is a live ablation rather than a choice
     // between networks, and a population stays meaningful across a switch.
-    int neuronModel = static_cast<int>(state_.physics.neuronModel);
+    int neuronModel = static_cast<int>(state_.settings.neuronModel);
     constexpr const char* neuronModels[] = {"Reactive", "Time constant", "Gated", "Spiking (LIF)"};
     static_assert(std::size(neuronModels) == neuronModelCount);
     if (ImGui::Combo("Neuron model", &neuronModel, neuronModels,
                      static_cast<int>(neuronModelCount))) {
-        state_.physics.neuronModel = static_cast<NeuronModel>(neuronModel);
+        state_.settings.neuronModel = static_cast<NeuronModel>(neuronModel);
         state_.controls.resetRequested = true;
     }
-    switch (state_.physics.neuronModel) {
+    switch (state_.settings.neuronModel) {
     case NeuronModel::Reactive:
         ImGui::SetItemTooltip("No state at all: every time constant is pinned to one step, so a "
                               "neuron is its input. This is the network from before time "
@@ -654,18 +330,15 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     case NeuronModel::Gated:
         ImGui::SetItemTooltip("The time constant is recomputed every step from the inputs, so a "
                               "neuron can hold a value and then let go of it when something "
-                              "tells it to. The gate asks for a time constant, so driving it up "
-                              "holds and leaving it low follows. Feed it a constant and this is "
-                              "the row above, exactly.");
+                              "tells it to. Feed it a constant and this is the row above, "
+                              "exactly.");
         break;
     case NeuronModel::Spiking:
-        ImGui::SetItemTooltip("Leaky Integrate-and-Fire (LIF) spiking neurons: membrane potential "
-                              "accumulates input current and decays over time. When potential "
-                              "exceeds threshold, a discrete spike pulse is emitted.");
+        ImGui::SetItemTooltip("Leaky Integrate-and-Fire: the state accumulates input and decays, "
+                              "and a neuron emits a discrete pulse when it crosses threshold.");
         break;
     }
-    const ScenarioDefinition& brainScenario = scenarioDefinition(state_.physics.beaconScenario);
-    const neuro::BrainShape brain = resolvedBrain(brainScenario, state_.physics);
+    const neuro::BrainShape brain = resolvedBrain(state_.settings);
     std::string layerText;
     for (std::size_t layer = 0; layer < brain.hiddenLayerCount(); ++layer) {
         layerText += layerText.empty() ? "" : " -> ";
@@ -674,23 +347,19 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::Text("%zu inputs -> %s tanh -> %zu outputs", brain.inputCount, layerText.c_str(),
                 brain.outputCount);
     ImGui::TextDisabled("%zu weights per genome", brain.weightCount());
-    if (state_.physics.neuronModel != NeuronModel::Reactive) {
+    if (state_.settings.neuronModel != NeuronModel::Reactive) {
         ImGui::TextDisabled("gate block %zu of %zu genes",
                             brain.hiddenTotal() * (brain.inputCount + 1), brain.weightCount());
     }
     ImGui::TextDisabled("time constants %.0f ms .. %.1f s",
                         static_cast<double>(neuro::kernel::BrainTimeConstantMinimum * 1000.0F),
                         static_cast<double>(neuro::kernel::BrainTimeConstantMaximum));
-    if (brain.outputCount > neuro::Topology::actuatorOutputCount) {
-        ImGui::TextDisabled("light, touch, self, task state and recurrent memory");
-        ImGui::TextDisabled("motors, RGB/light intensity and memory updates");
-    } else {
-        ImGui::TextDisabled("light, touch and self state");
-        ImGui::TextDisabled("motors and RGB/light intensity");
-    }
+    ImGui::TextDisabled("%u cells x %u channels, beacon, heading and memory",
+                        neuro::kernel::BrainNeighborCount, neuro::kernel::BrainNeighborChannels);
+    ImGui::TextDisabled("three move drives, a broadcast and memory updates");
     ImGui::End();
 
-    drawBrainWindow(brainScenario, brain);
+    drawBrainWindow(brain);
 
     ImGui::SetNextWindowPos(ImVec2(16.0F, 500.0F), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(330.0F, 380.0F), ImGuiCond_FirstUseEver);
@@ -705,8 +374,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::Text("Best fitness:   %.4f", state_.statistics.bestFitness);
     ImGui::Text("Median fitness: %.4f", state_.statistics.medianFitness);
     ImGui::Text("Mean fitness:   %.4f", state_.statistics.meanFitness);
-    ImGui::Text("%s: %.1f%%", scenarioDefinition(state_.physics.beaconScenario).objectiveLabel,
-                state_.statistics.arrivalRatio * 100.0F);
+    ImGui::Text("Reached the beacon: %.1f%%", state_.statistics.arrivalRatio * 100.0F);
     ImGui::SeparatorText("Fitness history");
     // Say so when the plots are a window onto a longer run, rather than letting
     // a curve that has stopped extending read as a run that has stopped.
@@ -718,7 +386,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     plotHistory("Best", state_.history.bestFitness);
     plotHistory("Median", state_.history.medianFitness);
     plotHistory("Mean", state_.history.meanFitness);
-    plotHistory("Objective completion", state_.history.arrivalRatio, 0.0F, 1.0F);
+    plotHistory("Reached the beacon", state_.history.arrivalRatio, 0.0F, 1.0F);
     ImGui::SeparatorText("Evolution parameters");
     ImGui::Text("Population: %zu", state_.evolution.populationSize);
     ImGui::Text("Elites: %zu   Tournament: %zu", state_.evolution.eliteCount,
@@ -784,14 +452,14 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     }
 
     if (!state_.sweep.stages.empty()) {
-        // Objective completion first, and on a fixed 0..1 axis: it is the one
-        // number sharing does not touch arithmetically, so it is the honest
-        // comparison between settings. Fitness follows on a shared axis.
+        // Arrival first, and on a fixed 0..1 axis: it is the one number sharing
+        // does not touch arithmetically, so it is the honest comparison between
+        // settings. Fitness follows on a shared axis.
         const std::pair<float, float> fitnessRange =
             stackedRange(state_.sweep.stages, &SweepStage::medianFitness);
         for (const SweepStage& stage : state_.sweep.stages) {
             char label[64];
-            std::snprintf(label, sizeof(label), "Objective at sharing %.2f",
+            std::snprintf(label, sizeof(label), "Reached at sharing %.2f",
                           static_cast<double>(stage.groupSharing));
             plotHistory(label, stage.arrivalRatio, 0.0F, 1.0F);
         }
@@ -806,7 +474,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
 
     ImGui::SetNextWindowPos(ImVec2(360.0F, 16.0F), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(1040.0F, 820.0F), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Agent World");
+    ImGui::Begin("Lattice");
     if (state_.worlds.worldCount > 0) {
         int visibleWorld = static_cast<int>(state_.worlds.selectedWorld + 1);
         if (ImGui::SliderInt("Visible world", &visibleWorld, 1,
@@ -824,36 +492,47 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                             state_.worlds.groupCount, visibleTrial + 1,
                             state_.agents.trialsPerGenome, visibleAgentCount);
     }
-    const ImVec2 available = ImGui::GetContentRegionAvail();
-    if (available.x >= 64.0F && available.y >= 64.0F) {
-        state_.viewport.requestedWidth = static_cast<std::uint32_t>(std::floor(available.x));
-        state_.viewport.requestedHeight = static_cast<std::uint32_t>(std::floor(available.y));
-        const ImTextureID texture =
-            static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(viewportDescriptor_));
-        ImGui::Image(texture, available);
+    // The 3D view is step 5 of the plan and deliberately last: until it exists,
+    // everything a run needs is in the panels and the headless runner, and a
+    // placeholder that says so beats a black rectangle that looks broken.
+    if (state_.viewport.imageView == VK_NULL_HANDLE) {
+        ImGui::TextDisabled("No view of the lattice yet.");
+        ImGui::TextWrapped("The 3D renderer is the last piece of the lattice conversion: the "
+                           "2D one drew normalised coordinates with no camera at all, so there "
+                           "was nothing to carry over. Until then the run is readable through "
+                           "the panels here and through the headless runner, which is what the "
+                           "statistics and the sweeps were built for.");
+    } else {
+        const ImVec2 available = ImGui::GetContentRegionAvail();
+        if (available.x >= 64.0F && available.y >= 64.0F) {
+            state_.viewport.requestedWidth = static_cast<std::uint32_t>(std::floor(available.x));
+            state_.viewport.requestedHeight = static_cast<std::uint32_t>(std::floor(available.y));
+            const ImTextureID texture =
+                static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(viewportDescriptor_));
+            ImGui::Image(texture, available);
+        }
     }
     ImGui::End();
     profilerPanel_.draw(context.profiler);
 }
 
-void SimulationUiModule::drawBrainWindow(const ScenarioDefinition& scenario,
-                                         const neuro::BrainShape& brain) {
+void SimulationUiModule::drawBrainWindow(const neuro::BrainShape& brain) {
     ImGui::SetNextWindowPos(ImVec2(360.0F, 16.0F), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(340.0F, 330.0F), ImGuiCond_FirstUseEver);
     ImGui::Begin("Brain");
 
     // Only the hidden layers are editable, and that is the point rather than a
-    // limitation: how many sensors a world offers and how many actuators it
-    // needs are statements about the world. How much brain to spend on it is the
+    // limitation: how many cells surround one and how many drives a move needs
+    // are statements about the lattice. How much brain to spend on it is the
     // question worth asking, and it is the one this window asks.
-    ImGui::TextDisabled("%zu sensor inputs and %zu outputs, set by %s", brain.inputCount,
-                        brain.outputCount, scenario.name);
+    ImGui::TextDisabled("%zu sensor inputs and %zu outputs, set by the lattice", brain.inputCount,
+                        brain.outputCount);
 
     // Edited as a draft and applied on a button, not live: a plan is a different
     // genome layout, so it can only take effect on a reset, and a slider that
     // silently did nothing until later would be worse than one that says so.
     auto& draft = state_.controls.hiddenLayerDraft;
-    const bool defaulted = state_.physics.hiddenLayers[0] == 0;
+    const bool defaulted = state_.settings.hiddenLayers[0] == 0;
     if (draft[0] == 0) {
         for (std::size_t layer = 0; layer < draft.size(); ++layer) {
             draft[layer] = static_cast<int>(brain.hiddenLayer(layer));
@@ -923,9 +602,9 @@ void SimulationUiModule::drawBrainWindow(const ScenarioDefinition& scenario,
                          planned.thirdHiddenCount != brain.thirdHiddenCount;
     ImGui::BeginDisabled(!fits || !changed);
     if (ImGui::Button("Apply and reset")) {
-        state_.physics.hiddenLayers = {static_cast<std::uint32_t>(draft[0]),
-                                       static_cast<std::uint32_t>(draft[1]),
-                                       static_cast<std::uint32_t>(draft[2])};
+        state_.settings.hiddenLayers = {static_cast<std::uint32_t>(draft[0]),
+                                        static_cast<std::uint32_t>(draft[1]),
+                                        static_cast<std::uint32_t>(draft[2])};
         state_.controls.resetRequested = true;
     }
     ImGui::EndDisabled();
@@ -934,19 +613,19 @@ void SimulationUiModule::drawBrainWindow(const ScenarioDefinition& scenario,
                           "one does not carry over meaningfully.");
     ImGui::SameLine();
     ImGui::BeginDisabled(defaulted);
-    if (ImGui::Button("Back to the world's own")) {
-        state_.physics.hiddenLayers = {};
+    if (ImGui::Button("Back to the default")) {
+        state_.settings.hiddenLayers = {};
         draft = {};
         state_.controls.resetRequested = true;
     }
     ImGui::EndDisabled();
-    ImGui::SetItemTooltip("Every world declares the brain it was tuned with. This is how to get "
-                          "back to it, and it is what a fresh run uses.");
+    ImGui::SetItemTooltip("One hidden layer of twenty, which is what a fresh run uses and what "
+                          "every measurement so far was taken on.");
 
     if (changed) {
         ImGui::TextColored(ImVec4{0.95F, 0.75F, 0.25F, 1.0F}, "not applied yet");
     } else if (!defaulted) {
-        ImGui::TextDisabled("running a plan of your own, not %s's", scenario.name);
+        ImGui::TextDisabled("running a plan of your own, not the default");
     }
     ImGui::End();
 }

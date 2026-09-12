@@ -61,6 +61,7 @@ std::vector<AgentState> makeInitialAgents(const SimulationStep& settings,
                                           const PopulationLayout& layout) {
     const std::uint32_t cells = latticeCellsPerWorld(settings);
     const std::uint32_t worlds = layout.worldCount();
+    const std::uint32_t groupSize = layout.groupSize();
     std::vector<AgentState> agents(layout.agentCount());
     if (cells == 0 || worlds == 0 || agents.empty()) {
         return agents;
@@ -74,8 +75,8 @@ std::vector<AgentState> makeInitialAgents(const SimulationStep& settings,
     for (std::uint32_t index = 0; index < agents.size(); ++index) {
         const std::uint32_t genome = index / layout.trialsPerGenome;
         const std::uint32_t world =
-            logicalWorldForAgent(index, layout.agentsPerWorld, layout.trialsPerGenome);
-        const std::uint32_t slot = genome % layout.agentsPerWorld;
+            logicalWorldForAgent(index, groupSize, layout.trialsPerGenome);
+        const std::uint32_t slot = genome % groupSize;
         const Int4 beacon = beaconCell(settings, world);
 
         AgentState& agent = agents[index];
@@ -129,10 +130,11 @@ void buildOccupancy(const std::span<const AgentState> agents, const SimulationSt
     if (cells == 0) {
         return;
     }
+    const std::uint32_t groupSize = layout.groupSize();
     for (std::uint32_t index = 0; index < agents.size(); ++index) {
         const AgentState& agent = agents[index];
         const std::uint32_t world =
-            logicalWorldForAgent(index, layout.agentsPerWorld, layout.trialsPerGenome);
+            logicalWorldForAgent(index, groupSize, layout.trialsPerGenome);
         if (!kern::latticeInBounds(agent.cell.x, agent.cell.y, agent.cell.z, settings.latticeWidth,
                                    settings.latticeHeight, settings.latticeDepth)) {
             continue;

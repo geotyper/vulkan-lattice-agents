@@ -1,10 +1,11 @@
 #include "vkexp/compute/HeadlessComputeContext.hpp"
 #include "vkexp/neuro/BrainKernel.hpp"
 #include "vkexp/neuro/NeuralNetwork.hpp"
-#include "vkexp/simulation/AgentTypes.hpp"
-#include "vkexp/simulation/CpuSimulation.hpp"
+#include "vkexp/lattice/LatticeKernel.hpp"
+#include "vkexp/lattice/LatticeWorld.hpp"
+#include "vkexp/simulation/CpuLattice.hpp"
+#include "vkexp/simulation/LatticeTypes.hpp"
 #include "vkexp/simulation/StepParameters.hpp"
-#include "vkexp/worlds/WorldScenario.hpp"
 
 #include <vulkan/vulkan.h>
 
@@ -152,204 +153,18 @@ void runImageRoundTrip(vkexp::HeadlessComputeContext& context) {
 
 constexpr VkMemoryPropertyFlags hostMemory =
     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-constexpr float parityGridCellSize = 0.12F;
-// Measured noise on a 540-step run is 5e-5 to 1e-4 per scenario, from float
-// rounding differences between libm and the GPU. This budget leaves an order of
-// magnitude of headroom for other devices, and a systematic term difference --
-// a changed shader constant, say -- overshoots it by another order.
-constexpr double accumulatedDriftBudget = 1.0e-3;
 
-// The driver's own packing, called rather than copied: this used to be a private
-// mirror of it and twice quietly ran the shader with a field the CPU reference
-// had set.
-vkexp::GpuStepParameters
-makeStepParameters(const vkexp::SimulationStep& settings, const std::uint32_t agentCount,
-                   const std::uint32_t trialsPerGenome, const std::uint32_t gridWidth,
-                   const std::uint32_t gridCellsPerWorld, const std::uint32_t trailWidth = 1,
-                   const std::uint32_t trailCellsPerWorld = 1,
-                   const std::uint32_t agentsPerWorld = 1,
-                   // The trail field is GPU-only state with no CPU counterpart,
-                   // so parity runs with it off and runTrailFieldProbe covers it
-                   // directly.
-                   const vkexp::TrailMode trailMode = vkexp::TrailMode::Off) {
-    vkexp::SimulationStep resolved = settings;
-    resolved.trailMode = trailMode;
-    return vkexp::packStepParameters(
-        resolved, vkexp::StepParameterLayout{agentCount, trialsPerGenome, agentsPerWorld,
-                                             parityGridCellSize, gridWidth, gridCellsPerWorld,
-                                             trailWidth, trailCellsPerWorld});
-}
-
-
-
-// The agent_step pipeline wired up exactly like SimulationDriver does, with
-// host-visible buffers so a test can drive many steps without a staging copy
-// per step.
-class StepHarness {
-public:
-    StepHarness(vkexp::HeadlessComputeContext& context, const std::uint32_t agentCount,
-                const std::uint32_t genomeCount, const std::uint32_t worldCount,
-                const std::uint32_t maximumSteps, const float worldRadius)
-        : context_(context), agentCount_(agentCount),
-          gridWidth_(
-              static_cast<std::uint32_t>(std::ceil(worldRadius * 2.0F / parityGridCellSize))),
-          gridCellsPerWorld_(gridWidth_ * gridWidth_), worldCount_(worldCount) {
-        const VkDeviceSize agentBytes = sizeof(vkexp::AgentState) * agentCount;
-        const auto storage = static_cast<VkBufferUsageFlags>(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        inputAgents.create(context.physicalDevice(), context.device(),
-                           {agentBytes, storage, hostMemory});
-        outputAgents.create(context.physicalDevice(), context.device(),
-                            {agentBytes, storage, hostMemory});
-        genomes.create(context.physicalDevice(), context.device(),
-                       {sizeof(float) * vkexp::neuro::maximumBrainShape.weightCount() * genomeCount, storage,
-                        hostMemory});
-        gridHeads.create(
-            context.physicalDevice(), context.device(),
-            {sizeof(std::int32_t) * gridCellsPerWorld_ * worldCount, storage, hostMemory});
-        gridNext.create(context.physicalDevice(), context.device(),
-                        {sizeof(std::int32_t) * agentCount, storage, hostMemory});
-        stepParameters.create(
-            context.physicalDevice(), context.device(),
-            {sizeof(vkexp::GpuStepParameters) * maximumSteps, storage, hostMemory});
-        // The trail field is GPU-only state, so the parity cases run with it off
-        // and this buffer stays zero; the harness still has to bind it, and
-        // runTrailFieldProbe drives it for real.
-        trailWidth_ = vkexp::trailWidthForWorld(worldRadius, vkexp::SimulationStep{}.trailCellSize);
-        trailCellsPerWorld_ = trailWidth_ * trailWidth_;
-        trail.create(context.physicalDevice(), context.device(),
-                     {sizeof(std::uint32_t) * trailCellsPerWorld_ * worldCount *
-                          vkexp::trail::kernel::TrailChannels,
-                      storage, hostMemory});
-        std::vector<std::uint32_t> emptyField(
-            trailCellsPerWorld_ * worldCount * vkexp::trail::kernel::TrailChannels, 0U);
-        trail.write(emptyField.data(), sizeof(std::uint32_t) * emptyField.size());
-
-        std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
-        for (std::uint32_t binding = 0; binding < bindings.size(); ++binding) {
-            bindings[binding].binding = binding;
-            bindings[binding].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            bindings[binding].descriptorCount = 1;
-            bindings[binding].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        }
-        VkDescriptorSetLayoutCreateInfo layoutInfo{
-            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        layoutInfo.bindingCount = static_cast<std::uint32_t>(bindings.size());
-        layoutInfo.pBindings = bindings.data();
-        if (vkCreateDescriptorSetLayout(context.device(), &layoutInfo, nullptr,
-                                        layout_.put(context.device())) != VK_SUCCESS) {
-            throw std::runtime_error("Unable to create agent step descriptor layout");
-        }
-        descriptors_.create(context.device(), {1, {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7}}});
-        set_ = descriptors_.allocate(layout_.get());
-        vkexp::DescriptorSetWriter{}
-            .writeBuffer(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, inputAgents.buffer(), 0,
-                         inputAgents.size())
-            .writeBuffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, outputAgents.buffer(), 0,
-                         outputAgents.size())
-            .writeBuffer(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, genomes.buffer(), 0, genomes.size())
-            .writeBuffer(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, gridHeads.buffer(), 0,
-                         gridHeads.size())
-            .writeBuffer(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, gridNext.buffer(), 0,
-                         gridNext.size())
-            .writeBuffer(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stepParameters.buffer(), 0,
-                         stepParameters.size())
-            .writeBuffer(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, trail.buffer(), 0, trail.size())
-            .update(context.device(), set_);
-        pipeline_ = vkexp::ComputePipelineBuilder{context.physicalDevice(), context.device()}
-                        .shader(VKEXP_SHADER_DIR "/agent_step.comp.spv")
-                        .addDescriptorSetLayout(layout_.get())
-                        .addPushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, sizeof(std::uint32_t))
-                        .build();
-    }
-
-    // Rebuilds the per-world grid on the host. The GPU grid passes have their
-    // own coverage; here the point is to feed the step shader a valid grid.
-    void buildGrid(const std::span<const vkexp::AgentState> agents, const float worldRadius) {
-        std::vector<std::int32_t> heads(gridCellsPerWorld_ * worldCount_, -1);
-        std::vector<std::int32_t> links(agents.size(), -1);
-        const auto cell = [&](const float position) {
-            return static_cast<std::uint32_t>(
-                std::clamp(std::floor((position + worldRadius) / parityGridCellSize), 0.0F,
-                           static_cast<float>(gridWidth_ - 1)));
-        };
-        for (std::size_t index = 0; index < agents.size(); ++index) {
-            const auto world =
-                static_cast<std::uint32_t>(std::max(agents[index].penalties.w, 0.0F)) % worldCount_;
-            const std::uint32_t cellIndex = world * gridCellsPerWorld_ +
-                                            cell(agents[index].pose.y) * gridWidth_ +
-                                            cell(agents[index].pose.x);
-            links[index] = heads[cellIndex];
-            heads[cellIndex] = static_cast<std::int32_t>(index);
-        }
-        gridHeads.write(heads.data(), heads.size() * sizeof(std::int32_t));
-        gridNext.write(links.data(), links.size() * sizeof(std::int32_t));
-    }
-
-    void dispatch(const std::uint32_t stepIndex) {
-        context_.immediate().execute([&](const VkCommandBuffer commands) {
-            vkexp::cmdBufferBarrier(commands, stepParameters.buffer(), VK_PIPELINE_STAGE_2_HOST_BIT,
-                                    VK_ACCESS_2_HOST_WRITE_BIT,
-                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
-            vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_.pipeline());
-            vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_.layout(), 0,
-                                    1, &set_, 0, nullptr);
-            vkCmdPushConstants(commands, pipeline_.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(stepIndex), &stepIndex);
-            vkCmdDispatch(commands, vkexp::divideRoundUp(agentCount_, 64), 1, 1);
-            vkexp::cmdBufferBarrier(commands, outputAgents.buffer(),
-                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                                    VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
-        });
-    }
-
-    [[nodiscard]] std::uint32_t gridWidth() const { return gridWidth_; }
-    [[nodiscard]] std::uint32_t gridCellsPerWorld() const { return gridCellsPerWorld_; }
-    [[nodiscard]] std::uint32_t trailWidth() const { return trailWidth_; }
-    [[nodiscard]] std::uint32_t trailCellsPerWorld() const { return trailCellsPerWorld_; }
-
-    // Writes one cell of the field directly. The deposit shader has its own
-    // addressing; this drives the read path from a known ground truth so a
-    // failure points at the antennae rather than at whoever wrote the field.
-    void markTrailCell(const std::uint32_t world, const std::uint32_t cell, const float red,
-                       const float green, const float blue) {
-        std::vector<std::uint32_t> field(
-            trailCellsPerWorld_ * worldCount_ * vkexp::trail::kernel::TrailChannels, 0U);
-        const float channels[] = {red, green, blue};
-        for (std::uint32_t channel = 0; channel < vkexp::trail::kernel::TrailChannels; ++channel) {
-            field[vkexp::trail::kernel::trailValueIndex(world, trailCellsPerWorld_, cell,
-                                                        channel)] =
-                static_cast<std::uint32_t>(channels[channel] *
-                                           vkexp::trail::kernel::TrailFixedPointScale);
-        }
-        trail.write(field.data(), sizeof(std::uint32_t) * field.size());
-    }
-
-    vkexp::BufferResource inputAgents;
-    vkexp::BufferResource outputAgents;
-    vkexp::BufferResource genomes;
-    vkexp::BufferResource gridHeads;
-    vkexp::BufferResource gridNext;
-    vkexp::BufferResource stepParameters;
-    vkexp::BufferResource trail;
-
-private:
-    vkexp::HeadlessComputeContext& context_;
-    std::uint32_t agentCount_{};
-    std::uint32_t gridWidth_{};
-    std::uint32_t trailWidth_{};
-    std::uint32_t trailCellsPerWorld_{};
-    std::uint32_t gridCellsPerWorld_{};
-    std::uint32_t worldCount_{};
-    vkexp::UniqueDescriptorSetLayout layout_;
-    vkexp::DescriptorAllocator descriptors_;
-    VkDescriptorSet set_{};
-    vkexp::ComputePipeline pipeline_;
-};
-
-constexpr std::size_t agentFloatCount = sizeof(vkexp::AgentState) / sizeof(float);
-using AgentDrift = std::array<double, agentFloatCount>;
+// --- lattice parity ----------------------------------------------------------
+//
+// The whole reason LatticeKernel.inl is written in a two-language common subset:
+// the movement rule, the neighbour numbering and the arbitration are compiled
+// once and run twice, and this is what proves the two runs agree.
+//
+// The 2D build's parity tests compared one agent against one wall, and could,
+// because a step was a per-agent function. A lattice step is not: which cell an
+// agent ends up in depends on who else asked for it. So every case here runs a
+// whole population, and the interesting ones are deliberately crowded -- parity
+// on a lattice nobody contests would prove only that tanh is deterministic.
 
 void require(const bool condition, const std::string& message) {
     if (!condition) {
@@ -357,611 +172,640 @@ void require(const bool condition, const std::string& message) {
     }
 }
 
-void compareAgents(const vkexp::AgentState& expected, const vkexp::AgentState& actual,
-                   const float tolerance, const std::string& context,
-                   AgentDrift* accumulated = nullptr) {
-    const auto* expectedValues = reinterpret_cast<const float*>(&expected);
-    const auto* actualValues = reinterpret_cast<const float*>(&actual);
-    for (std::size_t index = 0; index < agentFloatCount; ++index) {
-        const float difference = expectedValues[index] - actualValues[index];
-        if (accumulated != nullptr) {
-            // Signed, so that a systematic bias adds up while symmetric rounding
-            // noise cancels instead of masquerading as one.
-            (*accumulated)[index] += static_cast<double>(difference);
-        }
-        if (std::abs(difference) >= tolerance) {
-            throw std::runtime_error(context + ": mismatch at float " + std::to_string(index) +
-                                     ": expected " + std::to_string(expectedValues[index]) +
-                                     ", got " + std::to_string(actualValues[index]));
-        }
-    }
-}
-
-// The genome buffer wants one contiguous run of floats. A genome is a vector
-// now, so `sizeof` on it is the vector object and an array of them is an array
-// of pointers -- both of which compile, write the wrong bytes, and produce a
-// plausible-looking run. Flattening is written once, here.
-template <typename Genomes>
-std::vector<float> flattenGenomes(const Genomes& genomes) {
-    std::vector<float> flat;
-    for (const vkexp::neuro::Weights& genome : genomes) {
-        flat.insert(flat.end(), genome.begin(), genome.end());
-    }
-    return flat;
-}
-
-vkexp::neuro::Weights makeTestWeights(const float scale = 0.31F) {
-    vkexp::neuro::Weights weights = vkexp::neuro::makeWeights(vkexp::neuro::maximumBrainShape);
-    for (std::size_t index = 0; index < weights.size(); ++index) {
-        weights[index] = std::sin(static_cast<float>(index) * 0.37F) * scale;
+[[nodiscard]] std::vector<float> makeWeights(const vkexp::neuro::BrainShape& brain,
+                                             const std::uint32_t genomeCount,
+                                             const std::uint32_t seed) {
+    // A fixed generator rather than std::mt19937, so the numbers are the same on
+    // every standard library. Range is deliberately wide: saturated tanh outputs
+    // are where a drive most often sits exactly on the dead zone, and a
+    // threshold comparison that disagreed by one ulp would show up there first.
+    std::vector<float> weights(static_cast<std::size_t>(brain.weightCount()) * genomeCount);
+    std::uint32_t state = seed | 1U;
+    for (float& weight : weights) {
+        state = state * 1664525U + 1013904223U;
+        weight = (static_cast<float>(state >> 8U) / static_cast<float>(1U << 24U)) * 4.0F - 2.0F;
     }
     return weights;
 }
 
-const char* scenarioName(const vkexp::BeaconScenario scenario) {
-    return vkexp::scenarioDefinition(scenario).name;
-}
+// One step of the lattice on the device, wired up exactly as SimulationDriver
+// does: the same three pipelines, the same descriptor layouts, the same order
+// and the same barriers. Anything this harness does differently is a way for the
+// test to pass while the driver is broken.
+class LatticeHarness {
+public:
+    LatticeHarness(vkexp::HeadlessComputeContext& context, const vkexp::SimulationStep& settings,
+                   const vkexp::lattice::PopulationLayout& layout,
+                   const std::span<const float> weights)
+        : context_(context), settings_(settings), layout_(layout) {
+        const auto agentCount = layout.agentCount();
+        const VkDeviceSize agentBytes = sizeof(vkexp::AgentState) * agentCount;
+        cellCount_ = vkexp::latticeCellsPerWorld(settings) * layout.worldCount();
+        const VkDeviceSize gridBytes = sizeof(std::int32_t) * cellCount_;
 
-// Deterministic multi-step CPU/GPU regression.
-//
-// Lockstep on purpose: each step feeds the CPU reference state to the GPU,
-// compares one step of both, then continues from the CPU state. That exercises
-// the shader at hundreds of genuinely reachable states -- including the
-// alternating phase flip and the forage home relocation epochs -- while keeping
-// the comparison free of the chaotic drift a free-running trajectory would
-// accumulate through tanh feedback.
-void runTrajectoryParity(vkexp::HeadlessComputeContext& context,
-                         const vkexp::BeaconScenario scenario, const std::uint32_t steps,
-                         const vkexp::NeuronModel neuronModel = vkexp::NeuronModel::TimeConstant,
-                         const bool swapEnds = false, const bool uniformBeaconColor = false,
-                         const bool doorsByGeneration = false,
-                         // The hidden-layer plan, or empty for the scenario's own. A deep
-                         // plan is a different genome layout and a different evaluation
-                         // order, and the two languages have to walk it identically.
-                         const std::array<std::uint32_t, 3> hiddenLayers = {}) {
-    const vkexp::neuro::Weights weights = makeTestWeights();
-    vkexp::SimulationStep base{};
-    base.beaconScenario = scenario;
-    base.neuronModel = neuronModel;
-    base.beaconMotionSeed = 0x5eed1234U;
-    base.swapDeliveryEnds = swapEnds;
-    base.uniformBeaconColor = uniformBeaconColor;
-    base.blockedDoorPerGeneration = doorsByGeneration;
-    base.hiddenLayers = hiddenLayers;
-    // The seed is the generation number, and both generation-keyed options land
-    // on odd ones. The default seed is even and the probe agent runs trial 0, so
-    // asking for either without this would set a flag that changes nothing and
-    // call the result parity.
-    if (swapEnds || doorsByGeneration) {
-        base.beaconMotionSeed |= 1U;
-    }
+        agents_.create(context.physicalDevice(), context.device(),
+                       {agentBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
+        genome_.create(context.physicalDevice(), context.device(),
+                       {weights.size_bytes(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
+        occupancy_.create(context.physicalDevice(), context.device(),
+                          {gridBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
+        claims_.create(context.physicalDevice(), context.device(),
+                       {gridBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
+        parameters_.create(context.physicalDevice(), context.device(),
+                           {sizeof(vkexp::GpuStepParameters), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                            hostMemory});
+        genome_.write(weights.data(), weights.size_bytes());
 
-    StepHarness harness{context, 1, 1, 1, 1, base.worldRadius};
-    harness.genomes.write(weights.data(), weights.size() * sizeof(float));
+        const vkexp::GpuStepParameters packed = vkexp::packStepParameters(
+            settings, {.agentCount = agentCount,
+                       .trialsPerGenome = layout.trialsPerGenome,
+                       .agentsPerWorld = layout.groupSize(),
+                       .worldCount = layout.worldCount()});
+        parameters_.write(&packed, sizeof(packed));
 
-    vkexp::AgentState agent{};
-    agent.pose = {0.42F, -0.31F, 0.7F, vkexp::agentBodyRadius};
-    agent.motion = {0.05F, 0.02F, 0.0F, 1.0F};
-    agent.signal = {0.15F, 0.45F, 0.85F, 0.0F};
-    const vkexp::Float4 target = vkexp::stationaryBeaconPosition(0, base.worldRadius);
-    agent.target = {target.x, target.y, 0.0F, 0.0F};
-    const vkexp::SimulationStep initial = vkexp::resolveStepSettings(base, 0, steps);
-    const float distance = vkexp::nearestBeaconDistance(agent, initial);
-    agent.metrics = {distance, distance, 0.0F, 0.0F};
+        createLayout(6, stepLayout_);
+        createLayout(4, resolveLayout_);
+        createLayout(2, clearLayout_);
+        descriptors_.create(context.device(), {6, {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 20}}});
 
-    AgentDrift drift{};
-    std::uint32_t phaseTransitions = 0;
-    std::uint32_t stepsWithVisibleBeacon = 0;
-    for (std::uint32_t step = 0; step < steps; ++step) {
-        const vkexp::SimulationStep settings = vkexp::resolveStepSettings(base, step, steps);
-        if (settings.beaconPhaseChanged) {
-            ++phaseTransitions;
+        for (std::uint32_t readIndex = 0; readIndex < 2; ++readIndex) {
+            const VkBuffer readBuffer =
+                readIndex == 0 ? agents_.read().buffer() : agents_.write().buffer();
+            const VkBuffer writeBuffer =
+                readIndex == 0 ? agents_.write().buffer() : agents_.read().buffer();
+            stepSets_[readIndex] = descriptors_.allocate(stepLayout_.get());
+            vkexp::DescriptorSetWriter{}
+                .writeBuffer(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, readBuffer, 0, agentBytes)
+                .writeBuffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, writeBuffer, 0, agentBytes)
+                .writeBuffer(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, genome_.buffer(), 0,
+                             genome_.size())
+                .writeBuffer(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, occupancy_.buffer(), 0,
+                             occupancy_.size())
+                .writeBuffer(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, claims_.buffer(), 0,
+                             claims_.size())
+                .writeBuffer(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, parameters_.buffer(), 0,
+                             parameters_.size())
+                .update(context.device(), stepSets_[readIndex]);
+
+            resolveSets_[readIndex] = descriptors_.allocate(resolveLayout_.get());
+            vkexp::DescriptorSetWriter{}
+                .writeBuffer(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, writeBuffer, 0, agentBytes)
+                .writeBuffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, occupancy_.buffer(), 0,
+                             occupancy_.size())
+                .writeBuffer(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, claims_.buffer(), 0,
+                             claims_.size())
+                .writeBuffer(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, parameters_.buffer(), 0,
+                             parameters_.size())
+                .update(context.device(), resolveSets_[readIndex]);
         }
-        const std::array<vkexp::AgentState, 1> agents{agent};
-        harness.buildGrid(agents, settings.worldRadius);
-        harness.inputAgents.write(&agent, sizeof(agent));
-        const vkexp::GpuStepParameters parameters =
-            makeStepParameters(settings, 1, 1, harness.gridWidth(), harness.gridCellsPerWorld());
-        harness.stepParameters.write(&parameters, sizeof(parameters));
-        harness.dispatch(0);
+        clearSet_ = descriptors_.allocate(clearLayout_.get());
+        vkexp::DescriptorSetWriter{}
+            .writeBuffer(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, claims_.buffer(), 0, claims_.size())
+            .writeBuffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, parameters_.buffer(), 0,
+                         parameters_.size())
+            .update(context.device(), clearSet_);
 
-        vkexp::AgentState actual{};
-        harness.outputAgents.read(&actual, sizeof(actual));
-        if (vkexp::nearestBeaconDistance(agent, settings) < settings.lightSensorRange) {
-            ++stepsWithVisibleBeacon;
+        stepPipeline_ = vkexp::ComputePipelineBuilder{context.physicalDevice(), context.device()}
+                            .shader(VKEXP_SHADER_DIR "/lattice_step.comp.spv")
+                            .addDescriptorSetLayout(stepLayout_.get())
+                            .addPushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, sizeof(std::uint32_t))
+                            .build();
+        resolvePipeline_ =
+            vkexp::ComputePipelineBuilder{context.physicalDevice(), context.device()}
+                .shader(VKEXP_SHADER_DIR "/lattice_resolve.comp.spv")
+                .addDescriptorSetLayout(resolveLayout_.get())
+                .addPushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, sizeof(std::uint32_t))
+                .build();
+        clearPipeline_ =
+            vkexp::ComputePipelineBuilder{context.physicalDevice(), context.device()}
+                .shader(VKEXP_SHADER_DIR "/lattice_clear.comp.spv")
+                .addDescriptorSetLayout(clearLayout_.get())
+                .addPushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, sizeof(std::uint32_t))
+                .build();
+    }
+
+    void upload(const std::span<const vkexp::AgentState> agents,
+                const std::span<const std::int32_t> occupancy) {
+        agents_.read().write(agents.data(), agents.size_bytes());
+        agents_.write().write(agents.data(), agents.size_bytes());
+        occupancy_.write(occupancy.data(), occupancy.size_bytes());
+    }
+
+    void step() {
+        context_.immediate().execute([&](const VkCommandBuffer commands) {
+            const std::uint32_t readIndex = agents_.readIndex();
+            const std::uint32_t stepIndex = 0;
+            const std::array<VkDeviceSize, 2> clearRanges{claims_.size(), parameters_.size()};
+            const vkexp::DispatchSize clearGroups = vkexp::checkedDispatchSize(
+                context_.physicalDevice(),
+                {{cellCount_, 1, 1}, {256, 1, 1}, sizeof(std::uint32_t), clearRanges});
+            vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, clearPipeline_.pipeline());
+            vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    clearPipeline_.layout(), 0, 1, &clearSet_, 0, nullptr);
+            vkCmdPushConstants(commands, clearPipeline_.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                               sizeof(stepIndex), &stepIndex);
+            vkCmdDispatch(commands, clearGroups.x, 1, 1);
+            vkexp::cmdComputeWriteToComputeRead(commands, claims_.buffer());
+
+            const std::array<VkDeviceSize, 6> stepRanges{
+                agents_.read().size(), agents_.write().size(), genome_.size(),
+                occupancy_.size(),     claims_.size(),         parameters_.size()};
+            const vkexp::DispatchSize stepGroups = vkexp::checkedDispatchSize(
+                context_.physicalDevice(),
+                {{layout_.agentCount(), 1, 1}, {64, 1, 1}, sizeof(std::uint32_t), stepRanges});
+            vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, stepPipeline_.pipeline());
+            vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    stepPipeline_.layout(), 0, 1, &stepSets_[readIndex], 0,
+                                    nullptr);
+            vkCmdPushConstants(commands, stepPipeline_.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                               sizeof(stepIndex), &stepIndex);
+            vkCmdDispatch(commands, stepGroups.x, 1, 1);
+            vkexp::cmdComputeWriteToComputeRead(commands, claims_.buffer());
+            vkexp::cmdComputeWriteToComputeRead(commands, agents_.write().buffer());
+
+            vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
+                              resolvePipeline_.pipeline());
+            vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    resolvePipeline_.layout(), 0, 1, &resolveSets_[readIndex], 0,
+                                    nullptr);
+            vkCmdPushConstants(commands, resolvePipeline_.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                               sizeof(stepIndex), &stepIndex);
+            vkCmdDispatch(commands, stepGroups.x, 1, 1);
+            vkexp::cmdComputeWriteToComputeRead(commands, agents_.write().buffer());
+            vkexp::cmdComputeWriteToComputeRead(commands, occupancy_.buffer());
+        });
+        context_.waitIdle();
+        agents_.swap();
+    }
+
+    [[nodiscard]] std::vector<vkexp::AgentState> readAgents() {
+        std::vector<vkexp::AgentState> result(layout_.agentCount());
+        agents_.read().read(result.data(), result.size() * sizeof(vkexp::AgentState));
+        return result;
+    }
+
+    [[nodiscard]] std::vector<std::int32_t> readOccupancy() {
+        std::vector<std::int32_t> result(cellCount_);
+        occupancy_.read(result.data(), result.size() * sizeof(std::int32_t));
+        return result;
+    }
+
+private:
+    void createLayout(const std::uint32_t bindingCount, vkexp::UniqueDescriptorSetLayout& layout) {
+        std::vector<VkDescriptorSetLayoutBinding> bindings(bindingCount);
+        for (std::uint32_t binding = 0; binding < bindingCount; ++binding) {
+            bindings[binding].binding = binding;
+            bindings[binding].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            bindings[binding].descriptorCount = 1;
+            bindings[binding].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         }
-        vkexp::stepAgentCpu(agent, weights, settings);
-        compareAgents(agent, actual, 0.0002F,
-                      std::string{"Trajectory parity ["} + scenarioName(scenario) + "] step " +
-                          std::to_string(step),
-                      &drift);
-
-        const float centerDistance = std::hypot(agent.pose.x, agent.pose.y);
-        if (!std::isfinite(centerDistance) ||
-            centerDistance > settings.worldRadius - agent.pose.w + 0.001F) {
-            throw std::runtime_error(std::string{"Trajectory parity ["} + scenarioName(scenario) +
-                                     "] left the world at step " + std::to_string(step));
+        VkDescriptorSetLayoutCreateInfo info{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        info.bindingCount = bindingCount;
+        info.pBindings = bindings.data();
+        if (vkCreateDescriptorSetLayout(context_.device(), &info, nullptr,
+                                        layout.put(context_.device())) != VK_SUCCESS) {
+            throw std::runtime_error("Unable to create a lattice parity descriptor layout");
         }
     }
-    if (scenario == vkexp::BeaconScenario::AlternatingDiagonals && phaseTransitions != 1) {
-        throw std::runtime_error("Alternating trajectory did not cross exactly one phase change");
-    }
-    // Lockstep alone cannot see a systematic bias smaller than the per-step
-    // tolerance, because resetting to the CPU state every step stops it from
-    // accumulating. Summing the signed per-step differences restores that:
-    // symmetric rounding noise cancels, a constant offset in a shader term does
-    // not.
-    const double worstDrift =
-        *std::max_element(drift.begin(), drift.end(),
-                          [](const double a, const double b) { return std::abs(a) < std::abs(b); });
-    const char* modelName = neuronModel == vkexp::NeuronModel::Reactive      ? "reactive"
-                            : neuronModel == vkexp::NeuronModel::Gated       ? "gated"
-                                                                            : "time constant";
-    std::cout << "  drift[" << scenarioName(scenario) << ", " << modelName
-              << (swapEnds ? ", swapped" : "") << (uniformBeaconColor ? ", hue ablated" : "")
-              << (doorsByGeneration ? ", doors by generation" : "") << "] = " << worstDrift
-              << '\n';
-    if (std::abs(worstDrift) > accumulatedDriftBudget) {
-        throw std::runtime_error(std::string{"Trajectory parity ["} + scenarioName(scenario) +
-                                 "] accumulated a systematic CPU/GPU drift of " +
-                                 std::to_string(worstDrift) + " over " + std::to_string(steps) +
-                                 " steps (budget " + std::to_string(accumulatedDriftBudget) + ")");
-    }
-    // A trajectory that never sees a beacon would silently skip the distance
-    // shaping and arrival branches, making the whole run vacuous.
-    if (stepsWithVisibleBeacon * 4 < steps) {
-        throw std::runtime_error(std::string{"Trajectory parity ["} + scenarioName(scenario) +
-                                 "] kept the beacon out of sensor range for most of the run; "
-                                 "it would not cover the shaping and arrival branches");
-    }
-}
 
-// Genome addressing probe.
-//
-// This is the class of bug the CPU mirror used to guard: a wrong genomeStride or
-// base offset makes an agent read another genome's weights, which a parity test
-// on a single agent cannot see. Each genome gets a distinctive motor bias, and
-// every agent must drive exactly as its own genome says.
-// The trail field is GPU-only state, so the parity cases cannot reach it. What
-// has to be checked instead is the coupling: a mark under one antenna tip must
-// reach that antenna's inputs and nobody else's, and must change what the agent
-// does. A wrong cell index, a wrong channel or a wrong antenna angle all show up
-// here as the wrong agent turning.
-void runTrailFieldProbe(vkexp::HeadlessComputeContext& context) {
-    constexpr float worldRadius = vkexp::smallWorldRadius;
-    StepHarness harness{context, 1, 1, 1, 1, worldRadius};
+    vkexp::HeadlessComputeContext& context_;
+    vkexp::SimulationStep settings_;
+    vkexp::lattice::PopulationLayout layout_;
+    std::uint32_t cellCount_{};
+    vkexp::PingPongBuffer agents_;
+    vkexp::BufferResource genome_;
+    vkexp::BufferResource occupancy_;
+    vkexp::BufferResource claims_;
+    vkexp::BufferResource parameters_;
+    vkexp::UniqueDescriptorSetLayout stepLayout_;
+    vkexp::UniqueDescriptorSetLayout resolveLayout_;
+    vkexp::UniqueDescriptorSetLayout clearLayout_;
+    vkexp::DescriptorAllocator descriptors_;
+    std::array<VkDescriptorSet, 2> stepSets_{};
+    std::array<VkDescriptorSet, 2> resolveSets_{};
+    VkDescriptorSet clearSet_{};
+    vkexp::ComputePipeline stepPipeline_;
+    vkexp::ComputePipeline resolvePipeline_;
+    vkexp::ComputePipeline clearPipeline_;
+};
 
-    vkexp::SimulationStep settings{};
-    settings.worldRadius = worldRadius;
-    settings.lightSensorRange = vkexp::lightRangeForWorld(settings);
+// Every float the two sides both compute, summed signed across a run. Lockstep
+// comparison alone cannot see a systematic bias smaller than the per-step
+// tolerance, because resynchronising every step stops it accumulating: summing
+// the signed differences restores it, since symmetric rounding noise cancels and
+// a constant offset in a shader term does not.
+using AgentDrift = std::array<double, 5 + vkexp::agentHiddenVectorCount * 4>;
+constexpr double accumulatedDriftBudget = 1.0e-3;
 
-    // Left and right antennae are wired to opposite motors, so the sign of the
-    // turn says which tip did the smelling. Reading one antenna would not be
-    // enough: a shader that fed every tip the same cell would still turn.
-    const vkexp::neuro::BrainShape brain = vkexp::scenarioDefinition(settings.beaconScenario).brain;
-    namespace bk = vkexp::neuro::kernel;
-    const auto inputCount = static_cast<bk::uint>(brain.inputCount);
-    const bk::uint layers = brain.packedLayers();
-    std::vector<float> genome(brain.weightCount(), 0.0F);
-    const bk::uint leftGreen = bk::brainAntennaChannelIndex(0u, 1u);
-    const bk::uint rightGreen = bk::brainAntennaChannelIndex(bk::BrainAntennaCount - 1u, 1u);
-    genome[bk::brainLayerWeightIndex(0, inputCount, layers, 0u, 0u, leftGreen)] = 4.0F;
-    genome[bk::brainLayerWeightIndex(0, inputCount, layers, 0u, 1u, rightGreen)] = 4.0F;
-    genome[bk::brainOutputWeightIndex(0, inputCount, layers, bk::BrainMotorRightOutput, 0u)] = 4.0F;
-    genome[bk::brainOutputWeightIndex(0, inputCount, layers, bk::BrainMotorLeftOutput, 1u)] = 4.0F;
-    harness.genomes.write(genome.data(), sizeof(float) * genome.size());
-
-    vkexp::AgentState agent{};
-    agent.pose = {0.0F, 0.0F, 0.0F, vkexp::agentBodyRadius};
-    agent.motion.w = 1.0F;
-    agent.target = {worldRadius * 0.6F, 0.0F, 0.0F, 0.0F};
-    agent.metrics = {worldRadius, worldRadius, 0.0F, 0.0F};
-
-    const auto stepWithField = [&](const vkexp::TrailMode trailMode, const bool markLeft) {
-        // The cell the chosen antenna tip actually lands in, derived the same way
-        // the shader derives it rather than guessed.
-        const float tipAngle =
-            agent.pose.z + bk::brainAntennaAngle(markLeft ? 0u : bk::BrainAntennaCount - 1u);
-        const vkexp::trail::kernel::vec2 tip{
-            agent.pose.x + std::cos(tipAngle) * bk::BrainAntennaLength,
-            agent.pose.y + std::sin(tipAngle) * bk::BrainAntennaLength};
-        const std::uint32_t cell = vkexp::trail::kernel::trailCellIndex(
-            tip, worldRadius, settings.trailCellSize, harness.trailWidth());
-        harness.markTrailCell(0, cell, 0.0F, 4.0F, 0.0F);
-
-        harness.inputAgents.write(&agent, sizeof(agent));
-        harness.buildGrid(std::span{&agent, 1}, worldRadius);
-        const vkexp::GpuStepParameters parameters =
-            makeStepParameters(settings, 1, 1, harness.gridWidth(), harness.gridCellsPerWorld(),
-                               harness.trailWidth(), harness.trailCellsPerWorld(), 1, trailMode);
-        harness.stepParameters.write(&parameters, sizeof(parameters));
-        harness.dispatch(0);
-        vkexp::AgentState stepped{};
-        harness.outputAgents.read(&stepped, sizeof(stepped));
-        return stepped;
+// Cells and occupancy are compared exactly. They are integers, and the whole
+// point of the arbitration rule is that both sides reach the same one: a
+// tolerance here would hide the only failure that matters, which is two
+// implementations putting an agent in different cells.
+void compareAgents(const vkexp::AgentState& expected, const vkexp::AgentState& actual,
+                   const std::string& context, const float tolerance, AgentDrift* drift = nullptr) {
+    std::size_t slot = 0;
+    const auto same = [&](const float left, const float right, const char* field) {
+        if (drift != nullptr) {
+            (*drift)[slot] += static_cast<double>(right) - static_cast<double>(left);
+        }
+        ++slot;
+        if (std::abs(left - right) > tolerance) {
+            throw std::runtime_error(context + ": " + field + " drifted, CPU " +
+                                     std::to_string(left) + " vs GPU " + std::to_string(right));
+        }
     };
-
-    const vkexp::AgentState blind = stepWithField(vkexp::TrailMode::Off, true);
-    // The same marked cell, the same antenna, and a field that is present and
-    // deposited into -- only the reading is switched off. This is the claim the
-    // "Draw only" setting makes, and the one that makes it a control: if it did
-    // not hold, a run with the trail drawn but nominally unsmelled would still
-    // be a run with a trail.
-    const vkexp::AgentState drawnButBlind = stepWithField(vkexp::TrailMode::Visual, true);
-    const vkexp::AgentState leftScent = stepWithField(vkexp::TrailMode::Sensed, true);
-    const vkexp::AgentState rightScent = stepWithField(vkexp::TrailMode::Sensed, false);
-
-    require(std::abs(blind.motion.z) < 1.0e-6F,
-            "With the trail off the antenna inputs are zero and the agent does not turn");
-    require(std::abs(drawnButBlind.motion.z) < 1.0e-6F,
-            "A drawn but unsmelled trail moves the agent exactly as no trail does");
-    require(std::abs(drawnButBlind.motion.z - blind.motion.z) < 1.0e-6F &&
-                std::abs(drawnButBlind.pose.z - blind.pose.z) < 1.0e-6F,
-            "and it is the same step, not merely a step that also happens not to turn");
-    require(leftScent.motion.z > 1.0e-3F,
-            "A mark under the left antenna drives the right motor and turns one way");
-    require(rightScent.motion.z < -1.0e-3F,
-            "The same mark under the right antenna turns the other way");
-
-    // Decay is a per-second half-life, not a per-tick factor, so the same
-    // simulated second has to fade the same amount at any step rate.
-    const float rate = vkexp::trail::kernel::trailDecayRateForHalfLife(2.0F);
-    float slow = 1.0F;
-    for (int step = 0; step < 60; ++step) {
-        slow *= vkexp::trail::kernel::trailSurvival(rate, 1.0F / 60.0F);
-    }
-    float fast = 1.0F;
-    for (int step = 0; step < 240; ++step) {
-        fast *= vkexp::trail::kernel::trailSurvival(rate, 1.0F / 240.0F);
-    }
-    require(std::abs(slow - fast) < 1.0e-4F, "Trail decay over one second ignores the step rate");
-    require(std::abs(slow - 0.70710678F) < 1.0e-4F,
-            "A two-second half-life leaves 1/sqrt(2) after one second");
-}
-
-void runGenomeAddressingProbe(vkexp::HeadlessComputeContext& context) {
-    constexpr std::uint32_t genomeCount = 6;
-    constexpr std::uint32_t trialsPerGenome = 2;
-    constexpr std::uint32_t agentCount = genomeCount * trialsPerGenome;
-    namespace kernel = vkexp::neuro::kernel;
-
-    const vkexp::SimulationStep settings{};
-    const vkexp::neuro::BrainShape brain = vkexp::scenarioDefinition(settings.beaconScenario).brain;
-    const auto inputCount = static_cast<kernel::uint>(brain.inputCount);
-    const auto outputCount = static_cast<kernel::uint>(brain.outputCount);
-
-    // Genome g biases both motors so that tanh(bias) is a value unique to g.
-    // At the run's own plan length, because that is the stride the shader steps
-    // by: a genome padded to some other length would put every agent but the
-    // first on the wrong weights, which is the very thing this probe checks.
-    std::vector<vkexp::neuro::Weights> genomes(genomeCount, vkexp::neuro::makeWeights(brain));
-    std::array<float, genomeCount> expectedDrive{};
-    for (std::uint32_t genome = 0; genome < genomeCount; ++genome) {
-        const float bias = -1.0F + 0.4F * static_cast<float>(genome);
-        for (const kernel::uint motor :
-             {kernel::BrainMotorLeftOutput, kernel::BrainMotorRightOutput}) {
-            genomes[genome][kernel::brainOutputBiasIndex(0u, inputCount, brain.packedLayers(),
-                                                         outputCount, motor)] = bias;
+    const auto identical = [&](const std::int32_t left, const std::int32_t right,
+                               const char* field) {
+        if (left != right) {
+            throw std::runtime_error(context + ": " + field + " differs, CPU " +
+                                     std::to_string(left) + " vs GPU " + std::to_string(right));
         }
-        expectedDrive[genome] = std::tanh(bias);
-    }
-
-    StepHarness harness{context, agentCount, genomeCount, 1, 1, settings.worldRadius};
-    const std::vector<float> flatGenomes = flattenGenomes(genomes);
-    harness.genomes.write(flatGenomes.data(), flatGenomes.size() * sizeof(float));
-
-    std::vector<vkexp::AgentState> agents(agentCount);
-    for (std::uint32_t index = 0; index < agentCount; ++index) {
-        agents[index].pose = {0.0F, 0.0F, 0.0F, vkexp::agentBodyRadius};
-        agents[index].motion.w = 1.0F;
-        agents[index].target = {settings.worldRadius * 0.7F, 0.0F,
-                                static_cast<float>(index % trialsPerGenome), 0.0F};
-        agents[index].metrics = {1.0F, 1.0F, 0.0F, 0.0F};
-    }
-    harness.buildGrid(agents, settings.worldRadius);
-    harness.inputAgents.write(agents.data(), agents.size() * sizeof(vkexp::AgentState));
-    vkexp::GpuStepParameters parameters = makeStepParameters(
-        settings, agentCount, trialsPerGenome, harness.gridWidth(), harness.gridCellsPerWorld());
-    parameters.agentCollisionsEnabled = 0;
-    parameters.agentLightEnabled = 0;
-    harness.stepParameters.write(&parameters, sizeof(parameters));
-    harness.dispatch(0);
-    harness.outputAgents.read(agents.data(), agents.size() * sizeof(vkexp::AgentState));
-
-    for (std::uint32_t index = 0; index < agentCount; ++index) {
-        const std::uint32_t genome = index / trialsPerGenome;
-        // Straight-line drive for one step, before drag and the speed clamp:
-        // both motors share the bias, so forward speed follows tanh(bias).
-        const float drive = expectedDrive[genome] * settings.thrust * settings.deltaTime *
-                            std::exp(-settings.linearDrag * settings.deltaTime);
-        if (std::abs(agents[index].motion.x - drive) > 0.001F) {
-            throw std::runtime_error("Genome addressing probe: agent " + std::to_string(index) +
-                                     " should follow genome " + std::to_string(genome) +
-                                     " (expected drive " + std::to_string(drive) + ", got " +
-                                     std::to_string(agents[index].motion.x) +
-                                     "); genomeStride or base offset is wrong");
-        }
+    };
+    identical(expected.cell.x, actual.cell.x, "cell.x");
+    identical(expected.cell.y, actual.cell.y, "cell.y");
+    identical(expected.cell.z, actual.cell.z, "cell.z");
+    identical(expected.cell.w, actual.cell.w, "heading");
+    identical(expected.intent.x, actual.intent.x, "intent.x");
+    identical(expected.intent.y, actual.intent.y, "intent.y");
+    identical(expected.intent.z, actual.intent.z, "intent.z");
+    identical(expected.intent.w, actual.intent.w, "refusal flag");
+    same(expected.signal.x, actual.signal.x, "broadcast");
+    same(expected.metrics.x, actual.metrics.x, "best nearness");
+    same(expected.metrics.y, actual.metrics.y, "contacts");
+    same(expected.metrics.z, actual.metrics.z, "effort");
+    same(expected.metrics.w, actual.metrics.w, "refusals");
+    for (std::size_t index = 0; index < expected.hidden.size(); ++index) {
+        same(expected.hidden[index].x, actual.hidden[index].x, "hidden.x");
+        same(expected.hidden[index].y, actual.hidden[index].y, "hidden.y");
+        same(expected.hidden[index].z, actual.hidden[index].z, "hidden.z");
+        same(expected.hidden[index].w, actual.hidden[index].w, "hidden.w");
     }
 }
 
-// Many agents in one world exercise the shared spatial grid, where a race or an
-// uninitialised read would show up as run-to-run variation rather than as a
-// CPU/GPU mismatch.
-void runMultiAgentDeterminism(vkexp::HeadlessComputeContext& context) {
-    constexpr std::uint32_t agentCount = 192;
-    constexpr std::uint32_t steps = 24;
-    const vkexp::neuro::Weights weights = makeTestWeights(0.44F);
-    vkexp::SimulationStep base{};
-    base.beaconScenario = vkexp::BeaconScenario::Rotating;
-
-    StepHarness harness{context, agentCount, 1, 1, 1, base.worldRadius};
-    harness.genomes.write(weights.data(), weights.size() * sizeof(float));
-
-    const auto makeAgents = [&] {
-        std::vector<vkexp::AgentState> agents(agentCount);
-        for (std::uint32_t index = 0; index < agentCount; ++index) {
-            const float angle = 2.39996323F * static_cast<float>(index);
-            const float radius =
-                base.worldRadius * 0.55F *
-                std::sqrt((static_cast<float>(index) + 0.5F) / static_cast<float>(agentCount));
-            agents[index].pose = {std::cos(angle) * radius, std::sin(angle) * radius, angle,
-                                  vkexp::agentBodyRadius};
-            agents[index].motion.w = 1.0F;
-            agents[index].signal = {0.5F, 0.4F, 0.9F, 0.6F};
-            agents[index].target = {base.worldRadius * 0.7F, 0.0F, 0.0F, 0.0F};
-            agents[index].metrics = {1.0F, 1.0F, 0.0F, 0.0F};
-        }
-        return agents;
-    };
-
-    const auto runOnce = [&] {
-        std::vector<vkexp::AgentState> agents = makeAgents();
-        for (std::uint32_t step = 0; step < steps; ++step) {
-            const vkexp::SimulationStep settings = vkexp::resolveStepSettings(base, step, steps);
-            harness.buildGrid(agents, settings.worldRadius);
-            harness.inputAgents.write(agents.data(), agents.size() * sizeof(vkexp::AgentState));
-            const vkexp::GpuStepParameters parameters = makeStepParameters(
-                settings, agentCount, 1, harness.gridWidth(), harness.gridCellsPerWorld());
-            harness.stepParameters.write(&parameters, sizeof(parameters));
-            harness.dispatch(0);
-            harness.outputAgents.read(agents.data(), agents.size() * sizeof(vkexp::AgentState));
-        }
-        return agents;
-    };
-
-    const std::vector<vkexp::AgentState> first = runOnce();
-    const std::vector<vkexp::AgentState> second = runOnce();
-    for (std::size_t index = 0; index < first.size(); ++index) {
-        if (std::memcmp(&first[index], &second[index], sizeof(vkexp::AgentState)) != 0) {
-            throw std::runtime_error("Repeated GPU run diverged for agent " +
-                                     std::to_string(index) +
-                                     "; the spatial grid or step shader is not deterministic");
-        }
-    }
-    const bool anyMoved = std::any_of(first.begin(), first.end(), [](const vkexp::AgentState& a) {
-        return std::abs(a.motion.x) > 0.0F || std::abs(a.motion.y) > 0.0F;
+[[nodiscard]] double worstDrift(const AgentDrift& drift) {
+    return *std::max_element(drift.begin(), drift.end(), [](const double left, const double right) {
+        return std::abs(left) < std::abs(right);
     });
-    if (!anyMoved) {
-        throw std::runtime_error("Determinism run produced motionless agents; it proves nothing");
+}
+
+[[nodiscard]] const char* neighborhoodName(const vkexp::Neighborhood neighborhood) {
+    return neighborhood == vkexp::Neighborhood::Faces ? "faces" : "moore";
+}
+
+[[nodiscard]] const char* neuronModelName(const vkexp::NeuronModel model) {
+    switch (model) {
+    case vkexp::NeuronModel::Reactive:
+        return "reactive";
+    case vkexp::NeuronModel::TimeConstant:
+        return "time";
+    case vkexp::NeuronModel::Gated:
+        return "gated";
+    case vkexp::NeuronModel::Spiking:
+        return "spiking";
+    }
+    return "?";
+}
+
+// A lattice small enough that twelve agents crowd it. Contention is the thing
+// under test, so the density is the test fixture: at 32x32x16 the same twelve
+// agents would almost never meet, and every case would pass whatever the
+// arbitration did.
+[[nodiscard]] vkexp::SimulationStep paritySettings(const vkexp::Neighborhood neighborhood,
+                                                   const vkexp::NeuronModel model) {
+    vkexp::SimulationStep settings;
+    settings.latticeWidth = 4;
+    settings.latticeHeight = 4;
+    settings.latticeDepth = 4;
+    settings.neighborhood = neighborhood;
+    settings.neuronModel = model;
+    return settings;
+}
+
+// One step of the lattice, compared step for step, with the device resynchronised
+// to the reference at the top of every step.
+//
+// Lockstep rather than two free runs, for a reason particular to a lattice: a
+// float difference of one ulp in a drive that sits on the dead zone is the
+// difference between moving and standing still, and one differing move puts the
+// two populations in different cells for the rest of the run. That is a real
+// property worth knowing -- the discrete outcome is not continuous in the
+// arithmetic -- but measuring it is measuring chaos, not agreement. So each step
+// starts from one state and the step itself is what is compared, and the
+// accumulated signed drift below is what catches a systematic bias that the
+// per-step tolerance is too loose to see.
+void runLatticeTrajectoryParity(vkexp::HeadlessComputeContext& context,
+                                const vkexp::Neighborhood neighborhood,
+                                const vkexp::NeuronModel model, const std::uint32_t steps) {
+    const vkexp::SimulationStep settings = paritySettings(neighborhood, model);
+    const vkexp::lattice::PopulationLayout layout{12, 10, 2};
+    const vkexp::neuro::BrainShape brain = vkexp::resolvedBrain(settings);
+    const std::vector<float> weights = makeWeights(brain, layout.genomeCount, 0x9E37U);
+
+    std::vector<vkexp::AgentState> expected = vkexp::lattice::makeInitialAgents(settings, layout);
+    const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
+    std::vector<std::int32_t> occupancy(static_cast<std::size_t>(cells) * layout.worldCount());
+    vkexp::lattice::buildOccupancy(expected, settings, layout, occupancy);
+    std::vector<std::int32_t> claims(occupancy.size());
+
+    LatticeHarness harness{context, settings, layout, weights};
+
+    const std::string label = std::string{"Trajectory parity ["} + neighborhoodName(neighborhood) +
+                              ", " + neuronModelName(model) + "]";
+    AgentDrift drift{};
+    for (std::uint32_t step = 0; step < steps; ++step) {
+        harness.upload(expected, occupancy);
+        harness.step();
+        const std::vector<vkexp::AgentState> actual = harness.readAgents();
+        const std::vector<std::int32_t> actualOccupancy = harness.readOccupancy();
+
+        vkexp::stepLatticeCpu({expected, occupancy, claims, weights,
+                               static_cast<std::uint32_t>(brain.weightCount()),
+                               layout.groupSize(), layout.trialsPerGenome},
+                              settings);
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            compareAgents(expected[index], actual[index],
+                          label + " step " + std::to_string(step) + " agent " +
+                              std::to_string(index),
+                          4.0e-4F, &drift);
+        }
+        require(actualOccupancy == occupancy,
+                label + ": the occupancy grids diverged at step " + std::to_string(step));
+    }
+
+    std::uint32_t movers = 0;
+    std::uint32_t refused = 0;
+    for (const vkexp::AgentState& agent : expected) {
+        movers += agent.metrics.z > 0.0F ? 1U : 0U;
+        refused += agent.metrics.w > 0.0F ? 1U : 0U;
+    }
+    // A run in which nobody ever moved, or nobody was ever refused, would agree
+    // perfectly and prove nothing. Both halves of the rule have to have fired.
+    require(movers > 0, label + ": no agent ever moved, so the movement rule was never exercised");
+    require(refused > 0,
+            label + ": no agent was ever refused, so the arbitration was never exercised");
+
+    const double worst = worstDrift(drift);
+    std::cout << "  drift" << label.substr(label.find('[')) << " = " << worst << '\n';
+    require(std::abs(worst) <= accumulatedDriftBudget,
+            label + " accumulated a systematic CPU/GPU drift of " + std::to_string(worst) +
+                " over " + std::to_string(steps) + " steps (budget " +
+                std::to_string(accumulatedDriftBudget) + ")");
+}
+
+// Two agents, one free cell between them, and nothing else in the world. The
+// lower-numbered one must win on both sides -- not because that is a nice rule,
+// but because it is the only one a GPU can be held to: the winner is a minimum
+// over indices, so it does not depend on which invocation reached the cell
+// first. This is the case a spec would be written against, so it is tested
+// directly rather than only inside a trajectory.
+void runContentionProbe(vkexp::HeadlessComputeContext& context) {
+    vkexp::SimulationStep settings = paritySettings(vkexp::Neighborhood::Moore,
+                                                    vkexp::NeuronModel::Reactive);
+    // One agent drives hard toward +x and the other toward -x, so both ask for
+    // the cell between them rather than whatever their weights would otherwise
+    // have chosen. A large bias on the x-drive output and nothing else: tanh
+    // saturates, which clears any dead zone, and the other two axes stay at zero.
+    const vkexp::lattice::PopulationLayout layout{2, 2, 1};
+    const vkexp::neuro::BrainShape brain = vkexp::resolvedBrain(settings);
+    std::vector<float> weights(static_cast<std::size_t>(brain.weightCount()) * layout.genomeCount,
+                               0.0F);
+    const std::size_t moveBias = vkexp::neuro::kernel::brainOutputBiasIndex(
+        0U, static_cast<std::uint32_t>(brain.inputCount), brain.packedLayers(),
+        static_cast<std::uint32_t>(brain.outputCount), vkexp::neuro::kernel::BrainMoveOutput);
+    weights[moveBias] = 8.0F;
+    weights[static_cast<std::size_t>(brain.weightCount()) + moveBias] = -8.0F;
+
+    const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
+    std::vector<vkexp::AgentState> agents(layout.agentCount());
+    const vkexp::Int4 beacon = vkexp::lattice::beaconCell(settings, 0);
+    for (std::uint32_t index = 0; index < agents.size(); ++index) {
+        agents[index].beacon = beacon;
+        agents[index].cell.w =
+            static_cast<std::int32_t>(vkexp::lattice::kernel::LatticeNeighborCount);
+    }
+    // Agent 0 at x=0 and agent 1 at x=2, both on the same row: the cell at x=1
+    // is the one they both want, and the one that is free.
+    agents[0].cell = {0, 2, 2, agents[0].cell.w};
+    agents[1].cell = {2, 2, 2, agents[1].cell.w};
+    for (vkexp::AgentState& agent : agents) {
+        agent.intent = {agent.cell.x, agent.cell.y, agent.cell.z, 0};
+    }
+
+    std::vector<std::int32_t> occupancy(static_cast<std::size_t>(cells) * layout.worldCount());
+    vkexp::lattice::buildOccupancy(agents, settings, layout, occupancy);
+    std::vector<std::int32_t> claims(occupancy.size());
+
+    LatticeHarness harness{context, settings, layout, weights};
+    harness.upload(agents, occupancy);
+
+    std::vector<vkexp::AgentState> expected = agents;
+    vkexp::stepLatticeCpu({expected, occupancy, claims, weights,
+                           static_cast<std::uint32_t>(brain.weightCount()),
+                           layout.groupSize(), layout.trialsPerGenome},
+                          settings);
+    harness.step();
+    const std::vector<vkexp::AgentState> actual = harness.readAgents();
+
+    require(expected[0].cell.x == 1,
+            "Contention: the lower-numbered agent should have taken the contested cell, it is at x="
+            + std::to_string(expected[0].cell.x));
+    require(expected[1].cell.x == 2,
+            "Contention: the higher-numbered agent should have stayed, it is at x=" +
+                std::to_string(expected[1].cell.x));
+    require(expected[1].metrics.w == 1.0F, "Contention: the loser was not charged a refusal");
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        compareAgents(expected[index], actual[index],
+                      "Contention agent " + std::to_string(index), 2.0e-3F);
     }
 }
 
-// Single-step parity from a deliberately hostile state: at the world edge, over
-// the speed limit, and mid phase change.
-void runNeuralStepParity(
-    vkexp::HeadlessComputeContext& context, const vkexp::WorldShape worldShape,
-    const vkexp::BeaconScenario beaconScenario = vkexp::BeaconScenario::Stationary) {
-    const vkexp::neuro::Weights weights = makeTestWeights();
-    vkexp::AgentState initial{};
-    initial.pose = {1.827F, 0.03F, 0.0F, 0.012F};
-    initial.motion = {2.0F, -1.0F, 9.0F, 1.0F};
-    initial.signal = {0.1F, 0.2F, 0.3F, 0.0F};
-    initial.target = {0.62F, 0.41F, 0.0F, 0.0F};
-    vkexp::SimulationStep settings{};
-    settings.worldShape = worldShape;
-    settings.beaconScenario = beaconScenario;
-    if (beaconScenario == vkexp::BeaconScenario::Rotating) {
-        settings.beaconRotationAngle = 0.73F;
-    } else if (beaconScenario == vkexp::BeaconScenario::RandomMovement) {
-        settings.beaconMotionTime = 4.2F;
-        settings.beaconMotionSeed = 73U;
-    } else if (beaconScenario == vkexp::BeaconScenario::ForageHome) {
-        settings.beaconRotationAngle = 0.73F;
-        settings.beaconMotionTime = vkexp::forageHomeRelocationSeconds;
-        initial.internal = {0.8F, 1.0F, 0.2F, -0.3F};
-        const vkexp::Float4 home = vkexp::homeBeaconPosition(initial, settings);
-        initial.pose.x = home.x;
-        initial.pose.y = home.y;
-    }
-    vkexp::SimulationStep initialSettings = settings;
-    initialSettings.beaconPhase = 0;
-    initialSettings.beaconRotationAngle = 0.0F;
-    initialSettings.beaconMotionTime = 0.0F;
-    const float initialDistance = vkexp::nearestBeaconDistance(initial, initialSettings);
-    initial.metrics = {initialDistance, initialDistance, 0.0F, 0.0F};
-    if (beaconScenario == vkexp::BeaconScenario::AlternatingDiagonals) {
-        settings.beaconPhase = 1;
-        settings.beaconPhaseChanged = true;
-    }
-    vkexp::AgentState expected = initial;
-    vkexp::stepAgentCpu(expected, weights, settings);
-    const float expectedSpeed =
-        std::sqrt(expected.motion.x * expected.motion.x + expected.motion.y * expected.motion.y);
-    if (expectedSpeed > settings.maximumSpeed + 0.0001F ||
-        std::abs(expected.motion.z) > settings.maximumAngularSpeed + 0.0001F) {
-        throw std::runtime_error("CPU agent speed limits were not applied");
-    }
-    const float maximumCenterDistance = settings.worldRadius - expected.pose.w + 0.0001F;
-    const bool insideWorld =
-        worldShape == vkexp::WorldShape::Circle
-            ? std::hypot(expected.pose.x, expected.pose.y) <= maximumCenterDistance
-            : std::abs(expected.pose.x) <= maximumCenterDistance &&
-                  std::abs(expected.pose.y) <= maximumCenterDistance;
-    if (!insideWorld) {
-        throw std::runtime_error("CPU agent escaped the selected world boundary");
-    }
+// A run whose lattice is full: every cell of a small world occupied, so no move
+// can ever succeed. The interesting part is that both sides say so in the same
+// way -- every agent refused, nobody moved, and the occupancy grid unchanged.
+void runFullLatticeProbe(vkexp::HeadlessComputeContext& context) {
+    vkexp::SimulationStep settings =
+        paritySettings(vkexp::Neighborhood::Moore, vkexp::NeuronModel::TimeConstant);
+    settings.latticeWidth = 2;
+    settings.latticeHeight = 2;
+    settings.latticeDepth = 2;
+    const vkexp::lattice::PopulationLayout layout{8, 8, 1};
+    const vkexp::neuro::BrainShape brain = vkexp::resolvedBrain(settings);
+    const std::vector<float> weights = makeWeights(brain, layout.genomeCount, 0x1234U);
 
-    StepHarness harness{context, 1, 1, 1, 1, settings.worldRadius};
-    harness.genomes.write(weights.data(), weights.size() * sizeof(float));
-    harness.inputAgents.write(&initial, sizeof(initial));
-    const std::array<vkexp::AgentState, 1> agents{initial};
-    harness.buildGrid(agents, settings.worldRadius);
-    const vkexp::GpuStepParameters parameters =
-        makeStepParameters(settings, 1, 1, harness.gridWidth(), harness.gridCellsPerWorld());
-    harness.stepParameters.write(&parameters, sizeof(parameters));
-    harness.dispatch(0);
+    std::vector<vkexp::AgentState> expected = vkexp::lattice::makeInitialAgents(settings, layout);
+    const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
+    std::vector<std::int32_t> occupancy(static_cast<std::size_t>(cells) * layout.worldCount());
+    vkexp::lattice::buildOccupancy(expected, settings, layout, occupancy);
+    std::vector<std::int32_t> claims(occupancy.size());
 
-    vkexp::AgentState actual{};
-    harness.outputAgents.read(&actual, sizeof(actual));
-    compareAgents(expected, actual, 0.0002F,
-                  std::string{"Single-step parity ["} + scenarioName(beaconScenario) + "]");
+    LatticeHarness harness{context, settings, layout, weights};
+    harness.upload(expected, occupancy);
+
+    const std::vector<std::int32_t> before = occupancy;
+    for (std::uint32_t step = 0; step < 8; ++step) {
+        harness.upload(expected, occupancy);
+        harness.step();
+        vkexp::stepLatticeCpu({expected, occupancy, claims, weights,
+                               static_cast<std::uint32_t>(brain.weightCount()),
+                               layout.groupSize(), layout.trialsPerGenome},
+                              settings);
+        const std::vector<vkexp::AgentState> actual = harness.readAgents();
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            compareAgents(expected[index], actual[index],
+                          "Full lattice agent " + std::to_string(index), 2.0e-3F);
+        }
+    }
+    require(occupancy == before, "Full lattice: somebody moved in a world with no free cell");
+    require(harness.readOccupancy() == before,
+            "Full lattice: the device moved somebody in a world with no free cell");
 }
 
-// Two neighbouring agents: they must collide, feel each other, and see each
-// other's light -- unless they belong to different logical worlds.
-void runAgentInteractionTest(vkexp::HeadlessComputeContext& context, const bool isolatedWorlds) {
-    constexpr std::uint32_t agentCount = 2;
-    std::array<vkexp::AgentState, agentCount> initial{};
-    initial[0].pose = {-0.01F, 0.0F, 0.0F, vkexp::agentBodyRadius};
-    initial[1].pose = {0.01F, 0.0F, 3.14159265F, vkexp::agentBodyRadius};
-    for (std::size_t index = 0; index < agentCount; ++index) {
-        initial[index].motion.w = 1.0F;
-        initial[index].target = {-1.0F, 0.0F, 0.0F, static_cast<float>(index)};
-        initial[index].metrics = {1.0F, 1.0F, 0.0F, 0.0F};
-        initial[index].penalties.w = isolatedWorlds ? static_cast<float>(index) : 0.0F;
+// Every agent of a world addressing its own genome. The base offset is
+// agentIndex / trialsPerGenome * stride on both sides, and an off-by-one there
+// makes an agent run another genome's weights -- which produces a plausible run
+// and a wrong one. Two genomes whose weights differ only in the move bias make
+// the mistake visible as a direction.
+void runGenomeAddressingProbe(vkexp::HeadlessComputeContext& context) {
+    const vkexp::SimulationStep settings =
+        paritySettings(vkexp::Neighborhood::Faces, vkexp::NeuronModel::Reactive);
+    const vkexp::lattice::PopulationLayout layout{2, 2, 2};
+    const vkexp::neuro::BrainShape brain = vkexp::resolvedBrain(settings);
+    std::vector<float> weights(static_cast<std::size_t>(brain.weightCount()) * layout.genomeCount,
+                               0.0F);
+    const auto biasIndex = [&](const std::uint32_t output) {
+        return vkexp::neuro::kernel::brainOutputBiasIndex(
+            0U, static_cast<std::uint32_t>(brain.inputCount), brain.packedLayers(),
+            static_cast<std::uint32_t>(brain.outputCount), output);
+    };
+    // Genome 0 drives +x, genome 1 drives -y. Under a faces-only neighbourhood
+    // each of those is a single unambiguous step, so the resulting cell names
+    // which genome the agent actually read.
+    weights[biasIndex(vkexp::neuro::kernel::BrainMoveOutput)] = 8.0F;
+    weights[static_cast<std::size_t>(brain.weightCount()) +
+            biasIndex(vkexp::neuro::kernel::BrainMoveOutput + 1U)] = -8.0F;
+
+    std::vector<vkexp::AgentState> agents(layout.agentCount());
+    const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
+    for (std::uint32_t index = 0; index < agents.size(); ++index) {
+        const std::uint32_t world =
+            vkexp::logicalWorldForAgent(index, layout.groupSize(), layout.trialsPerGenome);
+        agents[index].beacon = vkexp::lattice::beaconCell(settings, world);
+        // One plane per genome, so the two agents that share a world start
+        // apart and neither move can be refused: what is under test is which
+        // genome was read, and a blocked step would hide the answer.
+        const std::uint32_t genome = index / layout.trialsPerGenome;
+        agents[index].cell = {1, static_cast<std::int32_t>(1 + genome),
+                              static_cast<std::int32_t>(genome),
+                              static_cast<std::int32_t>(
+                                  vkexp::lattice::kernel::LatticeNeighborCount)};
+        agents[index].intent = {agents[index].cell.x, agents[index].cell.y, agents[index].cell.z,
+                                0};
     }
-    initial[1].signal = {1.0F, 0.0F, 0.0F, 1.0F};
+    std::vector<std::int32_t> occupancy(static_cast<std::size_t>(cells) * layout.worldCount());
+    vkexp::lattice::buildOccupancy(agents, settings, layout, occupancy);
+    std::vector<std::int32_t> claims(occupancy.size());
 
-    // Sparse probe: wire the forward-facing red receptor straight through one
-    // hidden neuron to the red emission output. Indices come from the shared
-    // preset, so this keeps working when the sensor suite changes.
-    namespace kernel = vkexp::neuro::kernel;
-    vkexp::SimulationStep settings{};
-    // What is under test is the sensor path -- does one agent's light reach
-    // another's receptor and come back out of the network -- and it is read
-    // after a single step. A hidden neuron with a time constant deliberately
-    // cannot answer within one step, so memory is off here: this asks whether
-    // the wiring carries the signal, not how fast a neuron follows it.
-    settings.neuronModel = vkexp::NeuronModel::Reactive;
-    const vkexp::neuro::BrainShape brain = vkexp::scenarioDefinition(settings.beaconScenario).brain;
-    const auto inputCount = static_cast<kernel::uint>(brain.inputCount);
-    const kernel::uint layers = brain.packedLayers();
-    const kernel::uint centerReceptor = kernel::BrainLightReceptorCount / 2u;
-    const kernel::uint centerRedInput = kernel::brainLightChannelIndex(centerReceptor, 0u);
+    LatticeHarness harness{context, settings, layout, weights};
+    harness.upload(agents, occupancy);
+    std::vector<vkexp::AgentState> expected = agents;
+    vkexp::stepLatticeCpu({expected, occupancy, claims, weights,
+                           static_cast<std::uint32_t>(brain.weightCount()),
+                           layout.groupSize(), layout.trialsPerGenome},
+                          settings);
+    harness.step();
+    const std::vector<vkexp::AgentState> actual = harness.readAgents();
 
-    std::array<vkexp::neuro::Weights, agentCount> genomes{};
-    for (vkexp::neuro::Weights& genome : genomes) {
-        genome = vkexp::neuro::makeWeights(brain);
-    }
-    genomes[0][kernel::brainLayerWeightIndex(0u, inputCount, layers, 0u, 0u, centerRedInput)] =
-        4.0F;
-    genomes[0][kernel::brainOutputWeightIndex(0u, inputCount, layers,
-                                              kernel::BrainSignalColorOutput, 0u)] = 4.0F;
-
-    const std::uint32_t worldCount = isolatedWorlds ? 2U : 1U;
-    StepHarness harness{context, agentCount, agentCount, worldCount, 1, settings.worldRadius};
-    const std::vector<float> flatGenomes = flattenGenomes(genomes);
-    harness.genomes.write(flatGenomes.data(), flatGenomes.size() * sizeof(float));
-    harness.inputAgents.write(initial.data(), sizeof(initial));
-    harness.buildGrid(initial, settings.worldRadius);
-    const vkexp::GpuStepParameters parameters = makeStepParameters(
-        settings, agentCount, 1, harness.gridWidth(), harness.gridCellsPerWorld());
-    harness.stepParameters.write(&parameters, sizeof(parameters));
-    harness.dispatch(0);
-
-    std::array<vkexp::AgentState, agentCount> result{};
-    harness.outputAgents.read(result.data(), sizeof(result));
-    const float initialDistance = initial[1].pose.x - initial[0].pose.x;
-    const float resultDistance = result[1].pose.x - result[0].pose.x;
-    const float firstTouch =
-        std::max({result[0].agentTouch0.x, result[0].agentTouch0.y, result[0].agentTouch0.z,
-                  result[0].agentTouch0.w, result[0].agentTouch1.x, result[0].agentTouch1.y,
-                  result[0].agentTouch1.z, result[0].agentTouch1.w});
-    if (isolatedWorlds) {
-        if (std::abs(resultDistance - initialDistance) > 0.0001F || firstTouch > 0.0F) {
-            throw std::runtime_error("GPU agents interacted across logical world boundaries");
+    for (std::uint32_t index = 0; index < agents.size(); ++index) {
+        const bool firstGenome = index / layout.trialsPerGenome == 0;
+        const vkexp::AgentState& before = agents[index];
+        const std::string who = "Genome addressing agent " + std::to_string(index);
+        if (firstGenome) {
+            require(expected[index].cell.x == before.cell.x + 1 &&
+                        expected[index].cell.y == before.cell.y,
+                    who + ": read a genome that does not drive +x");
+        } else {
+            require(expected[index].cell.y == before.cell.y - 1 &&
+                        expected[index].cell.x == before.cell.x,
+                    who + ": read a genome that does not drive -y");
         }
-        if (result[0].signal.x > 0.55F) {
-            throw std::runtime_error("GPU photoreceptor observed light from another world");
-        }
-    } else {
-        if (resultDistance <= initialDistance || firstTouch <= 0.0F) {
-            throw std::runtime_error("GPU agents did not separate and report tactile contact");
-        }
-        if (result[0].signal.x <= 0.55F) {
-            throw std::runtime_error("GPU photoreceptor did not observe another agent's red light");
-        }
+        compareAgents(expected[index], actual[index], who, 2.0e-3F);
     }
 }
 
-int run() {
+// The same trajectory under a three-layer plan. Split out rather than folded
+// into the loop above because the plan changes the genome length, and a case
+// that changed two things at once would not say which one drifted.
+void runDeepPlanParity(vkexp::HeadlessComputeContext& context) {
+    vkexp::SimulationStep settings =
+        paritySettings(vkexp::Neighborhood::Moore, vkexp::NeuronModel::Gated);
+    settings.hiddenLayers = {12, 8, 8};
+    const vkexp::lattice::PopulationLayout layout{12, 10, 2};
+    const vkexp::neuro::BrainShape brain = vkexp::resolvedBrain(settings);
+    require(brain.hiddenLayerCount() == 3, "The deep parity case did not get three layers");
+    const std::vector<float> weights = makeWeights(brain, layout.genomeCount, 0xBEEFU);
+
+    std::vector<vkexp::AgentState> expected = vkexp::lattice::makeInitialAgents(settings, layout);
+    const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
+    std::vector<std::int32_t> occupancy(static_cast<std::size_t>(cells) * layout.worldCount());
+    vkexp::lattice::buildOccupancy(expected, settings, layout, occupancy);
+    std::vector<std::int32_t> claims(occupancy.size());
+
+    LatticeHarness harness{context, settings, layout, weights};
+    AgentDrift drift{};
+    for (std::uint32_t step = 0; step < 90; ++step) {
+        harness.upload(expected, occupancy);
+        harness.step();
+        const std::vector<vkexp::AgentState> actual = harness.readAgents();
+        const std::vector<std::int32_t> actualOccupancy = harness.readOccupancy();
+        vkexp::stepLatticeCpu({expected, occupancy, claims, weights,
+                               static_cast<std::uint32_t>(brain.weightCount()),
+                               layout.groupSize(), layout.trialsPerGenome},
+                              settings);
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            compareAgents(expected[index], actual[index],
+                          "Deep plan parity step " + std::to_string(step) + " agent " +
+                              std::to_string(index),
+                          4.0e-4F, &drift);
+        }
+        require(actualOccupancy == occupancy,
+                "Deep plan parity: the occupancy grids diverged at step " + std::to_string(step));
+    }
+    const double worst = worstDrift(drift);
+    std::cout << "  drift[12 -> 8 -> 8, gated] = " << worst << '\n';
+    require(std::abs(worst) <= accumulatedDriftBudget,
+            "Deep plan parity accumulated a systematic CPU/GPU drift of " + std::to_string(worst));
+}
+
+int runAll() {
     vkexp::HeadlessComputeContext context{{"vkexp compute smoke"}};
+    std::cout << "Compute smoke device: " << context.deviceName() << '\n';
     runGameOfLife(context);
     runImageRoundTrip(context);
-    runNeuralStepParity(context, vkexp::WorldShape::Circle);
-    runNeuralStepParity(context, vkexp::WorldShape::Square);
-    runNeuralStepParity(context, vkexp::WorldShape::Circle,
-                        vkexp::BeaconScenario::AlternatingDiagonals);
-    runNeuralStepParity(context, vkexp::WorldShape::Circle, vkexp::BeaconScenario::Rotating);
-    runNeuralStepParity(context, vkexp::WorldShape::Circle, vkexp::BeaconScenario::RandomMovement);
-    runNeuralStepParity(context, vkexp::WorldShape::Circle, vkexp::BeaconScenario::ForageHome);
-    runNeuralStepParity(context, vkexp::WorldShape::Circle, vkexp::BeaconScenario::ScentRelay);
-    // The one scenario with static geometry, so the one where the contact
-    // response exists twice -- in stepAgentCpu and in agent_step.comp. That is
-    // exactly the duplication parity is for.
-    runNeuralStepParity(context, vkexp::WorldShape::Circle, vkexp::BeaconScenario::TwoDoors);
-    runNeuralStepParity(context, vkexp::WorldShape::Circle, vkexp::BeaconScenario::Shuttle);
-    runAgentInteractionTest(context, false);
-    runAgentInteractionTest(context, true);
-    // 540 steps at the default 1/60 s covers 9 simulated seconds, so the forage
-    // home relocation at 8 s and the alternating phase flip both fall inside.
-    runTrajectoryParity(context, vkexp::BeaconScenario::Stationary, 540);
-    runTrajectoryParity(context, vkexp::BeaconScenario::AlternatingDiagonals, 540);
-    runTrajectoryParity(context, vkexp::BeaconScenario::Rotating, 540);
-    runTrajectoryParity(context, vkexp::BeaconScenario::RandomMovement, 540);
-    runTrajectoryParity(context, vkexp::BeaconScenario::ForageHome, 540);
-    runTrajectoryParity(context, vkexp::BeaconScenario::ScentRelay, 540);
-    runTrajectoryParity(context, vkexp::BeaconScenario::TwoDoors, 540);
-    runTrajectoryParity(context, vkexp::BeaconScenario::Shuttle, 540);
-    // Every neuron model over a long run, because the model decides the hidden
-    // state and the hidden state is the thing that accumulates: a gate loop that
-    // disagrees between the two languages shows up as drift and nowhere else.
-    // The gated one matters most -- it is the newest arithmetic written twice.
-    runTrajectoryParity(context, vkexp::BeaconScenario::Shuttle, 540,
-                        vkexp::NeuronModel::Reactive);
-    runTrajectoryParity(context, vkexp::BeaconScenario::Shuttle, 540, vkexp::NeuronModel::Gated);
-    runTrajectoryParity(context, vkexp::BeaconScenario::Shuttle, 540, vkexp::NeuronModel::Spiking);
-    // Depth, on both sides. A three-layer plan changes where every weight lives
-    // and the order the layers are walked in; a shader that read the plan even
-    // slightly differently would drift here and nowhere else, because every
-    // other case in this file runs the one layer the network always had.
-    runTrajectoryParity(context, vkexp::BeaconScenario::Shuttle, 540,
-                        vkexp::NeuronModel::TimeConstant, false, false, false, {12U, 8U, 8U});
-    runTrajectoryParity(context, vkexp::BeaconScenario::Shuttle, 540, vkexp::NeuronModel::Gated,
-                        false, false, false, {16U, 6U, 0U});
-    runTrajectoryParity(context, vkexp::BeaconScenario::TwoDoors, 540, vkexp::NeuronModel::Gated);
-    // Both layouts of the swapping world. One polarity would prove nothing: the
-    // swap is a branch on each side, and a side that ignored the flag entirely
-    // would agree with the other in exactly the unswapped case.
-    runTrajectoryParity(context, vkexp::BeaconScenario::TwoGaps, 540);
-    runTrajectoryParity(context, vkexp::BeaconScenario::TwoGaps, 540,
-                        vkexp::NeuronModel::TimeConstant, true);
-    // The hue ablation is applied in two languages, once where the CPU asks for
-    // the active beacons and once in the shaders that read a beacon colour, so
-    // it is exactly the kind of rule that can be written differently twice.
-    runTrajectoryParity(context, vkexp::BeaconScenario::TwoGaps, 540,
-                        vkexp::NeuronModel::TimeConstant, false, true);
-    // Which door is the dead end moves the pocket, and the pocket occludes, so a
-    // side reading the layout off the wrong clock diverges in the light before it
-    // diverges in a collision. The probe agent runs trial 0 against an odd
-    // generation, which is exactly where the two clocks disagree.
-    runTrajectoryParity(context, vkexp::BeaconScenario::TwoDoors, 540,
-                        vkexp::NeuronModel::TimeConstant, false, false, true);
+
+    runContentionProbe(context);
     runGenomeAddressingProbe(context);
-    runTrailFieldProbe(context);
-    runMultiAgentDeterminism(context);
-    std::cout << "Headless compute, CPU/GPU parity and determinism tests passed on "
-              << context.deviceName() << '\n';
+    runFullLatticeProbe(context);
+
+    // Both neighbourhoods, because the face-only reduction is a branch the Moore
+    // case never takes, and all four neuron models, because each decides the
+    // time constant somewhere different and only the integrator is shared.
+    for (const vkexp::Neighborhood neighborhood :
+         {vkexp::Neighborhood::Moore, vkexp::Neighborhood::Faces}) {
+        for (const vkexp::NeuronModel model :
+             {vkexp::NeuronModel::Reactive, vkexp::NeuronModel::TimeConstant,
+              vkexp::NeuronModel::Gated, vkexp::NeuronModel::Spiking}) {
+            runLatticeTrajectoryParity(context, neighborhood, model, 120);
+        }
+    }
+
+    // A deeper plan, so the layer walk in brain_forward.glsl is exercised
+    // against the one in vkexp::neuro::evaluate rather than only its first
+    // layer. Drift accumulates through the layers, which is exactly what a
+    // single-layer case cannot see.
+    runDeepPlanParity(context);
+
+    std::cout << "Lattice parity: CPU and GPU agree\n";
     return 0;
 }
 
@@ -969,12 +813,12 @@ int run() {
 
 int main() {
     try {
-        return run();
-    } catch (const vkexp::HeadlessComputeUnavailable& error) {
-        std::cout << "SKIPPED: " << error.what() << '\n';
+        return runAll();
+    } catch (const vkexp::HeadlessComputeUnavailable& unavailable) {
+        std::cout << "Skipping compute smoke tests: " << unavailable.what() << '\n';
         return 77;
     } catch (const std::exception& error) {
-        std::cerr << "FAILED: " << error.what() << '\n';
+        std::cerr << "Compute smoke failure: " << error.what() << '\n';
         return 1;
     }
 }

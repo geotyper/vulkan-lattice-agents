@@ -1,5 +1,4 @@
 #include "vkexp/core/Application.hpp"
-#include "vkexp/graphics/AgentRenderer.hpp"
 #include "vkexp/simulation/SimulationModule.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
 #include "vkexp/ui/ImGuiModule.hpp"
@@ -43,17 +42,19 @@ int main(const int argc, char** argv) {
         vkexp::Application app{vkexp::ApplicationConfig{
             1440,
             900,
-            "Vulkan Neuroevolution Lab",
+            "Vulkan Lattice Lab",
             validationEnabled,
         }};
 
         auto imgui = std::make_unique<vkexp::ImGuiModule>(app.profiler());
         auto& imguiBackend = *imgui;
-        // Attachment and render order is an explicit dependency graph:
-        // simulation publishes the SSBO, visualization consumes it, then ImGui
-        // composites the independently published viewport image.
+        // Attachment and render order is an explicit dependency graph: the
+        // simulation publishes its buffers, then ImGui draws the panels that
+        // read them. A view of the lattice goes between the two once there is
+        // one -- it is step 5 of LATTICE_PLAN.md, and deliberately last, because
+        // the 2D renderer drew normalised coordinates with no camera at all and
+        // so had nothing to carry over.
         app.addModule(std::make_unique<vkexp::SimulationModule>(state, app.profiler()));
-        app.addModule(std::make_unique<vkexp::AgentRenderer>(state, app.profiler()));
         app.addModule(std::move(imgui));
         app.addModule(
             std::make_unique<vkexp::SimulationUiModule>(state, imguiBackend, app.profiler()));
