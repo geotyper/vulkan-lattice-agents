@@ -1,770 +1,209 @@
-# Vulkan Neuroevolution Agents
+# Vulkan Lattice Agents
 
 An experimental C++20/Vulkan playground for evolving thousands of small agent
-brains on the GPU. The first scenario is deliberately simple: agents use seven
-directional photoreceptors to find stationary or periodically changing beacon
-positions, while a genetic algorithm evolves the weights of a fixed dense
-neural network.
+brains on the GPU. The world is a discrete 3D lattice: an agent occupies one
+cell, sees the twenty-six cells around it, and either steps into one of them or
+does not. A genetic algorithm evolves the weights of a fixed dense network, and
+the same network is evaluated identically on the CPU and on the GPU.
 
-The repository is a working vertical slice and a base for later worlds with
-walls, memory, inter-agent light perception, colonies, and richer fitness
-functions. Simulation, evolution, visualization, UI, and Vulkan infrastructure
-are separate targets rather than one application-specific module.
+The lattice replaced a metric 2D arena -- bodies, velocities, drag, collision
+impulses, a decaying trail field and thirteen scenarios. That history is still
+reachable through `git log` and `git show`; it is not described here, because
+none of it runs any more. What the move bought is that space is now countable:
+a cell is occupied or it is not, a move happens or it is refused, and every
+disagreement between the CPU and the GPU is an integer that differs rather than
+a float that drifted.
+
+Simulation, evolution, UI and Vulkan infrastructure are separate targets rather
+than one application-specific module.
 
 ## Current experiment
 
-The world is metric: one unit is one metre, the step is fixed at 60 Hz, and the
-default arena is 3.68 m across with a 4.4 cm body moving at up to 0.55 m/s, so a
-900-step trial is 15 seconds. Steps remain the unit of reproducibility -- runs
-replay by step count -- while every physical quantity is expressed per second.
+**One beacon cell per world.** Each logical world has a single target cell,
+placed by a hash of the run's beacon seed and the world index. An agent is
+scored on the nearest it ever got, plus a bonus for every step spent within the
+contact radius, minus what it spent moving and minus what it wasted walking into
+walls and into other agents.
+
+```
+Lattice:    32x32x16 = 16384 cells per world, Moore (26)
+Brain:      88 -> 20 -> 6
+Trial:      900 steps = 15.0 s at 60.0 Hz
+Population: 512 genomes x 4 trials = 2048 agents in 172 lattices
+Movement:   threshold 0.25, beacon reached within 1 cell(s)
+```
 
 - 512 genomes, each evaluated in four trials (2048 GPU agents);
-- population partitioned into configurable logical groups (12 agents per world
-  by default, with an all-agents mode);
-- 7 forward light receptors with RGB and luminance channels;
-- 8 full-body tactile sectors distinguishing walls from agents;
-- 3 ground antennae reading the RGB of a decaying trail field, switchable
-  between off, drawn-but-unsmelled and drawn-and-smelled;
-- `61 inputs -> 20 tanh neurons -> 8 outputs` by default, with the hidden
-  layers configurable from the Brain window: up to three of them, 32 neurons
-  in total, evaluated identically on the CPU and the GPU;
-- every hidden neuron holds its own state and a time constant that is either
-  evolved or recomputed from the inputs each step, so a memory is measured in
-  seconds and can be held until something says to let go;
-- outputs control left/right motors, RGB emission, emission intensity, and two
-  recurrent memory cells;
-- inertial movement with linear/angular drag and hard linear/angular speed
-  limits, with five named locomotion styles from a body that answers in two
-  steps to one that mostly glides;
-- selectable circular or square world in small (x1), medium (x1.5), and large
-  (x3) sizes;
-- stationary per-trial beacons, alternating diagonal pairs, orbiting beacons,
-  deterministic random movement with occasional teleportation, or an
-  orbiting-resource/static-home foraging cycle;
-- circle-circle agent collisions with impulse response and tactile pressure;
-- configurable fitness penalty per second of contact with the world boundary;
-- additive, softly tone-mapped RGB perception of nearby agent signals;
-- runtime ablation switches for agent collisions and agent-light perception;
-- average fitness across trials rewards progress and completion in every beacon
-  phase and penalizes motor and signal energy use;
+- the population partitioned into configurable logical groups (12 agents per
+  lattice by default, with an all-agents mode), so with the default group size
+  512 genomes occupy 43 groups and 172 independent lattices;
+- 26 neighbouring cells read as three channels each -- occupied, blocked,
+  and what the occupant is broadcasting -- 78 inputs;
+- a unit direction to the beacon and a nearness scalar, 4 inputs;
+- the agent's own heading as the unit step it last took, plus a flag saying its
+  last move was refused, 4 inputs;
+- two recurrent memory cells fed back, 2 inputs;
+- `88 inputs -> 20 tanh neurons -> 6 outputs` by default, with the hidden layers
+  configurable from the Brain window: up to three of them, 32 neurons in total;
+- every hidden neuron holds its own state and a time constant that is evolved,
+  recomputed from the inputs each step, or pinned to the step, so a memory is
+  measured in seconds and can be held until something says to let go;
+- outputs are three movement drives, one broadcast intensity, and the two
+  recurrent cells;
+- a move is one cell per step, along the faces or along any of the 26 diagonals,
+  chosen by a setting;
+- contested cells resolved by a rule that does not depend on the order agents
+  are stepped in, so the CPU reference and the GPU agree exactly;
 - elitism, tournament selection, uniform crossover, Gaussian mutation;
-- adjustable simulation speed, generation length, agents per world, physics,
-  and sensor FOV;
-- generation length selectable from 120 to 15000 simulation steps;
-- separate simulation, genetic-algorithm, world, and profiler windows;
-- fitness/arrival history graphs for completed generations;
-- an off-screen Vulkan renderer with persistent circular bodies, heading
-  markers, and independently rendered coloured halos.
-
-The population is divided into configurable groups, and each group keeps four
-independent trial worlds. With the default group size of 12, 512 genomes occupy
-43 groups and 172 logical worlds. A per-world uniform grid limits collision and
-light queries to nearby agents in the same world. The viewport renders only the
-selected world and can switch between groups and trials. Selecting all 512
-agents produces one group and restores the original interaction density while
-still avoiding the visual overlap of its four trials.
-
-Individual fitness does not yet reward helping unrelated genomes, so the
-communication channel is functional but meaningful signalling is not expected
-until colony fitness is introduced.
+- adjustable lattice extents, generation length, agents per world, neighbourhood,
+  move threshold, contact radius and every fitness coefficient, all as sliders
+  and all as command-line flags;
+- separate Simulation, Genetic Algorithm, Brain, Lattice and profiler windows;
+- fitness/arrival history graphs for completed generations.
 
 The four trials are not four independently trained populations. Every genome
-controls four agents with the same weights but different initial conditions.
-Their scores are averaged before selection, which discourages solutions that
-only work from one spawn position or heading.
+controls four agents with the same weights but different spawn cells and a
+different beacon, and their scores are averaged before selection, which
+discourages a solution that only works from one corner of one lattice.
 
-## Locomotion
+**There is no viewport yet.** The 3D renderer is the last step of the
+conversion, and the Lattice window says so where the view will go. Everything
+else in the window is live, which is the point of building it in this order:
+a UI regression shows up now rather than under a renderer.
 
-How much the body carries is a slider, and now also a menu. `Locomotion` in the
-Physics panel picks one of five styles, and `--locomotion <name>` does the same
-from a command line:
+## The lattice
 
-| Style | Key | To full speed | Coast | Turn coast |
-|---|---|---|---|---|
-| Robot | `robot` | 0.07 s | 3 cm, under a body | 10 deg |
-| Rover | `rover` | 0.14 s | 8 cm, two bodies | 21 deg |
-| Table robot | `default` | 0.39 s | 32 cm, seven bodies | 50 deg |
-| Glider | `glider` | 1.10 s | 66 cm, fifteen bodies | 138 deg |
-| Fish | `fish` | 2.05 s | 1.10 m, twenty-five bodies | 206 deg |
+A cell is addressed as `(z * height + y) * width + x`, and a world's occupancy
+is one `int32` per cell holding the index of the agent standing there or `-1`.
+Every world gets its own slice of one grid, so an agent physically cannot read
+or write a cell belonging to another world: the slice bound is the isolation.
 
-`Table robot` is the simulation's own defaults, value for value -- selecting it
-is a return to the body every scenario was tuned against rather than an
-approximation of it, and a unit test pins that.
+Extents run from 4 to 128 per axis. The default 32x32x16 is 16384 cells, which
+is 64 KiB of occupancy per world and the same again for the claim grid the move
+resolution uses. That is deliberately small: **many worlds, each cheap**. The
+alternative -- one large lattice with the whole population in it -- would have
+meant giving up the group structure the genetic algorithm is built on, and with
+it the four trials, the sweeps and every statistic that compares worlds.
 
-**A style is four numbers, and never the fifth.** A preset sets thrust, turn
-acceleration and the two drags. It does not touch the two speed caps, so every
-style tops out at the same 0.55 m/s and (with one exception below) the same
-3 rad/s. What changes is how long the body takes to get there and how far it
-carries once the motors stop. That is what makes two runs at different styles
-comparable: the agent can ultimately do the same things either way, and the
-question the ladder asks is whether selection can control a body that answers
-slowly.
+**The allocation is fixed and the lattice gives way.** Both grids are allocated
+once at a budget (256 MiB, or a sixteenth of device memory, whichever is
+smaller) and never resized. A configuration that would not fit is shrunk to one
+that does -- the longest extent halved until it fits -- and the clamped extents
+are written back into the settings, so the sliders show the box that is running
+rather than the one that was asked for. This is the lesson of the 2D trail
+field, where every resize was a buffer-lifetime bug under live descriptors:
+`vklat_reconfiguration_smoke` asserts that the step resources are built exactly
+once across every reconfiguration the UI can produce.
 
-**Why drag is the whole story.** The step applies it as `exp(-drag * dt)`, so
-`1/drag` is the response time constant, the coast after the motors cut is a
-decay with that same constant, and thrust only decides how much headroom there
-is over the speed the drag will hold. The ladder above is a factor of thirty in
-that one number -- 16.7/s down to 0.5/s -- which is why the drag sliders are
-now logarithmic and thirty times wider than they were. A linear slider over that
-range has no usable resolution at the end where the defaults sit.
+**Two neighbourhoods, one input width.** `faces` allows the 6 axis-aligned
+steps; `moore` allows all 26. The *sensed* neighbourhood is 26 cells either
+way, so a population evolved under one movement rule loads into the other and
+the comparison is an ablation rather than a different network. The setting
+also chooses the distance the fitness is measured in -- Chebyshev under Moore,
+Manhattan under faces -- because in each case that is the number of steps the
+move rule would actually need.
 
-**And why it reads as "fish" rather than merely "slow".** Velocity is a free
-vector and thrust is applied along the heading, so a low drag also means
-sideslip: a turning body keeps going the way it was already going. At the Fish
-setting a turn changes where the agent is pointing long before it changes where
-the agent is going, and arriving anywhere means deciding well before being
-there. That is a memory task hiding inside a control task, which is the reason
-to have the ladder at all -- the reactive neuron model should lose ground at the
-heavy end, and if it does not, the world is not asking what it looks like it is
-asking.
+## Moving, and who gets the cell
 
-**The exception, which is a real quirk of the defaults.** Turn acceleration at
-5.0 rad/s^2 against an angular drag of 2.4/s holds 2.08 rad/s, which is below
-the 3 rad/s cap -- so at the default settings the `Maximum turn speed` slider
-does nothing at all. The window now says `inert` next to it whenever that is
-true, and the other four styles are chosen to reach their cap. The defaults were
-left alone rather than aligned, because changing them would move the baseline
-every measurement so far was taken against; the test asserts the quirk, so
-aligning them later fails loudly instead of passing quietly.
+Three outputs are movement drives, one per axis. Each is turned into `-1`, `0`
+or `+1` by a threshold: a drive has to be *sure* to become a step, and a drive
+inside the dead zone is a decision to stand still. Under `faces` only the
+dominant axis may move, which is where the two neighbourhoods differ and the
+only place they differ.
 
-The two lines under the menu are derived from the sliders, not from the table,
-so a hand-tuned body is described as honestly as a named one -- and a preset
-whose numbers are edited cannot keep advertising the behaviour it used to have.
+A step is refused if the target is outside the lattice, or if somebody was
+already standing in it when the step began. Both refusals are recorded on the
+agent and read back as an input on the next step, so a policy can notice it is
+stuck without having to infer it from the neighbourhood.
 
-## The trail, and the control for it
+**Who wins a contested cell.** The obvious implementation -- `atomicCompSwap`,
+first writer takes the cell -- would make the outcome depend on the order the
+GPU happened to schedule its invocations in. No GPU promises that order and no
+CPU reference can reproduce it, so the parity test would be measuring the
+scheduler. Instead every bidder writes `atomicMin` of its own index into the
+cell's claim slot, and the lowest-numbered bidder wins. A minimum is
+associative and commutative, so the answer does not depend on the order, and
+the CPU reference reaches it by plain iteration.
 
-Whether the field exists and whether an agent can smell it are separate
-questions, and only the second one changes what the brain has to solve.
-`Trails` in the Physics panel has three settings, and `--trail off|visual|sensed`
-matches them:
+The price is that a chain cannot shuffle in one step: a cell may only be entered
+if it was empty at the *top* of the step, so an agent stepping into the cell
+somebody else is leaving is refused this step and succeeds the next. That is a
+rule of the world rather than an artefact -- it is written down in
+`LatticeKernel.inl` and asserted by `testLatticeContention` and by
+`runContentionProbe` on the device.
 
-| Setting | Field kept and drawn | Antennae read it |
-|---|---|---|
-| Off | no | no |
-| Draw only | yes | no |
-| Draw and smell | yes | yes |
+The step is three dispatches, and each one exists because of the rule above:
 
-**The middle one is the point.** It is the control for every claim this project
-makes about the trail: the marks are still on screen, agents still lay them, and
-the three ground antennae read a flat zero, so the nine trail inputs are dead
-weights rather than a channel. A behaviour that survives `Draw only` was never
-coming from the field, whatever the run looked like. It is also the simpler
-model to reach for when the trail is not what is being studied -- the marks stay
-useful for a person watching a replay without being part of what is evolving.
+| Pass | What it does |
+| --- | --- |
+| `lattice_clear` | empties the claim grid |
+| `lattice_step` | senses, runs the brain, writes the intent and bids |
+| `lattice_resolve` | moves the winners, updates occupancy, charges the metrics |
 
-`compute_smoke` asserts exactly that: the same marked cell under the same
-antenna, with the field present and deposited into, produces the same step as no
-field at all -- not merely a step that also happens not to turn.
+Nothing moves in the middle pass. An agent that moved there would change what
+the agents after it see, and the answer would depend on the numbering again.
 
-**The input vector keeps all 61 slots in every setting.** Removing the nine
-inputs outright was the other way to write this, and it would change the genome
-length: a population trained with trails could then not be loaded into a run
-without them, and two runs could not be compared at all. Nine dead weights cost
-one dot product per agent per step and buy exchangeability, which is the better
-trade here. What it means in practice is that a blind run still drifts those
-weights, so a genome moved from `Draw only` to `Draw and smell` starts with
-whatever random opinion drift left it -- not with nothing.
+## What an agent senses
 
-**`Scent relay` has no other way home.** It is the one world whose objective is
-only reachable by following a trail, so running it blind is not an ablation but
-an impossibility, and its fitness curve looks like a hard task rather than an
-unreachable one. The scenario declares that it needs the trail and the window
-says so next to the setting, with a button to turn it back on.
-
-## World and beacon scenarios
-
-| Control | Variants | Behaviour |
-| --- | --- | --- |
-| World shape | Circle, Square | Changes the arena boundary and wall-contact response. |
-| World size | Small x1, Medium x1.5, Large x3 | Scales the arena, spawn distribution, and beacon placement. Agent size, speed, and sensor range remain physical constants, so larger worlds are harder. |
-| Arrival radius multiplier | x0.1 to x5.0 | Scales the fixed 0.060 beacon radius used for pickup/completion. At x1 the agent centre must enter the visible beacon circle. |
-| Beacon scenario | Stationary | One fixed coloured target per logical trial. |
-| Beacon scenario | Alternating diagonals | Two beacons occupy one diagonal during the first half of a generation, then two beacons occupy the opposite diagonal. |
-| Beacon scenario | Rotating | One beacon per trial continuously orbits the world centre; speed and direction are adjustable from -90 to +90 degrees per second. |
-| Beacon scenario | Random movement | Each trial follows a smooth bounded wandering path with adjustable speed and a configurable teleport chance checked every three seconds. |
-| Beacon scenario | Forage + home | Agents collect an orange orbiting resource, then carry its decaying value to a blue home that relocates every eight seconds before seeking the resource again. |
-| Beacon scenario | Scent relay | The same collect-and-deliver cycle, but home emits no light and lays no trail: it can only be found by dead reckoning or by a path the agents themselves marked. |
-| Beacon scenario | Two doors | The same cycle across a wall with two gaps, one of which is a dead end. Which one swaps every trial -- or every generation, as an option -- and from the home side they are identical. Retuned after it went unsolved for 450 generations; see Two gaps for the measurement. |
-| Beacon scenario | Shuttle | Fetch and carry back, over and over until the trial ends, around a short wall that closes the straight line between the two beacons. |
-| Beacon scenario | Puck push | A round puck shared by every agent in a logical world, starting on one side of the centre line. Push it toward the lit disc in the middle; the objective is a ladder of quarters along that journey. |
-| Beacon scenario | Gate and plate | A wall with one opening, shut by a gate that runs only while somebody stands on the plate in front of it. Press, cross, bring it back -- the gate has to be open both ways. How long it keeps running after the plate is let go is a slider, and at zero it cannot be done alone. |
-| Beacon scenario | Two gaps | The same repeated cycle across a wall with two ways through, neither a dead end, with an option to make the two ends trade places every other generation. |
-
-Changing the world size, shape, or beacon scenario resets the evolution because
-fitness values gathered in different environments are not directly comparable.
-In the alternating scenario, reaching either active beacon completes the
-current phase. Progress and completion are scored independently for both halves
-of the generation. The moving scenarios additionally reward sustained visible
-closeness, so following the target scores better than a chance encounter.
-Rotating and random scenarios expose an orbit/roaming-radius control; the
-default random teleport probability is 25%.
-
-The scent relay is the foraging cycle with the return trip made invisible. The
-resource orbits and is lit as before; home sits opposite it and is black, so it
-is absent from every light sensor and lays nothing on the ground. What the
-agents do leave behind is their own trail, coloured by their own signal output,
-which the antennae can read. Nothing in the fitness function mentions colour, so
-whether a shared meaning emerges is the experiment rather than the design.
-
-## Shuttle
-
-Two fixed beacons facing each other with a short wall between them, and a trial
-long enough to run the round trip more than once. Reach the resource, carry it
-home, go again, until the time runs out.
+Eighty-eight numbers, and the preset that declares them is compiled by both
+languages:
 
 ```
-        resource
-   +-------------------+
-   |                   |
-   |     #########     |   the wall, at y = 0
-   |                   |
-   |        home       |
-   +-------------------+
+inputs 88                              hidden 20          outputs 6
+  26 neighbours x 3                = 78   each with         3 move drives
+    (occupied, blocked, broadcast)       its own state      1 broadcast level
+  beacon direction + nearness      =  4   and its own       2 recurrent cells
+  heading + refused flag           =  4   time constant       (fed back as inputs)
+  2 recurrent cells fed back       =  2
 ```
 
-The wall does not divide the arena -- it is shorter than the beacons are far
-apart -- so there is no door to find and nothing to remember about which way is
-open. What it takes away is the straight line: the shortest route is around one
-end, and with light occluded the far beacon disappears behind the wall on the
-way. That is the whole of the world, deliberately: it is the cycle scenario with
-the temptation to go straight removed, and nothing else added.
+The edge of the lattice reads as `blocked` rather than as an empty cell. There
+is no boundary geometry and no push-out pass: a lattice simply ends, and the two
+places that has to be said are the sensor and the move rule.
 
-Unlike the other cycle scenarios this counts **trips** rather than asking
-whether there was one, because shuttling until the time runs out is the task and
-a run that manages it twice has to be distinguishable from one that manages it
-once. Completion is reported against two round trips, which is what the default
-15 s trial has room for at the speed limit -- the geometry is sized for that and
-the unit test asserts it, so the wall and the trial length cannot drift apart
-unnoticed. Fitness is not capped, so a faster agent still scores for every extra
-trip. Longer trials make more of them fit:
+**Broadcasts are read as they were at the top of the step**, never as the
+neighbour has just rewritten them. On the device that falls out of the
+ping-pong buffers; on the CPU it takes an explicit snapshot, and
+`sampleAgentInputs` therefore takes the broadcasts as a separate span instead of
+reading them off the agent records. It is a contract, not an optimisation: a
+reference that read the live record would drift from the shader by an amount
+that depends on the agent numbering.
 
-```sh
-vkneuro_headless --scenario shuttle --generations 200 --seed 5 --csv runs/shuttle.csv
-vkneuro_headless --scenario shuttle --generations 200 --steps 2700   # 45 s trials
-```
-
-## Two doors
-
-A wall runs across the arena with two gaps in it. One leads through to the
-resource; the other opens into a closed pocket. Which gap is the dead end swaps
-every trial, and a genome is evaluated on all four trials, so it cannot win by
-always turning the same way. The trial index is not among the network's inputs,
-so it cannot be read off either -- the only way to know is to have gone.
+## The beacon, and what a trial is worth
 
 ```
-                resource
-   +-------------------------------+
-   |            #####              |   pocket cap
-   |            #   #              |   pocket sides
-   |#########  ###########  #######|   the wall, at y = 0
-   |         A            B        |
-   |                               |
-   |             home              |
-   +-------------------------------+
+fitness = trackingReward * bestNearness      how near it ever got, 0..1
+        + objectiveBonus * contacts          steps spent within the contact radius
+        - motorCost     * effort             moves made, plus broadcast held
+        - refusalPenalty * refusals          steps walked into a wall or a neighbour
 ```
 
-This is the world the neuron time constants were built for. On an orbiting
-beacon there is nothing a memory is *for*, so a fitness curve was the only
-evidence and it said nothing about what had been learned. Here there is
-something specific to hold across seconds -- which gap was a dead end this
-trial -- and something specific to watch for: an agent that blunders into the
-pocket once and then goes straight to the other gap looks different from one
-that does not.
-
-Both beacons are lit, unlike the scent relay. The question this world asks is
-which gap leads through, and an invisible home would stack a second, already
-answered question on top of it and make the answer to neither legible.
-
-**Why colour has an incentive here.** An agent that has been into the pocket is
-the only one that knows, and it leaves a coloured trail as it comes back out.
-Marking the dead end pays its own next cycle back within the same trial, not
-only its neighbours' -- so unlike the scent relay, the signalling channel has an
-individual incentive that does not depend on turning group fitness sharing on.
-Nothing in the fitness function mentions colour; whether a mark acquires a
-meaning is still the experiment rather than the design.
-
-**Light is occluded.** A wall that stops a body but not its light is a wall an
-agent can see through, and the gradient then pulls it straight at the one place
-it cannot go. Occlusion is a slab test on the segment from the agent to the
-light, done per beacon and per neighbour rather than per receptor: a light is a
-point, so either the line to it is clear or it is not there at all.
-
-That is roughly twelve slab tests per agent per step, beside a brain that
-already does more than a thousand multiplies. A lightmap rebuilt each tick
-would answer the same question by sampling and would be the right tool for
-hundreds of sources over complex geometry; with two beacons and six boxes it is
-both slower and coarser, and the receptors are directional -- a map gives the
-light at a point and loses the direction the sharp receptor tuning needs, so it
-would have to be marched along each ray anyway.
-
-Note what this leaves in place: perception loses the resource behind the wall,
-but fitness does not. Progress is still banked against the geometric distance to
-the target, so the task stays learnable by shaping while being unsolvable by
-looking.
-
-**Geometry.** Six axis-aligned boxes. Thickness is set by the agent and not by
-the arena -- one body diameter, 4.4 cm -- because a wall is a wall whatever room
-it stands in; scaling it with the world radius made a 17 cm slab across a 3.7 m
-arena, nearly four body diameters of masonry that read as architecture rather
-than as a divider. Everything else is derived from the arena radius by
-`ScenarioKernel.inl` rather than stored, so they cost no parameter slot and the
-CPU and the shader cannot disagree about where a wall is. Contact reports
-through the same tactile channel the arena boundary uses: to the network a
-barrier is a barrier, and no new input had to be found room for. The unit test
-sweeps the wall line for a seam between segments, sweeps the pocket boundary for
-a way out, and asserts that no barrier is thinner than the distance an agent
-covers in one step -- a wall a fast agent steps over between two contact tests
-is decoration -- stated against the top of the speed slider and against the box
-as the contact test sees it, inflated by the body radius, since a wall that
-holds only at default speed is a wall that fails when the experiment is turned
-up. Occlusion is asserted as the world rather than as the slab test:
-from home the resource is hidden, from the open doorway it is not, and inside
-the dead end it is hidden again.
-
-The scenario also places its own spawn: the driver's default spiral covers the
-whole arena, which here would start half the population already past the wall
-with nothing left to solve.
-
-### Which clock the dead end runs on
-
-Off by default, the dead end swaps **every trial**: with four trials per genome
-each one meets both layouts twice, so a policy that always turns the same way
-caps at half the trials and selection asks for something that handles both from
-the start. The cost is dilution -- early on, a genome that suits one layout is
-averaged back down by the other.
-
-**Dead end changes by generation** (`--doors-by-generation`) keys it to the
-generation instead: a whole population trains on one door and its successors on
-the other. Selection inside a generation is then undiluted, which should be
-faster. The risk it takes on is oscillation -- generation N selecting for "go
-right" and N+1 punishing exactly that, with the population thrashing between the
-two and never building the memory that would settle it. That shows up as a
-one-generation sawtooth rather than as a lower average, so read neighbouring
-generations, not the mean.
-
-Both settings put the ceiling for a door-blind policy at 50%, and they get there
-differently: per trial it is half the trials every generation, per generation it
-is every trial in half the generations. Above 50% is where memory has to be
-doing work, because from the home side the two openings are identical -- the
-only way to know is to enter one, meet the pocket, and come back out to the
-other.
-
-```sh
-vkneuro_headless --scenario doors --generations 400 --seed 5 --csv runs/doors.csv
-# the same run with the layout keyed to the generation
-vkneuro_headless --scenario doors --generations 400 --seed 5 --doors-by-generation \
-                 --csv runs/doors-by-generation.csv
-# and with a memoryless brain, to see what the time constants bought
-vkneuro_headless --scenario doors --generations 400 --seed 5 --neuron-model reactive \
-                 --csv runs/doors-reactive.csv
-```
-
-## Two gaps
-
-A wall right across the arena with two ways through, neither of them a dead end,
-and an option that makes the resource and home trade places from one generation
-to the next.
-
-```text
-        resource (or home)
-   +-------------------------+
-   |####       ####      ####|   two gaps, no dead end
-   |     home (or resource)  |
-   +-------------------------+
-```
-
-**Why the ends swap.** With a fixed layout a genome can win without ever reading
-the light: carry north, deliver south. Nothing in the fitness function
-distinguishes that from having understood the task, and the difference only
-shows up when the world changes. Swapping the ends makes a heading worth
-nothing, and since the two beacons differ only in colour, the colour becomes the
-only thing that says which end is which. It is off by default: it is the harder
-task, and a run that has not solved the fixed layout first says nothing about
-the swapped one.
-
-The swap follows the generation number rather than the trial, deliberately. Per
-trial, one genome would meet both layouts inside a generation and be scored on
-the average, which rewards a compromise; per generation, a whole population
-meets one layout and its successor meets the other, so what carries over is
-whatever generalised.
-
-**Why the geometry is what it is.** Fitness shapes on the *best straight-line
-approach* to the current target, and that makes any wall between the two ends a
-trap: the spot pressed against the middle of the wall is simultaneously the best
-score on offer and the one place with no line of sight to the target at all.
-Reaching a gap costs distance, so it earns nothing until the agent is well past
-it. Every world here has that plateau; what decides whether it is escapable is
-how much of the far side can see the target at all:
-
-| | plateau | target visible from | outcome |
-| --- | --- | --- | --- |
-| Two doors, as first built | 0.15 m | 5.7% of the far side | not solved in 450 generations |
-| Shuttle | 0.12 m | 36% | solved quickly |
-| Two gaps | 0.11 m | 19% | solved |
-| Two doors, retuned | 0.10 m | 16% | see below |
-
-Two doors is not hard because the arena is big. Light range is a fraction of the
-arena radius rather than a fixed number of metres, so a bigger world does not
-change any of these ratios at all.
-
-What the sweep found, once Two gaps was learned and Two doors still was not, is
-that the strongest lever is **how much of the far side one opening lights**, and
-that the width of the opening moves it far more than the distance does. Bringing
-the ends from 0.72 to 0.55 of the arena radius -- which was the first guess, and
-does put them inside each other's range -- moves visibility from 5.7% to 7.1% on
-its own and makes the plateau *worse*. Widening the door from 0.07 to 0.11 and
-bringing the pair in from 0.40 to 0.30 takes it to 16% and cuts the plateau to
-0.10 m. Two doors now carries all three changes.
-
-Both worlds assert the result rather than the constants that produced it:
-`visibleFractionOfFarSide` sweeps the far side in the unit tests and holds each
-world above a floor set between the world that was not learned and the one that
-was. Reverting any one of the three constants fails it.
-
-```sh
-# Learn the fixed layout first, then the swapped one from the same seed.
-vkneuro_headless --scenario gaps --generations 200 --seed 5 --csv runs/gaps.csv
-vkneuro_headless --scenario gaps --generations 200 --seed 5 --swap-ends \
-                 --csv runs/gaps-swapped.csv
-```
-
-### What the swap does not prove
-
-With the swap on, 250 generations reach about 75% of the round trips the trial
-has room for. That is a real result -- an absolute heading is worth nothing
-under the swap -- but it is *not* evidence that the agents read the beacon
-colour, and it is worth being precise about why.
-
-The task is to alternate between two ends. A policy that never looks at colour
-solves it: **head for whichever beacon is further away.** Standing at home, the
-resource is the far one; standing at the resource, home is the far one. Distance
-is available without hue, because the nearer beacon is simply brighter. Swapping
-the ends does nothing to this policy, since it is stated in terms of *here* and
-*the other one* rather than north and south.
-
-So the swap closes the direction shortcut and leaves the alternation shortcut
-open. The control that tells the two apart is to remove the colour instead:
-
-```sh
-# Same world, same seed, hue carrying no information.
-vkneuro_headless --scenario gaps --generations 250 --seed 5 --swap-ends \
-                 --uniform-beacon-color --csv runs/gaps-no-hue.csv
-```
-
-Both ends then emit the *average* of the two colours -- averaged rather than one
-copied onto the other, so the amount of light each end emits is unchanged and
-the run answers one question instead of two. If the score holds, the solution
-was alternation and colour was never being read. If it collapses, colour was
-carrying the task.
-
-Forcing colour to matter is a further step and not yet taken: it needs the two
-ends to stop being distinguishable by "the one I am not at" -- a third beacon,
-or a home that appears in one of two places after each pickup.
-
-## Puck push
-
-The first world where agents change something rather than only move through it,
-and the first whose outcome belongs to a group rather than to an individual.
-
-```text
-        the side the puck starts on, by trial
-   +-----------------------------+
-   |            ( o )            |   the puck, where it is placed
-   |            ( * )            |   the lit disc, the objective
-   |            (   )            |
-   +-----------------------------+
-```
-
-One puck per logical world, integrated by its own compute pass. Agents push it
-by touching it; the puck is a body they cannot walk through, reported through
-the same tactile channel a wall is, so no new sensor had to be found room for.
-
-**The objective is a ladder on one journey.** It began as the two goals the
-world was specified with -- a minimum, push the puck past the arena's middle
-line, and a maximum, push it into a disc around the centre -- and the geometry
-will not put those in that order. The disc straddles the line and the puck
-arrives from outside, so it enters the disc *before* it reaches the line: after
-0.64 m of a 1.10 m journey at the default sliders. The minimum was the harder of
-the two and never fired first, so the ladder had one rung where it looked like
-two. A world scored nothing at all until its puck was in, and then scored full
-marks; a puck brought fifty-seven per cent of the way counted the same as a puck
-nobody had touched, and the reported curve could only move in whole worlds.
-
-So the journey is what is measured and the disc is where it ends. The rungs are
-equal quarters of the distance from where the puck was placed to the disc's
-edge. The top rung and "inside the disc" are the same statement, so the maximum
-the world was specified with is intact; every rung below is strictly harder than
-the one under it by construction; and the ladder follows the target-radius
-slider without anything having to be retuned. Rungs are latched and taken as a
-maximum, so the curve stays monotone -- a puck nudged in and back out still got
-there.
-
-The reported ratio therefore reads as the average fraction of the journey a
-world's puck covered, not as the share of worlds that finished. It is not
-comparable with the number this world reported before the ladder: the old one
-counted deliveries, and this one counts distance. What a delivery is worth in
-*fitness* was deliberately held where it was, so a run before the change and a
-run after it are still comparable on the thing being selected for.
-
-**Why the push is a pressure and not an impact.** Two models were tried. The
-obvious one sums penetration depths and pushes the puck out of them; that cannot
-work here, because the agent step resolves its own overlap first, so by the time
-the puck is integrated there is no penetration left to read.
-
-The second took the push from the *approach speed* along the contact normal,
-which is what an impact is. It worked, and it taught the wrong thing. With the
-friction floor low a single agent could run at the puck and knock it along, so
-the world was solved by charging it; with the floor raised the agents did gather
-around the puck -- and then stopped, because an agent already in contact has no
-approach speed left. Standing on the puck and leaning, which is exactly the
-behaviour the floor was meant to select for, registered as zero push. The world
-punished the thing it was asking for.
-
-The push is the agent's own motor drive projected on the contact normal instead:
-`drive * dot(heading, normal)`, clamped at zero. Drive is what the brain asked
-the wheels for, so an agent that has run out of room to accelerate still presses
-at full strength -- a tugboat against a hull, not a hammer. Contact is a
-geometric overlap test with a small skin, so leaning counts and passing by does
-not, and alignment makes pushing straight worth more than pushing at an angle.
-
-Three consequences follow. Pressure is dimensionless and per agent, so the
-friction floor below is literally a count of agents rather than a speed in metres
-per second. The sum is an acceleration rather than a velocity, so nothing in the
-formulation bounds the puck any more -- enough agents would keep feeding a puck
-they can no longer keep up with, and the world would be solved by launching it
-once, so the pass clamps the puck to the agents' own speed limit and the smoke
-test asserts the clamp. And a drag term, not the model, is what brings a released
-puck to rest.
-
-**Why the puck emits light.** The first version of this world did not learn at
-all, and the reason is worth keeping: the photoreceptors see beacons and other
-agents' signals and nothing else, so a puck that was neither was *invisible*. An
-agent could only discover it by walking into it. The fitness paid for
-approaching the puck and for moving it, and both rewards were real -- but a
-population cannot climb a gradient it has no sense of. The reward existed and
-the handle on it did not. The puck is a beacon now, at the position every agent
-already mirrors, so reaching it is phototaxis, which is the one thing these
-agents reliably evolve.
-
-**Why the journey outweighs loitering.** The second reason, and the arithmetic
-matters because the obvious version of the claim is wrong. Being near the puck
-pays `trackingReward` per second, 3.75 over a fifteen-second trial for an agent
-that simply parks on it. Pushing the puck all the way in and completing both
-levels paid 8.85 -- more, so the endpoint was never the problem.
-
-What was missing was the increment. The whole journey to the middle is 1.1 m, so
-moving the puck a hand's width was worth 0.10 against that 3.75: under three per
-cent. Evolution improves by increments, and there was none to find -- only the
-completion, which nothing was going to stumble into. Progress is now a fraction
-of the journey rather than a number of metres, weighted so the same push is
-worth 29 per cent instead. The unit test asserts the increment, not the
-endpoint, because the endpoint was never what failed.
-
-**And the approach reward is tied to the puck, not to the light range.** At
-light range it is a broad haze over most of the arena and loitering in the
-general area collects most of what pushing would pay. Six puck radii pays for
-being *at* it, which is where pushing starts.
-
-**Why pushing is priced per agent.** The third reason, and the one the world
-itself created. With the two fixes above a population does improve, slowly, and
-it improves into the wrong shape: agents lean against whichever face of the puck
-they arrive at, several of them on the side facing the middle, and hold it still.
-
-That is not evolution failing to find the answer. It is the score paying for it.
-Every term derived from the puck -- progress, level, the approach reward -- is
-read off one object twelve agents share, so it is the *same number* for all
-twelve. The agent that shoved the puck home and the agent standing in its way
-were scored identically, and selection cannot separate behaviours it cannot see
-apart. What it could see was that being near the puck pays and that moving costs
-motor effort, and it evolved accordingly.
-
-The fix is deliberately not "reward the agents pushing from the correct side".
-That hands over the answer, and this world exists to ask the question. It is to
-pay each agent for the work it actually did, which is a physical quantity rather
-than an opinion: the same pressure `puck_step.comp` integrates, projected onto
-the direction the puck still has to travel. An agent wedged between the
-puck and the middle projects negative and earns nothing -- but nothing told it
-that side was wrong, only that its pushing does not move the puck where the puck
-has to go. Pushing at an angle pays less than pushing straight, so getting
-further round the puck is a gradient and not a switch.
-
-Zero, and not a penalty. Blocking should stop being paid for; it should not
-become a thing to actively avoid, or an agent learns to keep clear of the puck
-rather than to get behind it.
-
-The approach reward is cut to a quarter of `trackingReward` at the same time.
-The weight means "per second for being near the thing you are meant to track",
-which is the right rate in a world where being near the beacon *is* the task;
-here it is only how pushing starts, and at the full rate a trial spent leaning
-on the puck out-earned a trial spent delivering it. A parked agent now collects
-0.94 against the 12-plus-bonuses a delivery pays. The slider still scales it,
-and setting it to zero still turns the search reward off without touching what
-pushing pays -- which is the experiment worth running once the world moves.
-
-So the score now has two parts that answer different questions: the joint part
-says the puck arrived, and the per-agent part says who moved it. That split is
-also what makes the sharing sweep below meaningful rather than circular.
-
-**The first knob to reach for** is the puck's size. Bigger is easier twice over:
-a wider contact arc for several agents to push at once, and a larger thing to
-find. Both sliders -- `Puck radius` and `Target radius` -- take effect on reset.
-
-**Whether one agent is enough is a slider.** `--puck-breakaway` (and `Breakaway
-push`) is a friction floor on the puck, counted in agents leaning on it head-on:
-how hard the *whole world* has to press before it moves at all. One agent at full
-throttle, square to the contact normal, is exactly 1.0. Below one, a single
-agent solves the world alone, a group is only a convenience, and the question
-this world exists to ask -- can selection produce agents that push together -- is
-one it never puts. Above one, no single agent can start it however hard it tries.
-
-Not a mass, deliberately. Mass makes one agent slower, not powerless: the puck
-still creeps, the score still rises, and the population still learns to solve it
-alone. A floor is a threshold, which is what "two or more" means. It is
-subtracted from the push rather than switching it on and off, so a pair that
-barely clears it moves the puck slowly instead of the world flipping between
-nothing and everything -- selection needs an increment here for the same reason
-the journey is a fraction rather than a completion.
-
-Pushes are summed as vectors before the floor is measured, so two agents on
-opposite faces cancel and move nothing however hard they try, and two pushing at
-an angle add up to less than two. A threshold of 2.0 therefore asks for more than
-exactly two bodies: it asks for two pushing the same way.
-
-The work reward follows the puck rather than the pushing, because with a floor in
-the world a lone agent can lean on a stuck puck at full drive for a whole trial.
-Paying for that would teach exactly the futile pushing the floor exists to rule
-out, so the reward is scaled by whether the puck is actually moving.
-
-**Where the puck starts is an option.** By default it is on the arena's axis with
-the agents spawned on its side, so the first thing they do is reach it -- and
-every measurement so far was taken that way. `--puck-scatter` (and `Scatter the
-puck`) instead places it anywhere in a ring, a different place for every world
-and a different place each generation, so finding it is part of the task and no
-one layout can be memorised. The placement comes from the same hash the
-relocating home already uses, seeded by the world and the generation, so a
-replayed generation is the same generation.
-
-**This is the world the sharing option was built for.** `--fitness-sharing`
-blends a genome's score with its world's average, which is meant to make helping
-a neighbour pay -- and until now every world scored an individual's own
-journey, so there was little to share. Here the outcome is joint by
-construction: one puck, one result, twelve agents. Whether sharing helps is the
-measurement this world exists to make.
-
-```sh
-vkneuro_headless --scenario puck --generations 300 --seed 5 --csv runs/puck.csv
-for share in 0.0 0.5 1.0; do
-  vkneuro_headless --scenario puck --generations 300 --seed 5 \
-                   --fitness-sharing "$share" --csv "runs/puck-share-$share.csv"
-done
-```
-
-The puck is saved in world snapshots, unlike the trail field: the trail is
-derived and recovers in a few half-lives, the puck's position is the state of
-the experiment, and a resume that put it back at the start would read as a run
-that had lost ground it had not lost.
-
-## Gate and plate
-
-```
-              resource
-   +-----------------------------+
-   |              .              |
-   |#########  ###[]#############|   the wall, the gate in its opening
-   |                             |
-   |     (plate)                 |
-   |   o     o        o     o    |   everyone starts on this side
-   +-----------------------------+
-```
-
-Three legs in a fixed order across two places. Press the plate, cross to the
-resource, bring it back to the plate. Standing on the plate scores nothing.
-Nothing about "press, then go" can be read off the current sensor values, so a
-network that maps light to motors cannot do it -- "I have already opened it" has
-to be held. That is the same claim the two-door world makes, except that here it
-is held for seconds rather than latched once, and here somebody else can hold it
-for you.
-
-**Why it is a round trip and not a crossing.** Getting through was the first
-version, and it is half a task: an agent that is through is done, the plate
-behind it stops mattering to it, and the door being held is worth something
-exactly once. Coming back makes the gate a thing that has to be open *twice*, so
-whoever is holding it is worth something for as long as anybody is still out.
-
-The plate is also home, which is what closes the cycle without a fourth
-landmark: pressing it on the way back is the same act as pressing it on the way
-out, and re-opens the gate for the next trip. Both reasons to head for the plate
--- "I have to open it" and "I am coming home" -- point at the same place, so the
-world needs only its two beacons.
-
-**This world wants about 1800 steps per generation**, twice the default. A leg is
-2.1 m and a round trip about 840 steps at the speed limit, so the nominal two
-trips do not fit in 900 -- the reported ratio would flatten near half with
-nothing looking wrong. The scenario declares that number rather than leaving it
-in a comment: the window says so beside the trial-length slider and offers a
-button, and `vkneuro_headless` uses it when `--steps` is not given. The unit test
-asserts both directions of it, because the geometry is what would quietly break
-it.
-
-**The latch is the difficulty, and it is one number.** `--gate-latch` (and the
-`Gate latch (s)` slider) says how long the gate keeps running after the plate is
-released.
-
-- **Above zero** one agent presses and runs. Nothing has to be shared and no
-  cooperation is needed; this is the end to start at, and the end that says
-  whether the two-leg structure is learnable at all.
-- **At zero** the gate shuts the instant the plate is let go. Only the far side
-  scores, so somebody has to stay behind for nothing. That is the condition
-  group fitness sharing exists for, reached by moving a slider rather than by
-  adding a scenario.
-
-**Why several agents in one arena is the point rather than a problem.** With a
-dozen agents wandering, somebody stands on the plate by accident about an eighth
-of the time, and those accidents are the world's bootstrap: the first crossings
-happen because somebody happened to be standing in the right place. What
-selection does with that is the question. At a positive latch it can learn to
-press deliberately and go; at zero it has to keep somebody there, and the agent
-that stays cannot be paid for it out of its own score.
-
-**The reported number is round trips against the two a trial has room for.**
-Uncapped in the score and capped in the report, the way every repeating world
-here does it, so a quicker agent still gains from the extra trips. Lingering on
-either end counts once: pressing the plate is positional and happens by standing
-there, so only a carrying agent closes a trip. At a latch of zero the agent
-holding the door completes none of its own, and that missing share is the cost of
-the door being held.
-
-**Where it is unlike the puck.** The gate is not a body agents move; it is a
-fact about the room, computed fresh every step from where everybody is standing.
-There is no gate buffer, no gate pass and no shared record to keep in step: the
-spatial grid is already a per-world index of every agent, so each agent scans
-the cells over the plate and reaches the same answer as its neighbours. They
-cannot disagree because they are not communicating, they are recomputing. What
-does have to be carried is the latch countdown, and each agent carries its own
-copy in the slot this world does not use for a base beacon.
-
-**What is on screen.** The plate is drawn as a disc at the radius the press test
-actually reads, and lights up while the gate is running. It is a beacon as well,
-because agents have to be able to find it -- but a beacon is drawn at the one
-fixed visual radius every beacon uses, six centimetres against the plate's
-twenty, so left at that the picture showed a dot where the rule tests a disc and
-standing beside the dot looked like standing on the plate.
-
-**What the assertions cover.** That the plate is not in the doorway, so the two
-legs are two places. That a shut gate leaves the resource invisible from the
-side the agents start on, and an open one shows it from 19 per cent of that side
--- the same figure as the two-gap wall that was learned, measured by the same
-sweep. That the latch reloads on a press, runs down on release, stops at zero,
-and at a latch of zero is open exactly during the step the plate is held. A gate
-leaf that never parks and a latch that never runs down each fail a different one
-of them.
+`bestNearness` is a maximum rather than a final value, so a trial is scored on
+its best moment and an agent that arrives and then wanders is not scored as if
+it never arrived. Contacts accumulate, so staying is worth more than touching.
+Effort counts a move as one and a broadcast as `signalCost` of one, which is
+what makes silence the default and a signal something that has to earn itself
+back.
+
+The beacon is a pure function of the seed and the world index -- `beaconCell`
+is not a generator, so world 91's beacon can be computed without having computed
+world 90's. The seed advances with the generation, so a population cannot learn
+one fixed set of 172 positions. Spawn cells are hashed the same way and probed
+forward from there, never onto the beacon: an agent that starts on the objective
+has solved the world before the first step, which would make the shaping
+unreadable for the whole group it is scored beside.
+
+`arrivalRatio`, plotted next to the fitness curves, is the fraction of agents
+that spent at least one step within the contact radius. It is the one number
+that no fitness coefficient moves arithmetically, which makes it the honest
+comparison between settings.
 
 ## Group fitness sharing
 
 Selection is individual by default: a genome is scored on what it did, so a
-signal that only helps a neighbour is pure cost to its sender. That is a fitness
-property, not a network one, and no architecture fixes it -- which is why
-`--fitness-sharing` (and the matching slider) exists as a comparable option
+broadcast that only helps a neighbour is pure cost to its sender. That is a
+fitness property, not a network one, and no architecture fixes it -- which is
+why `--fitness-sharing` (and the matching slider) exists as a comparable option
 rather than a new default.
 
 The setting blends each genome's score toward the mean of the genomes sharing
@@ -784,7 +223,7 @@ setting.
 Only selection sees the shared numbers. Reported and plotted fitness stays
 individual, because a shared run and an unshared one could not otherwise be
 compared on their headline figures: sharing compresses spread by construction.
-Objective completion is untouched either way and is the cleanest comparison.
+Arrival is untouched either way and is the cleanest comparison.
 
 ### Sweeping it from the window
 
@@ -796,22 +235,21 @@ already evolved. Every stage keeps its own curves, and they are plotted on one
 shared axis, because separately autoscaled plots would make a flat run and a
 climbing one look alike.
 
-Objective completion is plotted first and on a fixed 0..1 axis: it is the one
-number sharing does not move arithmetically, so it is the honest comparison
-between settings. The last stage is not restarted when it ends -- the run simply
-carries on at that setting with every stage kept for reading.
+Arrival is plotted first and on a fixed 0..1 axis. The last stage is not
+restarted when it ends -- the run simply carries on at that setting with every
+stage kept for reading.
 
 The same comparison from the batch runner, which writes CSV instead of curves:
 
 ```sh
 for share in 0.0 0.5 1.0; do
-  vkneuro_headless --scenario scent --generations 60 --seed 5 \
-                   --fitness-sharing "$share" --csv "runs/scent-share-$share.csv"
+  vklat_headless --generations 60 --seed 5 \
+                 --fitness-sharing "$share" --csv "runs/share-$share.csv"
 done
 ```
 
-Worth running with a non-zero `--signal-cost`. While emitting is free, colour
-stays a free drift even under shared fitness: what pays back has to cost
+Worth running with a non-zero `--signal-cost`. While broadcasting is free, the
+channel stays a free drift even under shared fitness: what pays back has to cost
 something first.
 
 ## Neuron time constants
@@ -828,9 +266,9 @@ h  = tanh(y)
 designed, and different time scales become a trait evolution can separate: a
 fast neuron is a reflex that tracks its input within a step, a slow one holds a
 fact across seconds. `dt` enters explicitly, so a memory is measured in seconds
-and not in steps -- the same rule the rest of the physics follows. A time
-constant of half a second closes `1 - 1/e` of the gap to its input in half a
-second at 30 Hz, at 60 Hz and at 240 Hz, and the unit test asserts exactly that.
+and not in steps. A time constant of half a second closes `1 - 1/e` of the gap
+to its input in half a second at 30 Hz, at 60 Hz and at 240 Hz, and the unit
+test asserts exactly that.
 
 The gene enters a bounded logarithmic range, from one step (16.7 ms) to four
 seconds. Logarithmic because what matters about a memory is its order of
@@ -838,31 +276,37 @@ magnitude: a linear map would spend most of the gene range between two and four
 seconds. A gene of zero lands on the geometric middle, about 260 ms.
 
 This is where memory belongs. The two recurrent cells put it in the *output*
-layer, which cost two of the eight output slots and squeezed everything a brain
-might remember through a two-number bottleneck; time constants give all twenty
-neurons a state and take no output slot at all. The recurrent cells stay --
-they are an explicit, inspectable channel -- but they are no longer the only
-thing holding the past.
+layer, which squeezes everything a brain might remember through a two-number
+bottleneck; time constants give all twenty neurons a state and take no output
+slot at all. The recurrent cells stay -- they are an explicit, inspectable
+channel, and keeping them is what makes the recurrent-versus-time-constant
+ablation possible -- but they are no longer the only thing holding the past.
 
-### Three models, one integrator
+### Four models, one integrator
 
 Where the time constant comes from is a setting -- **Neuron model** in the
-window, `--neuron-model` on the command line -- and it is the only thing that
-changes between the three. The integrator, the genome and the state are the
-same in every case, which is what makes switching an ablation rather than a
-swap between networks, and what lets a population keep its meaning across a
-switch mid-experiment.
+window, `--neuron-model` on the command line -- and it is nearly the only thing
+that changes between the four. The integrator, the genome and the state are the
+same in every case, which is what makes switching an ablation rather than a swap
+between networks, and what lets a population keep its meaning across a switch
+mid-experiment.
 
 | Model | Time constant | What it is |
 | --- | --- | --- |
 | `reactive` | pinned to `dt` | The update collapses to `y = activation`: no state at all, the network from before time constants existed, reached by the same arithmetic. |
 | `time` (default) | one gene per neuron | Fixed for the neuron's life. It forgets at one rate whatever is happening to it. |
 | `gated` | recomputed each step from the inputs | The neuron can hold a value and then let go of it when something tells it to. |
+| `spiking` | one gene per neuron | Leaky integrate-and-fire: the same leak, but the neuron emits 1 on crossing threshold and resets to zero instead of passing its state through `tanh`. Its output is a pulse train rather than a level. |
 
 Gated is a strict generalisation: feed the gate a constant and it *is* the
 fixed-time-constant neuron, which the unit test asserts directly for three
 different constants. It costs one weight row and one bias per hidden neuron and
 no extra state, because the state it needs is the one the neuron already carries.
+
+Spiking is the one model that changes what leaves the neuron rather than only
+how fast its state moves. It reads the same time-constant gene as `time`, so the
+switch between the two is exactly the question of whether a level or a pulse
+carries more here.
 
 **Watch the sign.** The gate asks for a time constant, not for an update
 fraction, so driving it up makes the neuron hold and leaving it low makes it
@@ -871,9 +315,9 @@ the gate and the gene go through the same mapping, which is what makes the two
 models comparable at all.
 
 ```sh
-for model in reactive time gated; do
-  vkneuro_headless --scenario shuttle --generations 200 --seed 5 \
-                   --neuron-model "$model" --csv "runs/shuttle-$model.csv"
+for model in reactive time gated spiking; do
+  vklat_headless --generations 200 --seed 5 \
+                 --neuron-model "$model" --csv "runs/model-$model.csv"
 done
 ```
 
@@ -881,146 +325,131 @@ done
 
 One preset, `include/vkexp/neuro/BrainKernel.inl`, declares the whole network,
 and both languages compile it. Every offset, the genome size and the packed GPU
-layout are derived from the counts below, so raising one number moves the CPU
+layout are derived from the counts in it, so raising one number moves the CPU
 evaluator, the sensor sampler, the compute shader and the tests together.
 
-```
-inputs 61                            hidden 20            outputs 8
-  7 receptors x 4 (RGB + luminance) = 28    each with        2 motors
-  8 tactile sectors x 2 (wall, agent) = 16   its own state    3 signal colour
-  3 antennae x 3 (trail RGB)          =  9   and its own      1 signal intensity
-  speed, turn rate, energy, own signal =  4  time constant    2 recurrent cells
-  cargo level, seeking-home flag       =  2                     (fed back as inputs)
-  2 recurrent cells fed back           =  2
-```
-
 The genome is one flat vector, as long as the plan needs. Under the default plan
--- one hidden layer of twenty -- that is 2668 floats in seven blocks:
+-- one hidden layer of twenty -- that is 3706 floats in seven blocks:
 
 | Block | Size | Read by |
 | --- | --- | --- |
-| inputs -> hidden 0 | 61 x 20 = 1220 | every model |
+| inputs -> hidden 0 | 88 x 20 = 1760 | every model |
 | hidden 0 bias | 20 | every model |
-| hidden 0 -> output | 20 x 8 = 160 | every model |
-| output bias | 8 | every model |
-| time constants | 20 | `time` |
-| gate 0 weights | 20 x 61 = 1220 | `gated` |
+| hidden 0 -> output | 20 x 6 = 120 | every model |
+| output bias | 6 | every model |
+| time constants | 20 | `time`, `spiking` |
+| gate 0 weights | 20 x 88 = 1760 | `gated` |
 | gate 0 biases | 20 | `gated` |
 
 A deeper plan has one weights-and-bias pair per layer, and one gate pair to
-mirror it; the output layer always reads the last hidden layer. `12,8,8` comes to
-1940 weights in fifteen blocks -- *fewer* than the flat default, because the
+mirror it; the output layer always reads the last hidden layer. `12,8,8` comes
+to 2570 weights in fifteen blocks -- *fewer* than the flat default, because the
 first matrix is what dominates.
 
 Every model carries every block, whichever one is selected. That is deliberate:
 it makes switching a parameter change rather than a reinterpretation of the
 population, so a saved run stays meaningful across a switch, and it is why the
-three are comparable at all. It was 1408 weights before time constants existed
-and 1428 with them; the gate block roughly doubles it, and the packing limit
-(`BrainStrideMask`, 4095 per stride) is still not near.
+four are comparable at all. The packing limit (`BrainStrideMask`, 4095 per
+stride) is still not near.
 
-State is one float per hidden neuron, on the agent record beside everything
-else a step carries -- 176 to 256 bytes -- so the CPU path and the GPU path
-store it the same way and multi-step parity covers it without a separate
-harness. It is zero at the start of a generation, which is the whole of the
-reset semantics. The gate needs no state of its own: what it needs is the state
-the neuron already has.
+State is one float per hidden neuron, on the 224-byte agent record beside
+everything else a step carries, so the CPU path and the GPU path store it the
+same way and multi-step parity covers it without a separate harness. It is zero
+at the start of a generation, which is the whole of the reset semantics. The
+gate needs no state of its own: what it needs is the state the neuron already
+has.
 
 ### Choosing the structure
 
-The hidden layers are a plan now, not a constant. The **Brain** window sets how
-many there are and how wide, `--hidden 12,8,8` says the same from a command
-line, and both the CPU evaluator and the compute shader walk whatever is chosen:
+The hidden layers are a plan, not a constant. The **Brain** window sets how many
+there are and how wide, `--hidden 12,8,8` says the same from a command line, and
+both the CPU evaluator and the compute shader walk whatever is chosen:
 
 | | |
 | --- | --- |
 | Layers | up to 3, dense from the front |
 | Neurons | 32 in total, spent however the plan likes |
-| Default | one layer of 20 -- what every world was tuned with |
+| Default | one layer of 20 |
 
 **Only the hidden layers, and that is the design rather than a limitation.** How
-many sensors a world offers and how many actuators it needs are statements about
-the world, so the two ends stay the scenario's own. How much brain to spend on
-the world is the question worth asking, and it is the only one the window asks.
+many cells an agent can see and how many drives a move needs are statements
+about the lattice, so the two ends belong to the world. How much brain to spend
+on the world is the question worth asking, and it is the only one the window
+asks.
 
 **The capacity is compiled in; the plan is not.** GLSL sizes its arrays with
 compile-time constants, so how many neurons there may be at most, and how many
 layers, live in `BrainKernel.inl`. Everything inside that -- how many layers this
 run uses, how wide each one is, where every weight of every layer lives -- is
 computed at runtime by shared kernel functions that walk the plan, so the two
-languages cannot walk it differently. `compute_smoke` runs the trajectory parity
-cases at `12,8,8` and at `16,6` precisely because every other case in the file
-runs the single layer the network always had: a shader that read the plan even
-slightly differently would drift there and nowhere else.
+languages cannot walk it differently. `compute_smoke` runs a parity case at
+`12,8,8` precisely because every other case in the file runs the single layer
+the network usually has: a shader that read the plan even slightly differently
+would drift there and nowhere else.
 
 **The genome is exactly as long as its plan.** There is no fixed stride and no
-tail: the flat default is 2668 weights, `12,8,8` is 1940, and a single 32-wide
-layer is 4264. Interchangeability comes from the file saying which network it
+tail: the flat default is 3706 weights, `12,8,8` is 2570, and a single 32-wide
+layer is 5926. Interchangeability comes from the file saying which network it
 holds, not from every run sharing one length -- an archive records the plan in
 its header and the structure block beside it, and refuses to load into a build
 that lays that network out differently, naming the block that moved.
 
 A deeper plan is usually *cheaper* than a flat one, which is worth knowing before
 reaching for it: the first matrix dominates, so a narrow first layer shrinks the
-whole network even as it makes it deeper.
+whole network even as it makes it deeper. That matters more here than it did in
+the arena, because 88 inputs is a wider front than 61 was.
 
 **The default width and the capacity are separate numbers**, and a test says so.
 Sharing one constant would mean that raising how many neurons there *may* be
-widens every world's brain behind its back -- which is exactly what happened once
-while this was being built. Every scenario declares one layer of twenty; the
-capacity is thirty-two and nothing runs it unless asked.
+widens the brain behind its back -- which is exactly what happened once while
+this was being built.
 
 **Each layer holds its own state.** The time constants are per neuron, numbered
 across all layers end to end, so a deep plan is not just a longer path but a path
-with different memories along it -- a fast layer in front of a slow one is now
-something a run can be. Whether that helps is exactly the experiment the plan
-exists to make possible, and it has not been run yet.
+with different memories along it -- a fast layer in front of a slow one is
+something a run can be.
 
 **A plan takes effect on a reset**, because it is a different layout of the same
 genome: the population evolving under the old one does not carry over
 meaningfully. The window says "not applied yet" rather than pretending
-otherwise, and offers the world's own plan back in one button.
+otherwise, and offers the default plan back in one button.
 
 ### The same structure, written down
 
-The two tables above are hand-written, and every offset in them is really a
-function call: the input vector is addressed by `brainLightChannelIndex` and its
+The table above is hand-written, and every offset in it is really a function
+call: the input vector is addressed by `brainNeighborChannelIndex` and its
 siblings, the genome by `brainHiddenWeightIndex` and its siblings, and both
 languages compile those from the one preset. That makes the layout impossible to
 get *wrong* -- and impossible to *state*. Nothing could hand a file, or a
-reader, the sentence "slots 44 to 52 are the ground antennae".
+reader, the sentence "slots 78 to 82 are the beacon".
 
 `describeBrain` produces exactly that sentence, as a structure of named blocks,
 and it produces it by asking the same index functions where each block begins.
 It is derived, never restated, which is rule 3c applied to the layout itself.
 
 ```sh
-vkneuro_headless --scenario scent --neuron-model gated --describe-brain brain.json
+vklat_headless --neuron-model gated --describe-brain brain.json
 ```
 
 ```json
 {
-  "inputs_count": 61, "hidden_count": 20, "outputs_count": 8,
-  "weight_count": 2668, "neuron_model": "gated",
+  "inputs_count": 88, "hidden_count": 20, "outputs_count": 6,
+  "weight_count": 3706, "neuron_model": "gated",
   "inputs": [
-    { "name": "light", "offset": 0, "count": 28, "rows": 7, "columns": 4 },
-    { "name": "tactile", "offset": 28, "count": 16, "rows": 8, "columns": 2 },
-    { "name": "antennae", "offset": 44, "count": 9, "rows": 3, "columns": 3 },
-    ...
+    { "name": "neighbourhood", "offset": 0, "count": 78, "rows": 26, "columns": 3 },
+    { "name": "beacon", "offset": 78, "count": 4 },
+    { "name": "self", "offset": 82, "count": 4 },
+    { "name": "memory_in", "offset": 86, "count": 2 }
   ],
   "weights": [
-    { "name": "hidden_weights", "offset": 0, "count": 1220,
-      "from": "inputs", "to": "hidden", "rows": 20, "columns": 61 },
+    { "name": "hidden0_weights", "offset": 0, "count": 1760,
+      "from": "inputs", "to": "hidden0", "rows": 20, "columns": 88 },
     ...
   ]
 }
 ```
 
 The window writes the same document with `Save structure`, next to the archive.
-A scenario that trims its input vector describes the smaller network it actually
-runs -- `--scenario stationary` reports 57 inputs and 6 outputs, with no task and
-no memory blocks -- so the file says what that run's weights mean rather than
-what the build is capable of.
 
 **The test is what makes it worth having.** `testBrainDescription` asserts that
 the blocks tile the input vector, the output vector and the genome exactly --
@@ -1029,14 +458,16 @@ names for one number -- and that both corners of every weight block are where
 the kernel's own index function puts them. A description that merely looked
 right would be worse than none, because the loader below acts on it.
 
-**Both file formats notice a brain that changed shape**, and one of them can now
-say how. A genome archive carries this document plus the layer plan in its
-header, so a file states which network it holds; it refuses to load into a build
-that lays that network out differently, naming the block: *"input block
-'antennae' is missing"* rather than *"2668 weights, expected 2530"*. Archives are
-version 3 for that; version 1 files still load and say plainly that nothing but
-their length was checked. World snapshots carry a version of their own, currently
-14.
+**Both file formats notice a brain that changed shape**, and one of them can say
+how. A genome archive carries this document plus the layer plan in its header,
+so a file states which network it holds; it refuses to load into a build that
+lays that network out differently, naming the block: *"input block 'beacon' is
+missing"* rather than *"3706 weights, expected 2530"*. Archives are version 4,
+and version 4 is also the oldest accepted: an archive from the metric arena
+holds weights addressed to photoreceptors and tactile sectors that no longer
+exist, so loading one would be silently wrong rather than usefully old. Run
+snapshots start again at version 1 for the same reason, under a new magic and a
+new extension.
 
 **What this is not, yet.** The layers are chosen; the *connections* are not. A
 plan says how many layers and how wide, and every layer is still fully connected
@@ -1053,72 +484,62 @@ Watching trained weights is a different job from training them, and the
 difference is one flag. **Replay only (no evolution)** scores and reports every
 generation exactly as a training run does -- that is how loaded weights get
 judged -- and then selects and mutates nothing. The population is left alone, so
-the same genomes respawn; the beacon motion seed is the generation number, which
-does not advance either, so the next generation is the same run again rather
-than a similar one. That repeatability is asserted by `vkneuro_replay_smoke`,
-which compares two replayed generations byte for byte.
+the same genomes respawn; the beacon seed is derived from the generation number,
+which does not advance either, so the next generation is the same run again
+rather than a similar one. That repeatability is asserted by
+`vklat_replay_smoke`, which compares two replayed generations byte for byte.
 
 **Load genomes** takes a `.vkng` archive, which carries weights and nothing
-else -- exactly what replaying a champion needs, since the world is whatever is
+else -- exactly what replaying a champion needs, since the lattice is whatever is
 set up in the window. An archive normally holds one champion or a handful of
-elites while a run has a population size fixed when its buffers were made, so
-the archive is repeated across the population and every agent on screen runs the
-loaded brain. The status line says the repetition happened rather than leaving
-it to be inferred from the picture.
+elites while a run has a population size fixed when its buffers were made, so the
+archive is repeated across the population and every agent runs the loaded brain.
+The status line says the repetition happened rather than leaving it to be
+inferred.
 
 To watch a headless champion:
 
 ```sh
-vkneuro_headless --scenario scent --generations 200 --save-champion runs/scent.vkng
-# then in the window: Load genomes -> runs/scent.vkng, tick Replay only
+vklat_headless --generations 200 --save-champion runs/beacon.vkng
+# then in the window: Load genomes -> runs/beacon.vkng, tick Replay only
 ```
 
-A world snapshot (`.vknw`) is the other way in, and carries the arena and every
-setting with it; a genome archive keeps the window's current world and changes
+A run snapshot (`.vklr`) is the other way in, and carries the lattice and every
+setting with it; a genome archive keeps the window's current lattice and changes
 only the brain.
-
-The foraging scenario does not grant passive tracking fitness. Reaching the
-resource switches an explicit task input from `seek resource` to `seek home`
-and fills a cargo-level input. Cargo decays while being carried, so prompt home
-delivery is worth more; delivery completes a cycle and switches the task back.
-The home teleports to a deterministic random position every eight simulation
-seconds, independently for each trial and generation.
-Fitness remains cumulative—the expiring cargo is the decreasing reward
-potential—so long generations do not erase already completed work. Two separate
-learned memory values are fed back as inputs on the next simulation step and
-updated by the final two network outputs.
 
 ## Architecture
 
 ```text
-vulkan_neuroevolution_agents (windowed composition root)
-vkneuro_headless             (batch composition root)
+vulkan_lattice_agents (windowed composition root)
+vklat_headless        (batch composition root)
   |
-  +-- vkneuro_domain          no Vulkan dependency
+  +-- vklat_domain            no Vulkan dependency
   |     neuro/
   |       BrainKernel.inl     network preset compiled by C++ and GLSL alike
   |       NeuralNetwork       C++ view of the preset + single-network evaluator
-  |     worlds/
-  |       ScenarioKernel.inl  scenario math compiled by C++ and GLSL alike
-  |       WorldScenario       scenario contract + validated registry
-  |       scenarios/          one file per experiment, whole contract each
-  |     Sensors               CPU reference perception
-  |     CpuSimulation         CPU reference physics/fitness
+  |       BrainDescription    the layout, derived and written down
+  |     lattice/
+  |       LatticeKernel.inl   cells, neighbourhoods, the move rule, the fitness
+  |       LatticeWorld        beacon and spawn placement, occupancy building
+  |     LatticeSensors        CPU reference perception
+  |     CpuLattice            CPU reference step and scoring
   |     GeneticAlgorithm      selection/crossover/mutation
+  |     GenomeArchive         .vkng
+  |     RunSnapshot           .vklr
+  |     ExperimentSweep       staged runs of one varying setting
   |
-  +-- vkneuro_simulation
+  +-- vklat_simulation
   |     SimulationDriver      population, GA, and per-step dispatch recording
   |     SimulationModule      frame-loop adapter over the driver
-  |     worlds/*.glsl         per-scenario geometry, shared with the vertex shader
-  |     worlds/steps/*.glsl   per-scenario step hooks mirroring the C++ ones
-  |     agent_grid_*.comp     per-logical-world spatial acceleration
-  |     agent_step.comp       RGB sensors + brain + collisions + physics
+  |     lattice/*.glsl        the shared kernel, compiled as GLSL
+  |     neuro/*.glsl          the shared preset and the forward pass
+  |     lattice_clear.comp    empties the claim grid
+  |     lattice_step.comp     senses, runs the brain, bids for a cell
+  |     lattice_resolve.comp  moves the winners and charges the metrics
   |
-  +-- vkneuro_visualization
-  |     AgentRenderer         read-only consumer of the agent SSBO
-  |
-  +-- vkneuro_ui
-  |     SimulationUiModule    controls/statistics/viewport only
+  +-- vklat_ui
+  |     SimulationUiModule    controls, statistics, brain, sweeps
   |
   +-- reusable infrastructure
         vkexp_core, vkexp_compute, vkexp_profiling, vkexp_imgui
@@ -1127,136 +548,112 @@ vkneuro_headless             (batch composition root)
 The shared contracts are small:
 
 - `SimulationState` carries controls, statistics, the published agent-buffer
-  view, and the published viewport image;
-- `AgentState` is an explicitly checked 176-byte std430-compatible structure;
-- `BrainKernel.inl` is the network preset: sensor block sizes, hidden width and
-  output meanings, from which the input capacity, every block offset, the genome
-  size and the packed GPU layout are derived. Both languages compile it, so the
-  CPU evaluator, the sensor sampler and the shader build the same network from
-  one declaration; `Topology` is the C++ view of it and restates nothing. Each
-  `ScenarioDefinition` then selects its active input/hidden/output counts;
-- module order in `main.cpp` is the composition graph: compute publishes the
-  buffer, rendering reads it, and ImGui composites the viewport;
-- `GpuStepParameters` carries only what every scenario needs, plus a 48-byte
-  `ScenarioParameterBlock` each scenario packs and unpacks itself. It travels in
-  a storage buffer indexed by step rather than in push constants, so adding a
-  scenario neither widens a shared struct nor approaches the 128-byte push
-  constant size Vulkan guarantees;
-- `ScenarioDefinition` is the whole contract of an experiment: brain shape,
-  beacons, fitness, objective counting, per-step hooks, GPU packing, and the
-  tunables the UI should offer. A validated registry replaces what used to be
-  scenario switches in the simulation, the scoring, the renderer, the batch
-  runner and the UI;
+  view and the published occupancy view;
+- `AgentState` is an explicitly checked 224-byte std430-compatible structure,
+  with the variable-length hidden block last so every earlier offset is fixed;
+- `LatticeKernel.inl` is the world: cell indexing, both neighbourhoods, the move
+  rule, the claim rule, the distance metric and the trial fitness. Both
+  languages compile it, so the CPU reference and the shader cannot disagree
+  about what the world is;
+- `BrainKernel.inl` is the network preset: sensor block sizes, hidden capacity
+  and output meanings, from which the input capacity, every block offset, the
+  genome size and the packed GPU layout are derived. `Topology` is the C++ view
+  of it and restates nothing;
+- module order in `main.cpp` is the composition graph;
+- `GpuStepParameters` travels in a storage buffer indexed by step rather than in
+  push constants, so widening it is not bounded by the 128 bytes Vulkan
+  guarantees;
 - `FitnessWeights` carries the shaping coefficients to both the CPU reference
-  and the shader, so a fitness experiment is a slider or a CLI flag.
-
-This lets a new sensor model, brain evaluator, selection policy, renderer, or
-UI replace its counterpart without changing the application lifecycle.
+  and the shader, so a fitness experiment is a slider or a CLI flag and never a
+  rebuild.
 
 `SimulationDriver` holds the experiment; `SimulationModule` only maps frame
 callbacks onto it. The batch runner drives the same driver from an
 `ImmediateContext`, so a sweep and the window run identical code.
 
-### Units and the two time bases
+### Steps and seconds
 
-`include/vkexp/simulation/Units.hpp` is where the scale is declared and where
-the step's two time bases are reconciled. A step is the unit of reproducibility:
-replays, archives and parity tests are all indexed by step count, and none of
-them depends on wall-clock time. A second is the unit the physics is written in
--- speeds in m/s, drags and decay rates in 1/s -- so that `deltaTime` is a free
-parameter rather than a hidden part of the fitness function.
+`include/vkexp/simulation/Units.hpp` is where the step's two time bases are
+reconciled. A step is the unit of reproducibility: replays, archives and parity
+tests are all indexed by step count, and none of them depends on wall-clock
+time. A second is the unit of anything that decays -- which, now that space is
+discrete, means the neurons: a time constant is a duration, so how long a neuron
+remembers is a fact about the brain rather than about the rate it happened to
+run at.
 
-The rule that keeps them consistent: a quantity accumulated over the step is
-multiplied by `deltaTime`, and a fraction removed per step is written as
-`1 - exp(-rate * dt)`, the form the drags already used. The wall penalty and the
-contact solver were the two that broke it, and both were charged per step, which
-is why `deltaTime` was pinned at 1/60 and never exposed.
+Costs charged per event are the other half of the same rule and take no
+`deltaTime` at all. A move costs what a move costs and a refusal likewise,
+because both are counted rather than integrated. That is what the discrete world
+bought: the quantity that used to need `1 - exp(-rate * dt)` to stay honest is
+now an integer.
 
 ### Where the CPU path fits
 
 The CPU code is not a mirror of the shader. It exists to build the network from
 the shared preset, to score a finished generation, and to step and inspect a
-single agent -- which the GPU cannot do usefully for 2048 of them at once. What
-genuinely differs between the two, the parallel substrate, is verified by tests
-that need many agents:
+handful of agents -- which the GPU cannot do usefully for 2048 of them at once.
+What genuinely differs between the two, the parallel substrate, is verified by
+tests that need many agents:
 
-- `runGenomeAddressingProbe` gives six genomes distinctive motor biases and
-  checks every agent follows its own; a wrong genome stride or base offset is
-  invisible to a single-agent parity test.
-- `runMultiAgentDeterminism` and `runAgentInteractionTest` cover the shared
-  spatial grid, barriers and logical-world isolation.
-
-### Adding a scenario
-
-One source file fills in a `ScenarioDefinition`, one `worlds/<name>.glsl`
-unpacks the same parameter block for geometry, one `worlds/steps/<name>.glsl`
-mirrors the step hooks, and one line joins the registry. Shared formulas go in
-`include/vkexp/worlds/ScenarioKernel.inl`, which is compiled twice -- once as
-C++ through a small `vec2`/`uint` shim, once as GLSL where those names are built
-in -- so a hash constant or a beacon formula exists exactly once. The remaining
-scenario identity checks live in two GLSL dispatchers, which is as far as a
-language without function pointers allows.
-
-The four beacon-following scenarios currently use a reactive `57 -> 20 -> 6`
-brain. `Forage + home` and `Scent relay` declare `61 -> 20 -> 8`, adding task
-state and two recurrent memory cells. Scenario changes still reset evolution, while the GA
-and fixed-capacity GPU genome buffers remain shared.
+- `runGenomeAddressingProbe` gives six genomes distinctive move biases, one
+  plane of the lattice each, and checks every agent follows its own; a wrong
+  genome stride or base offset is invisible to a single-agent parity test.
+- `runContentionProbe` puts two agents either side of one free cell so both bid
+  for it, which is the one outcome a single-agent test structurally cannot see.
+- `runFullLatticeProbe` fills a small lattice until refusals are the common case
+  rather than the exception.
 
 ## CPU/GPU correctness
 
-`vkexp_compute_smoke` creates the same agent and genome on CPU and GPU, advances
-both by one complete sensor/network/physics step, reads the SSBO back, and
-compares every float with a small tolerance for both world shapes. A two-agent
-GPU test verifies physical separation, tactile contact, and reception of an
-emitted red signal, then verifies that the same colocated agents cannot collide
-or exchange light across a logical-world boundary. Another parity case covers
-the exact step at which the active beacon diagonal changes.
-
-On top of that, every scenario runs a 540-step trajectory regression:
+`vkexp_compute_smoke` builds the same agents, genomes and occupancy grid on the
+CPU and on the GPU and advances both through the same three dispatches. On top
+of the probes above, every combination of the two neighbourhoods and the four
+neuron models runs a 120-step trajectory regression:
 
 - **lockstep parity.** Each step feeds the CPU reference state to the GPU and
-  compares one step of both, so the shader is checked at hundreds of genuinely
-  reachable states -- including the alternating phase flip and the forage home
-  relocation epoch -- without the chaotic drift a free-running trajectory would
-  accumulate through tanh feedback.
+  compares one step of both. This is not a convenience: the move rule is a
+  threshold on a float, so a one-ulp difference in a drive sitting on the dead
+  zone flips a discrete move, and a free-running pair of trajectories diverges
+  by construction rather than by error. Lockstep measures agreement; a
+  free-running comparison would measure chaos.
 - **accumulated drift budget.** Lockstep cannot see a systematic bias smaller
-  than the per-step tolerance, because resetting to the CPU state each step stops
-  it accumulating. Summing the signed per-step differences restores that:
-  rounding noise cancels to ~1e-4 over 540 steps, while a changed shader constant
-  reaches ~3e-2. The budget sits an order of magnitude above the noise.
-- **coverage assertions.** A run whose beacon stayed out of sensor range, or whose
-  alternating phase never flipped, fails rather than passing vacuously.
-- **determinism.** 192 agents sharing one spatial grid are stepped twice; the
-  results must be bit-identical, which is where a grid race would surface.
-- **genome addressing.** Six genomes with distinctive motor biases; each agent
-  must follow its own. This is the class of bug a single-agent parity test
-  structurally cannot see.
-- **trail coupling.** A mark is written under one antenna tip and the agent has
-  to turn the way that tip is wired. A shader feeding every tip the same cell
-  passes every other test and fails this one.
-- **reconfiguration.** The arena size, the group size and the trail resolution
-  are walked through the real driver, with a generation run after each change.
-  These resize GPU buffers under a running simulation, and a stale descriptor
-  there faults the device rather than returning a wrong number, so the test
-  carries a timeout as part of its assertion.
-- **step-rate independence.** An agent is driven into a wall and held there for
-  two simulated seconds at 30, 60, 120, 240 and 480 Hz. The accumulated penalty
-  has to stay within 25% of the 60 Hz value while the step count changes 16x,
-  and has to stay closer to it than the step-count ratio would put it -- the
-  second half is what fails if an accumulator goes back to counting steps.
+  than the per-step tolerance, because resetting to the CPU state each step
+  stops it accumulating. Summing the *signed* per-step differences restores
+  that: rounding noise cancels to about 4e-4 over the run, and the budget sits
+  above that at 1e-3.
+- **integers compare exactly.** Cells, headings, intents and the beacon are
+  compared with no tolerance at all. There is no such thing as a cell that is
+  nearly right, and a tolerance on one would hide exactly the bug this test
+  exists for.
+- **coverage assertions.** A run in which nobody moved, or in which nobody was
+  ever refused a cell, fails rather than passing vacuously.
+- **deep plan.** A second parity case runs `12,8,8` over a taller lattice, so a
+  shader that walked the layer plan differently drifts where nothing else would
+  catch it.
+- **reconfiguration.** `vklat_reconfiguration_smoke` walks the lattice extents
+  from 128^3 down to 1^3, the group sizes in both directions, four brain plans
+  and the full cross product of boxes, group sizes and neighbourhoods, running a
+  generation after each change. It asserts that the step resources were built
+  once, that no buffer handle moved, that the chosen lattice fits the fixed
+  allocation, and that every agent is still inside its own box. A stale
+  descriptor here faults the device rather than returning a wrong number, so the
+  test carries a timeout as part of its assertion.
+- **replay determinism.** `vklat_replay_smoke` runs two replayed generations and
+  compares them byte for byte.
 
-Pure CPU tests cover world scaling, beacon layouts, logical-world partition
-mapping, channel mapping, weight layout, neural evaluation, elite preservation,
-scenario parameter packing, resolved step settings, genome archive round-trips
-including corruption and truncation rejection, and reusable compute validation.
-Several guard the contracts this architecture rests on: every registered scenario
-is checked for registry order, a CLI key, a brain that fits the genome, a declared
-beacon count that matches what it reports, and a step that survives its own hooks;
-the shared scenario kernel is pinned on the C++ side so a change to
-`ScenarioKernel.inl` cannot slip through on a machine without a GPU; and the brain
-preset is checked by derivation rather than by snapshot -- the sensor blocks must
-tile the input vector without gaps or overlaps, so adding a sensor stays a
-one-line edit instead of a test rewrite.
+Pure CPU tests cover cell addressing and its inverse, both neighbourhoods and
+the walkability rule, the move rule including the threshold and the dominant
+axis, spawn placement (in bounds, never doubled, never on the beacon), the
+sensor vector block by block, contention, the trial fitness, logical-world
+partition mapping, weight layout, neural evaluation, the four neuron models,
+elite preservation, fitness sharing, step parameter packing, resolved step
+settings, run-snapshot and genome-archive round trips including corruption and
+truncation rejection, and reusable compute validation. Several guard the
+contracts the architecture rests on: the shared lattice kernel is pinned on the
+C++ side so a change to `LatticeKernel.inl` cannot slip through on a machine
+without a GPU, and the brain preset is checked by derivation rather than by
+snapshot -- the sensor blocks must tile the input vector without gaps or
+overlaps, so adding a channel stays a one-line edit instead of a test rewrite.
 
 ## Build and run
 
@@ -1268,88 +665,105 @@ Dear ImGui v1.91.8 is fetched by CMake.
 cmake --preset debug
 cmake --build --preset debug
 ctest --preset debug --output-on-failure
-./build/debug/vulkan_neuroevolution_agents
+./build/debug/vulkan_lattice_agents
 ```
 
 Disable validation if the validation layer is unavailable:
 
 ```bash
-./build/debug/vulkan_neuroevolution_agents --no-validation
+./build/debug/vulkan_lattice_agents --no-validation
 ```
 
 ### Batch runs
 
-`vkneuro_headless` evolves without a window, which is what makes overnight runs,
+`vklat_headless` evolves without a window, which is what makes overnight runs,
 parameter sweeps and ablation comparisons possible:
 
 ```bash
-./build/release/vkneuro_headless --scenario rotating --generations 200 \
-    --csv runs/rotating.csv --save-champion runs/rotating-champion.vkng
+./build/release/vklat_headless --generations 200 \
+    --csv runs/beacon.csv --save-champion runs/beacon-champion.vkng
 
-# Signal-off ablation against the same seed.
-./build/release/vkneuro_headless --scenario forage --generations 200 --seed 7 \
-    --no-agent-light --csv runs/forage-nolight.csv
+# A different box, and the movement ablation against the same seed.
+./build/release/vklat_headless --lattice 48x48x24 --neighbourhood faces \
+    --generations 200 --seed 7 --csv runs/faces.csv
+
+# Crowded: a small box with a large group is where refusals dominate.
+./build/release/vklat_headless --lattice 8x8x8 --agents-per-world 24 \
+    --generations 50 --csv runs/crowded.csv
 
 # Resume a saved population.
-./build/release/vkneuro_headless --scenario forage --generations 50 \
-    --load-population runs/forage-population.vkng
+./build/release/vklat_headless --generations 50 \
+    --load-population runs/beacon-population.vkng
 
 # Save and resume a whole experiment, not just its weights. The snapshot carries
-# the scenario, arena and every physics setting, so the resume restates none of
-# them.
-./build/release/vkneuro_headless --scenario scent --generations 40 \
-    --save-world runs/scent.vknw
-./build/release/vkneuro_headless --generations 40 --load-world runs/scent.vknw
+# the lattice and every setting, so the resume restates none of them.
+./build/release/vklat_headless --generations 40 --save-run runs/beacon.vklr
+./build/release/vklat_headless --generations 40 --load-run runs/beacon.vklr
 ```
 
-Fitness shaping coefficients are flags too (`--objective-bonus`, `--motor-cost`,
-`--tracking-reward`, `--signal-cost`, `--energy-drain`, `--fitness-sharing`), so
-sweeping them needs no rebuild:
+Fitness shaping coefficients are flags too (`--tracking-reward`,
+`--objective-bonus`, `--motor-cost`, `--refusal-penalty`, `--signal-cost`,
+`--fitness-sharing`), so sweeping them needs no rebuild:
 
 ```bash
-for reward in 0.0 0.25 0.75; do
-    ./build/release/vkneuro_headless --scenario rotating --generations 50 --seed 5 \
-        --tracking-reward "$reward" --csv "runs/tracking-$reward.csv"
+for penalty in 0.0 0.01 0.05; do
+    ./build/release/vklat_headless --generations 50 --seed 5 \
+        --refusal-penalty "$penalty" --csv "runs/refusal-$penalty.csv"
 done
 ```
 
-`--help` lists every option, and its scenario list comes from the registry.
-Genome archives are versioned little-endian files
-that record the generation, scenario, seed, fitness and brain shape, and refuse
-to load into a build with a different weight count.
+`--help` lists every option. The banner prints the lattice that is *running*
+rather than the one that was requested, so a box the budget clamped says so on
+the first line.
 
-A world snapshot (`.vknw`) is the heavier sibling: the population, where every
-agent stands, the generation and step it was on, and every physics setting,
+Genome archives are versioned little-endian files that record the generation,
+the beacon seed, the GA seed, the fitness and the brain shape, and refuse to
+load into a build that lays that brain out differently.
+
+A run snapshot (`.vklr`) is the heavier sibling: the population, which cell
+every agent stands in, the generation and step it was on, and every setting,
 which is what lets a resume start mid-generation with no flags. It is equally
 strict, rejecting a file written for a different brain topology, agent layout or
 settings list, and a population or trial count the running process cannot hold,
-since both are buffer dimensions fixed at startup. The trail field is
-deliberately excluded: it is device-local, up to 256 MiB, and derived -- a
-couple of half-lives of stepping rebuilds it, which costs less than storing it.
-The interactive build has the same thing under **Snapshot** in the control
-panel.
+since both are buffer dimensions fixed at startup. The occupancy grid is
+deliberately excluded: it is derived from where the agents stand, so rebuilding
+it on load costs less than storing it and cannot disagree with the agents. The
+interactive build has the same thing under **Snapshot** in the control panel.
 
-The debug suite contains pure unit tests, CLI smoke tests, two short real
-headless evolution runs covering the archive round trip, and a headless Vulkan
-parity test. The Vulkan-dependent ones return CTest's skip code when no compute
-device exists.
+The debug suite contains pure unit tests, CLI smoke tests, four short real
+headless evolution runs covering both neighbourhoods, a crowded lattice and the
+archive and snapshot round trips, and the Vulkan parity, replay and
+reconfiguration tests. The Vulkan-dependent ones return CTest's skip code when
+no compute device exists.
+
+## What is next
+
+The 3D renderer is step 5 of the conversion and the one piece deliberately left
+undone: everything the window shows is live except the view of the lattice
+itself, and the Lattice window says so. Building it last was the point -- a UI
+regression surfaces now, against panels that are already exercised, rather than
+underneath a new renderer.
+
+After that, the lattice makes a set of experiments cheap that the arena made
+expensive: static obstacles are a second occupancy value, a second agent kind is
+a third, and a cell that remembers what was broadcast into it is a field with no
+diffusion constant to tune.
 
 ## Extension points
 
-The next world feature should enter through a focused contract:
+The next feature should enter through a focused contract:
 
-- a new scenario adds one `.cpp`, two `.glsl` files and a registry line; it does
-  not touch the shared step parameters, the simulation, the scoring or the UI;
-- a new sensor channel is a line in the network preset; offsets, genome size and
-  both implementations follow;
-- a new accumulated cost or reward is written per second, so it does not silently
-  become a function of the step rate;
-- walls and occlusion extend sensor/world queries;
-- richer recurrent cells or gated memory can extend the two-value recurrent state;
-- the neuron model is one shared integrator, so a gated unit would replace that
+- a new cell state is a value in the occupancy grid and a channel in the network
+  preset; offsets, genome size and both implementations follow;
+- a new sensor channel is a line in the preset, and `describeBrain` names it
+  without being told;
+- a new cost or reward is a field in `FitnessWeights`, a slider and a flag, and
+  it reaches the CPU reference and the shader through the same struct;
+- a rule about movement belongs in `LatticeKernel.inl`, where both languages
+  compile it, and nowhere else;
+- the neuron model is one shared integrator, so another unit replaces that
   function rather than the loop around it;
-- internal walls and occlusion extend grid-backed world queries;
-- colony scoring replaces fitness aggregation without changing physics;
+- colony scoring replaces fitness aggregation without touching the step;
 - a different topology can become another evaluator/shader pair;
 - GPU-side evolution can later replace the synchronous generation boundary.
 
