@@ -4,7 +4,6 @@
 #include "vkexp/evolution/GenomeArchive.hpp"
 #include "vkexp/neuro/BrainDescription.hpp"
 #include "vkexp/profiling/Profiler.hpp"
-#include "vkexp/worlds/WorldScenario.hpp"
 
 #include <exception>
 #include <filesystem>
@@ -62,10 +61,10 @@ void SimulationModule::onUpdate(AppContext& context, const FrameInfo&) {
         context.vulkan.waitIdle();
         try {
             if (saving) {
-                saveWorldSnapshot(state_.controls.snapshotPath, driver_.snapshot());
+                saveRunSnapshot(state_.controls.snapshotPath, driver_.snapshot());
                 state_.controls.snapshotStatus = "Saved " + state_.controls.snapshotPath;
             } else {
-                driver_.restoreSnapshot(loadWorldSnapshot(state_.controls.snapshotPath));
+                driver_.restoreSnapshot(loadRunSnapshot(state_.controls.snapshotPath));
                 state_.controls.snapshotStatus = "Loaded " + state_.controls.snapshotPath;
                 finishPending_ = false;
             }
@@ -76,9 +75,9 @@ void SimulationModule::onUpdate(AppContext& context, const FrameInfo&) {
     }
     // Saving the champion, which for a long time the window could not do at all:
     // it could read a .vkng archive and never write one, so the only file an
-    // interactive run produced was a world snapshot -- the whole population plus
-    // the agents and the pucks, resumable only into a run of the same size. The
-    // champion was in there, and there was no way to get it out.
+    // interactive run produced was a run snapshot -- the whole population plus
+    // every agent, resumable only into a run of the same size. The champion was
+    // in there, and there was no way to get it out.
     if (state_.controls.saveGenomesRequested) {
         state_.controls.saveGenomesRequested = false;
         try {
@@ -92,9 +91,7 @@ void SimulationModule::onUpdate(AppContext& context, const FrameInfo&) {
             const std::size_t saved = state_.controls.saveWholePopulation ? population.size() : 1;
             saveGenomeArchive(
                 state_.controls.genomePath, population.first(saved),
-                genomeArchiveMetadata(state_, driver_,
-                                      resolvedBrain(scenarioDefinition(state_.physics.beaconScenario),
-                                                    state_.physics)));
+                genomeArchiveMetadata(state_, driver_, resolvedBrain(state_.settings)));
             state_.controls.snapshotStatus =
                 "Saved " + std::to_string(saved) + " genome(s) from generation " +
                 std::to_string(driver_.evolution().generation()) + " to " +
@@ -106,7 +103,7 @@ void SimulationModule::onUpdate(AppContext& context, const FrameInfo&) {
     }
     // The structure the weights are laid out under, on its own. An archive
     // already carries it, but a file nobody can open is a poor way to answer
-    // "which input is the left antenna" while looking at a champion.
+    // "which input is the cell above me" while looking at a champion.
     if (state_.controls.saveBrainStructureRequested) {
         state_.controls.saveBrainStructureRequested = false;
         try {
@@ -117,8 +114,7 @@ void SimulationModule::onUpdate(AppContext& context, const FrameInfo&) {
                 throw std::runtime_error("Unable to write " + path.string());
             }
             stream << neuro::brainDescriptionToJson(neuro::describeBrain(
-                resolvedBrain(scenarioDefinition(state_.physics.beaconScenario), state_.physics),
-                neuronModelKey(state_.physics.neuronModel)));
+                resolvedBrain(state_.settings), neuronModelKey(state_.settings.neuronModel)));
             if (!stream) {
                 throw std::runtime_error("Failed while writing " + path.string());
             }

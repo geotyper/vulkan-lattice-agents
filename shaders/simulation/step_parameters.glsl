@@ -1,18 +1,16 @@
 #ifndef VKEXP_STEP_PARAMETERS_GLSL
 #define VKEXP_STEP_PARAMETERS_GLSL
 
-// std430 mirror of vkexp::GpuStepParameters (224 bytes). Shared because both
-// agent_step and trail_deposit index the same per-step block; the C++ side pins
-// the size and the offsets with static_assert.
-
-#include "worlds/scenario_params.glsl"
+// std430 mirror of vkexp::GpuStepParameters (112 bytes). Shared because all
+// three passes of a step index the same per-step block; the C++ side pins the
+// size and the offsets with static_assert.
 
 struct FitnessWeights {
+    float trackingReward;
     float objectiveBonus;
     float motorCostWeight;
+    float refusalPenalty;
     float signalCostFactor;
-    float energyDrain;
-    float trackingReward;
     float reserved0;
     float reserved1;
     float reserved2;
@@ -20,53 +18,28 @@ struct FitnessWeights {
 
 struct StepParameters {
     float deltaTime;
-    float worldRadius;
-    float thrust;
-    float turnAcceleration;
-    float linearDrag;
-    float angularDrag;
-    float sensorFieldOfView;
-    float arrivalRadius;
-    float maximumSpeed;
-    float maximumAngularSpeed;
-    float lightSensorRange;
-    float lightExposure;
-    float collisionRestitution;
-    float contactStiffness;
-    float gridCellSize;
-    float wallCollisionPenalty;
+    float moveThreshold;
     uint agentCount;
     uint brainLayout;
     uint trialsPerGenome;
-    uint worldShape;
-    uint gridWidth;
-    uint gridCellsPerWorld;
-    uint agentCollisionsEnabled;
-    uint agentLightEnabled;
-    uint beaconScenario;
-    uint beaconPhase;
-    uint beaconPhaseChanged;
-    uint beaconCount;
-    float trailCellSize;
-    float trailSurvival;
-    float trailDeposit;
-    float beaconTrailDeposit;
-    uint trailWidth;
-    uint trailCellsPerWorld;
-    uint trailMode;
     uint agentsPerWorld;
-    FitnessWeights fitness;
-    ScenarioParameters scenario;
-    uint neuronModel;
-    uint obstacleCount;
-    uint uniformBeaconColor;
     uint worldCount;
-    float puckTargetRadiusRatio;
-    uint puckEnabled;
+    uint latticeWidth;
+    uint latticeHeight;
+    uint latticeDepth;
+    uint cellsPerWorld;
+    uint neighborhood;
+    uint maximumDistance;
+    uint beaconContactRadius;
+    uint neuronModel;
     // Three hidden layer widths packed six bits each, and the genome stride,
     // which outgrew the twelve bits it used to share with the layout word.
     uint brainHiddenLayers;
     uint brainGenomeStride;
+    uint reserved0;
+    uint reserved1;
+    uint reserved2;
+    FitnessWeights fitness;
 };
 
 #endif

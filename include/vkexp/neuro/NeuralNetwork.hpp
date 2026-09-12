@@ -14,22 +14,22 @@ namespace vkexp::neuro {
 // from the same source. Nothing here restates a number: change the preset and
 // both sides follow.
 struct Topology {
-    static constexpr std::size_t lightReceptorCount = kernel::BrainLightReceptorCount;
-    static constexpr std::size_t lightChannelsPerReceptor = kernel::BrainLightChannels;
-    static constexpr std::size_t tactileSectorCount = kernel::BrainTactileSectorCount;
-    static constexpr std::size_t tactileChannelsPerSector = kernel::BrainTactileChannels;
-    static constexpr std::size_t antennaCount = kernel::BrainAntennaCount;
-    static constexpr std::size_t antennaChannelsPerTip = kernel::BrainAntennaChannels;
+    // One slot per surrounding cell, three channels each. What a neighbour is
+    // lives in LatticeKernel.inl; how much room the input vector gives one lives
+    // here, and testLatticeBrain pins that the two agree.
+    static constexpr std::size_t neighborCount = kernel::BrainNeighborCount;
+    static constexpr std::size_t neighborChannels = kernel::BrainNeighborChannels;
+    static constexpr std::size_t beaconInputCount = kernel::BrainBeaconInputCount;
     static constexpr std::size_t selfInputCount = kernel::BrainSelfInputCount;
-    static constexpr std::size_t taskInputCount = kernel::BrainTaskInputCount;
     static constexpr std::size_t recurrentMemoryCount = kernel::BrainRecurrentCount;
     static constexpr std::size_t inputCount = kernel::BrainInputCapacity;
     // How many hidden neurons there may be at most, over all layers, and how
     // many layers. Both size arrays, so both are compile-time.
     static constexpr std::size_t hiddenNeuronCapacity = kernel::BrainHiddenNeuronCapacity;
     static constexpr std::size_t hiddenLayerCount = kernel::BrainHiddenLayerCapacity;
-    // What a scenario gets when it does not ask for anything else.
+    // What a world gets when it does not ask for anything else.
     static constexpr std::size_t defaultHiddenCount = kernel::BrainDefaultHiddenWidth;
+    static constexpr std::size_t moveOutputCount = kernel::BrainMoveOutputCount;
     static constexpr std::size_t actuatorOutputCount = kernel::BrainActuatorOutputCount;
     static constexpr std::size_t outputCount = kernel::BrainOutputCapacity;
     // The longest genome the capacity can produce: every neuron in one layer.
@@ -42,21 +42,20 @@ struct Topology {
         kernel::BrainOutputCapacity);
 
     // Offsets into the input vector, shared with the shader's sensor pass.
-    static constexpr std::size_t tactileOffset = kernel::BrainTactileOffset;
-    static constexpr std::size_t antennaOffset = kernel::BrainAntennaOffset;
+    static constexpr std::size_t neighborOffset = kernel::BrainNeighborOffset;
+    static constexpr std::size_t beaconOffset = kernel::BrainBeaconOffset;
     static constexpr std::size_t selfOffset = kernel::BrainSelfOffset;
-    static constexpr std::size_t taskOffset = kernel::BrainTaskOffset;
     static constexpr std::size_t recurrentInputOffset = kernel::BrainRecurrentInputOffset;
+    static constexpr std::size_t signalIntensityOutput = kernel::BrainSignalIntensityOutput;
     static constexpr std::size_t recurrentOutputOffset = kernel::BrainRecurrentOutputOffset;
 };
-
-// A scenario selects an active network inside the fixed-capacity genome. Keeping
+// A world selects an active network inside the fixed-capacity genome. Keeping
 // capacity separate from shape lets the GPU buffers and the GA stay reusable,
 // and it is what lets a plan be chosen at runtime rather than compiled in.
 //
 // The first three fields are the network this project had for its whole life, so
-// `{61, 20, 8}` still means one 20-wide hidden layer and every scenario that
-// wrote that keeps its meaning. The two after it are the second and third hidden
+// `{88, 20, 6}` still means one 20-wide hidden layer and every world that wrote
+// that keeps its meaning. The two after it are the second and third hidden
 // layers; zero means the layer is not there.
 struct BrainShape {
     std::size_t inputCount{};
@@ -140,9 +139,9 @@ inline constexpr BrainShape maximumBrainShape{Topology::inputCount, Topology::hi
                                               Topology::outputCount};
 
 // Every sensor, every actuator, and the one hidden layer of twenty this network
-// had before plans existed. This is what a scenario means by "the full brain",
-// and it is deliberately not the maximum: widening the capacity must not widen
-// every world's brain behind its back.
+// had before plans existed. This is what a world means by "the full brain", and
+// it is deliberately not the maximum: widening the capacity must not widen every
+// world's brain behind its back.
 inline constexpr BrainShape defaultBrainShape{Topology::inputCount, Topology::defaultHiddenCount,
                                               Topology::outputCount};
 

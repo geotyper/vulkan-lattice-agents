@@ -26,7 +26,7 @@ struct ArchiveHeader {
     std::uint32_t brainHiddenCount{};
     std::uint32_t brainOutputCount{};
     std::uint32_t brainHiddenLayers{};
-    std::uint32_t scenario{};
+    std::uint32_t beaconSeed{};
     std::uint64_t generation{};
     std::uint32_t seed{};
     float bestFitness{};
@@ -83,7 +83,7 @@ void saveGenomeArchive(const std::filesystem::path& path, const std::span<const 
                                metadata.brainHiddenCount,
                                metadata.brainOutputCount,
                                metadata.brainHiddenLayers,
-                               metadata.scenario,
+                               metadata.beaconSeed,
                                metadata.generation,
                                metadata.seed,
                                metadata.bestFitness,
@@ -128,7 +128,7 @@ GenomeArchive loadGenomeArchive(const std::filesystem::path& path) {
     }
 
     GenomeArchive archive;
-    archive.metadata = {header.generation,       header.scenario,        header.seed,
+    archive.metadata = {header.generation,       header.beaconSeed,        header.seed,
                         header.bestFitness,      header.meanFitness,     header.brainInputCount,
                         header.brainHiddenCount, header.brainOutputCount,
                         header.brainHiddenLayers};

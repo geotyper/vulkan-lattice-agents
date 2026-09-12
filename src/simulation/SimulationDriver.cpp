@@ -1,15 +1,10 @@
 #include "vkexp/simulation/SimulationDriver.hpp"
 
-#include "vkexp/simulation/CpuSimulation.hpp"
-#include "vkexp/simulation/PuckKernel.hpp"
+#include "vkexp/simulation/CpuLattice.hpp"
 #include "vkexp/simulation/StepParameters.hpp"
-#include "vkexp/worlds/WorldScenario.hpp"
 
 #include <algorithm>
 #include <array>
-#include <cmath>
-#include <cstring>
-#include <numbers>
 #include <numeric>
 #include <stdexcept>
 #include <string>
@@ -19,25 +14,6 @@ namespace {
 
 constexpr VkMemoryPropertyFlags hostMemory =
     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-
-struct alignas(16) GridBuildParameters {
-    float worldRadius{};
-    float cellSize{};
-    std::uint32_t agentCount{};
-    std::uint32_t worldCount{};
-    std::uint32_t gridWidth{};
-    std::uint32_t gridCellsPerWorld{};
-    std::uint32_t reserved0{};
-    std::uint32_t reserved1{};
-};
-static_assert(sizeof(GridBuildParameters) == 32);
-
-struct TrailDecayParameters {
-    std::uint32_t valueCount;
-    float survival;
-};
-
-static_assert(sizeof(TrailDecayParameters) == 8);
 
 void createStorageLayout(const VkDevice device, const std::uint32_t bindingCount,
                          UniqueDescriptorSetLayout& layout) {
@@ -52,7 +28,7 @@ void createStorageLayout(const VkDevice device, const std::uint32_t bindingCount
     info.bindingCount = bindingCount;
     info.pBindings = bindings.data();
     if (vkCreateDescriptorSetLayout(device, &info, nullptr, layout.put(device)) != VK_SUCCESS) {
-        throw std::runtime_error("Unable to create agent compute descriptor layout");
+        throw std::runtime_error("Unable to create lattice compute descriptor layout");
     }
 }
 
@@ -61,21 +37,23 @@ void createStorageLayout(const VkDevice device, const std::uint32_t bindingCount
 SimulationDriver::SimulationDriver(SimulationState& state, EvolutionSettings evolution,
                                    SimulationDriverConfig config)
     : state_(state), evolution_(evolution), config_(config) {
-    if (config_.trialsPerGenome == 0 || config_.maximumStepsPerBatch == 0 ||
-        config_.gridCellSize <= 0.0F) {
+    if (config_.trialsPerGenome == 0 || config_.maximumStepsPerBatch == 0) {
         throw std::invalid_argument("Invalid simulation driver configuration");
     }
     adoptBrainPlan();
     state_.evolution = evolution_.settings();
 }
 
+lattice::PopulationLayout SimulationDriver::populationLayout() const {
+    return {static_cast<std::uint32_t>(evolution_.population().size()),
+            state_.worlds.agentsPerWorld, config_.trialsPerGenome};
+}
+
 // The genome is as long as the plan reading it, so the plan settles the length
 // once and everything after -- the population, the GPU buffer, the files --
 // reads it from the settings rather than from a compiled-in constant.
 void SimulationDriver::adoptBrainPlan() {
-    const std::size_t weights =
-        resolvedBrain(scenarioDefinition(state_.physics.beaconScenario), state_.physics)
-            .weightCount();
+    const std::size_t weights = resolvedBrain(state_.settings).weightCount();
     if (evolution_.settings().weightCount == weights) {
         return;
     }
@@ -95,79 +73,51 @@ void SimulationDriver::createResources(const VkPhysicalDevice physicalDevice,
 
 // Everything a step needs on the device, made once and only once.
 //
-// "Once" is load-bearing rather than tidy. Five of the six buffers here are
+// "Once" is load-bearing rather than tidy. Every buffer here but one is
 // dimensioned by the population size and the trial count, and both of those are
 // fixed when the driver is constructed -- so nothing that happens afterwards can
 // change their sizes, and every descriptor naming them stays correct for the
-// life of the driver. That is the invariant the renderer's sets, the three
-// compute sets and reconfiguration_smoke all rely on. The sixth, the genome
-// buffer, is the one that follows the brain plan; resizeGenomeBuffer is how it
-// changes, and it deliberately leaves the other five alone.
+// life of the driver. The exception is the genome buffer, which follows the
+// brain plan; resizeGenomeBuffer is how it changes, and it deliberately leaves
+// the others alone.
+//
+// The two lattice grids are allocated at the budget and never reallocated, which
+// is the lesson the trail field taught in the 2D build: every resize there was a
+// lifetime bug rather than a capacity one -- a descriptor somewhere still named
+// the buffer that had just been freed. A fixed allocation makes the whole class
+// of bug unreachable instead of patching each holder of a handle, and the
+// lattice extents give way instead. See refreshLattice.
 void SimulationDriver::createStepResources() {
     ++stepResourceBuilds_;
     const auto genomeCount = static_cast<std::uint32_t>(evolution_.population().size());
     const std::uint32_t agentCount = genomeCount * config_.trialsPerGenome;
     const VkDeviceSize agentBytes = sizeof(AgentState) * agentCount;
-    const VkDeviceSize genomeBytes = genomeBufferBytes();
     const VkDeviceSize stepParameterBytes =
         sizeof(GpuStepParameters) * config_.maximumStepsPerBatch;
     agentBuffers_.create(physicalDevice_, device_,
                          {agentBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
     genomeBuffer_.create(physicalDevice_, device_,
-                         {genomeBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
+                         {genomeBufferBytes(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
     stepParameterBuffer_.create(
         physicalDevice_, device_,
         {stepParameterBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
     stepParameterStaging_.resize(config_.maximumStepsPerBatch);
 
-    // The field is allocated once, at the budget, and never reallocated. Every
-    // resize so far has been a lifetime bug rather than a capacity one -- a
-    // descriptor somewhere kept pointing at the buffer that had just been freed --
-    // and the numbers say resizing buys nothing: the coarsest grid on the largest
-    // arena across every world the population can be split into is 150 MB against
-    // a 256 MiB budget. A fixed allocation makes the whole class of bug
-    // unreachable instead of patching each holder of a handle.
-    //
-    // "Never reallocated" is a claim about this function's call sites, not about
-    // this line, and it has been false once already: giving the genome its own
-    // length added two more callers, and each of them freed this buffer under
-    // descriptors that were still naming it. reconfiguration_smoke now counts the
-    // builds across a plan change, so the claim is tested rather than merely
-    // written down -- and counted rather than inferred from the handle, which
-    // comes back unchanged from a reallocation at the same size and so proves
-    // nothing.
-    trailField_.create(physicalDevice_, device_,
-                       {trailFieldBudget(),
-                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT});
-    // One puck per logical world, sized for the most worlds the population can
-    // ever be split into rather than resized when agentsPerWorld changes. The
-    // whole buffer is a few kilobytes, and the trail field's history says a
-    // resizable device buffer buys a lifetime bug and nothing else.
-    //
-    // Host-visible, unlike the trail field: a snapshot has to carry the pucks,
-    // and at a few kilobytes read once per save that is cheaper than staging a
-    // copy. The trail field is device-local because it is 256 MiB and derived.
-    puckField_.create(
-        physicalDevice_, device_,
-        {sizeof(PuckState) * std::max<VkDeviceSize>(
-                                 logicalWorldCount(static_cast<std::uint32_t>(genomeCount),
-                                                   minimumAgentsPerWorld, config_.trialsPerGenome),
-                                 1),
-         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
-    updateWorldLayout();
-    updateGridDimensions();
-    ensureGridCapacity();
-    updateTrailDimensions();
-    const VkDeviceSize gridLinkBytes = sizeof(std::int32_t) * agentCount;
-    gridNext_.create(physicalDevice_, device_, {gridLinkBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT});
+    const VkDeviceSize budget = latticeBudget();
+    // Host-visible, unlike the bids beside it: a reset and a snapshot restore
+    // both write the whole grid from the host, and the grid is derived state
+    // that is cheaper to rebuild and upload than to reconstruct on the device.
+    occupancy_.create(physicalDevice_, device_,
+                      {budget, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
+    claims_.create(physicalDevice_, device_, {budget, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT});
 
-    createStorageLayout(device_, 8, stepDescriptorSetLayout_);
-    createStorageLayout(device_, 1, gridClearDescriptorSetLayout_);
-    createStorageLayout(device_, 3, gridBuildDescriptorSetLayout_);
-    createStorageLayout(device_, 1, trailDecayDescriptorSetLayout_);
-    createStorageLayout(device_, 3, trailDepositDescriptorSetLayout_);
-    createStorageLayout(device_, 3, puckStepDescriptorSetLayout_);
-    descriptorAllocator_.create(device_, {10, {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 37}}});
+    updateWorldLayout();
+    refreshLattice();
+
+    createStorageLayout(device_, 6, stepDescriptorSetLayout_);
+    createStorageLayout(device_, 4, resolveDescriptorSetLayout_);
+    createStorageLayout(device_, 2, clearDescriptorSetLayout_);
+    descriptorAllocator_.create(device_, {8, {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 24}}});
 
     for (std::uint32_t readIndex = 0; readIndex < 2; ++readIndex) {
         const VkBuffer readBuffer =
@@ -181,96 +131,48 @@ void SimulationDriver::createStepResources() {
             .writeBuffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, writeBuffer, 0, agentBytes)
             .writeBuffer(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, genomeBuffer_.buffer(), 0,
                          genomeBuffer_.size())
-            .writeBuffer(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, gridHeads_.buffer(), 0,
-                         gridHeads_.size())
-            .writeBuffer(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, gridNext_.buffer(), 0,
-                         gridNext_.size())
+            .writeBuffer(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, occupancy_.buffer(), 0,
+                         occupancy_.size())
+            .writeBuffer(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, claims_.buffer(), 0, claims_.size())
             .writeBuffer(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stepParameterBuffer_.buffer(), 0,
                          stepParameterBuffer_.size())
-            .writeBuffer(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, trailField_.buffer(), 0,
-                         trailField_.size())
-            .writeBuffer(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, puckField_.buffer(), 0,
-                         puckField_.size())
             .update(device_, stepDescriptorSets_[readIndex]);
 
-        // Reads the agents the step has just written, so the puck responds to
-        // where they ended up rather than to where they were before it ran.
-        puckStepDescriptorSets_[readIndex] =
-            descriptorAllocator_.allocate(puckStepDescriptorSetLayout_.get());
+        // Reads and writes the record the step pass has just produced: this pass
+        // adds to an agent rather than producing a new one.
+        resolveDescriptorSets_[readIndex] =
+            descriptorAllocator_.allocate(resolveDescriptorSetLayout_.get());
         DescriptorSetWriter{}
             .writeBuffer(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, writeBuffer, 0, agentBytes)
-            .writeBuffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, puckField_.buffer(), 0,
-                         puckField_.size())
-            .writeBuffer(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stepParameterBuffer_.buffer(), 0,
+            .writeBuffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, occupancy_.buffer(), 0,
+                         occupancy_.size())
+            .writeBuffer(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, claims_.buffer(), 0, claims_.size())
+            .writeBuffer(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stepParameterBuffer_.buffer(), 0,
                          stepParameterBuffer_.size())
-            .update(device_, puckStepDescriptorSets_[readIndex]);
-
-        trailDepositDescriptorSets_[readIndex] =
-            descriptorAllocator_.allocate(trailDepositDescriptorSetLayout_.get());
-        DescriptorSetWriter{}
-            .writeBuffer(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, readBuffer, 0, agentBytes)
-            .writeBuffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, trailField_.buffer(), 0,
-                         trailField_.size())
-            .writeBuffer(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stepParameterBuffer_.buffer(), 0,
-                         stepParameterBuffer_.size())
-            .update(device_, trailDepositDescriptorSets_[readIndex]);
-
-        gridBuildDescriptorSets_[readIndex] =
-            descriptorAllocator_.allocate(gridBuildDescriptorSetLayout_.get());
-        DescriptorSetWriter{}
-            .writeBuffer(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, readBuffer, 0, agentBytes)
-            .writeBuffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, gridHeads_.buffer(), 0,
-                         gridHeads_.size())
-            .writeBuffer(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, gridNext_.buffer(), 0,
-                         gridNext_.size())
-            .update(device_, gridBuildDescriptorSets_[readIndex]);
+            .update(device_, resolveDescriptorSets_[readIndex]);
     }
-    trailDecayDescriptorSet_ = descriptorAllocator_.allocate(trailDecayDescriptorSetLayout_.get());
+    clearDescriptorSet_ = descriptorAllocator_.allocate(clearDescriptorSetLayout_.get());
     DescriptorSetWriter{}
-        .writeBuffer(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, trailField_.buffer(), 0,
-                     trailField_.size())
-        .update(device_, trailDecayDescriptorSet_);
-    gridClearDescriptorSet_ = descriptorAllocator_.allocate(gridClearDescriptorSetLayout_.get());
-    DescriptorSetWriter{}
-        .writeBuffer(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, gridHeads_.buffer(), 0,
-                     gridHeads_.size())
-        .update(device_, gridClearDescriptorSet_);
+        .writeBuffer(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, claims_.buffer(), 0, claims_.size())
+        .writeBuffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stepParameterBuffer_.buffer(), 0,
+                     stepParameterBuffer_.size())
+        .update(device_, clearDescriptorSet_);
 
     stepPipeline_ = ComputePipelineBuilder{physicalDevice_, device_}
-                        .shader(VKEXP_SHADER_DIR "/agent_step.comp.spv")
+                        .shader(VKEXP_SHADER_DIR "/lattice_step.comp.spv")
                         .addDescriptorSetLayout(stepDescriptorSetLayout_.get())
                         .addPushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, sizeof(std::uint32_t))
                         .build();
-    gridClearPipeline_ =
-        ComputePipelineBuilder{physicalDevice_, device_}
-            .shader(VKEXP_SHADER_DIR "/agent_grid_clear.comp.spv")
-            .addDescriptorSetLayout(gridClearDescriptorSetLayout_.get())
-            .addPushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, sizeof(std::uint32_t))
-            .build();
-    gridBuildPipeline_ =
-        ComputePipelineBuilder{physicalDevice_, device_}
-            .shader(VKEXP_SHADER_DIR "/agent_grid_build.comp.spv")
-            .addDescriptorSetLayout(gridBuildDescriptorSetLayout_.get())
-            .addPushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, sizeof(GridBuildParameters))
-            .build();
-    trailDecayPipeline_ =
-        ComputePipelineBuilder{physicalDevice_, device_}
-            .shader(VKEXP_SHADER_DIR "/trail_decay.comp.spv")
-            .addDescriptorSetLayout(trailDecayDescriptorSetLayout_.get())
-            .addPushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, sizeof(TrailDecayParameters))
-            .build();
-    puckStepPipeline_ =
-        ComputePipelineBuilder{physicalDevice_, device_}
-            .shader(VKEXP_SHADER_DIR "/puck_step.comp.spv")
-            .addDescriptorSetLayout(puckStepDescriptorSetLayout_.get())
-            .addPushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, sizeof(std::uint32_t))
-            .build();
-    trailDepositPipeline_ =
-        ComputePipelineBuilder{physicalDevice_, device_}
-            .shader(VKEXP_SHADER_DIR "/trail_deposit.comp.spv")
-            .addDescriptorSetLayout(trailDepositDescriptorSetLayout_.get())
-            .addPushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, sizeof(std::uint32_t))
-            .build();
+    resolvePipeline_ = ComputePipelineBuilder{physicalDevice_, device_}
+                           .shader(VKEXP_SHADER_DIR "/lattice_resolve.comp.spv")
+                           .addDescriptorSetLayout(resolveDescriptorSetLayout_.get())
+                           .addPushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, sizeof(std::uint32_t))
+                           .build();
+    clearPipeline_ = ComputePipelineBuilder{physicalDevice_, device_}
+                         .shader(VKEXP_SHADER_DIR "/lattice_clear.comp.spv")
+                         .addDescriptorSetLayout(clearDescriptorSetLayout_.get())
+                         .addPushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, sizeof(std::uint32_t))
+                         .build();
 
     state_.agents = {{agentBuffers_.read().buffer(), agentBuffers_.write().buffer()},
                      agentBytes,
@@ -290,13 +192,11 @@ VkDeviceSize SimulationDriver::genomeBufferBytes() const {
 // that names it -- rather than calling createStepResources again, which is what
 // it used to do.
 //
-// The difference is not the 256 MiB of trail field that got freed and
-// reallocated on every scenario switch, wasteful as that was. It is that
-// createStepResources also freed the agent, trail and puck buffers, while the
-// renderer's descriptor sets went on naming them: the next frame read memory the
-// driver had already handed back, and the GPU hung. Resizing only what changed
-// size makes those handles stable again, which is what every holder of them was
-// written to assume.
+// The difference is not the wasted allocation. It is that createStepResources
+// also freed the agent and lattice buffers, while other descriptor sets went on
+// naming them: the next frame read memory the driver had already handed back,
+// and the GPU hung. Resizing only what changed size makes those handles stable
+// again, which is what every holder of them was written to assume.
 //
 // Callers wait for the device to go idle first -- SimulationModule does it
 // around restart, and headless restores before its loop begins -- so the sets
@@ -322,102 +222,24 @@ void SimulationDriver::resizeGenomeBuffer() {
 
 void SimulationDriver::destroyResources() {
     state_.agents = {};
-    state_.trail = {};
-    gridBuildPipeline_ = {};
-    gridClearPipeline_ = {};
+    state_.lattice = {};
+    clearPipeline_ = {};
+    resolvePipeline_ = {};
     stepPipeline_ = {};
     descriptorAllocator_.reset();
-    gridBuildDescriptorSetLayout_.reset();
-    gridClearDescriptorSetLayout_.reset();
+    clearDescriptorSetLayout_.reset();
+    resolveDescriptorSetLayout_.reset();
     stepDescriptorSetLayout_.reset();
-    gridBuildDescriptorSets_ = {};
-    gridClearDescriptorSet_ = VK_NULL_HANDLE;
+    clearDescriptorSet_ = VK_NULL_HANDLE;
+    resolveDescriptorSets_ = {};
     stepDescriptorSets_ = {};
-    gridNext_.reset();
-    gridHeads_.reset();
+    claims_.reset();
+    occupancy_.reset();
     stepParameterBuffer_.reset();
     genomeBuffer_.reset();
     agentBuffers_.reset();
     device_ = VK_NULL_HANDLE;
     physicalDevice_ = VK_NULL_HANDLE;
-}
-
-std::vector<AgentState> SimulationDriver::makeInitialAgents() const {
-    const std::size_t genomeCount = evolution_.population().size();
-    std::vector<AgentState> result(genomeCount * config_.trialsPerGenome);
-    constexpr float goldenAngle = 2.39996323F;
-    const SimulationStep initialSettings = resolveStepSettings(state_.physics, 0, 0);
-    for (std::size_t genome = 0; genome < genomeCount; ++genome) {
-        const std::size_t group = genome / state_.worlds.agentsPerWorld;
-        const std::size_t firstGenome = group * state_.worlds.agentsPerWorld;
-        const std::size_t agentsInGroup =
-            std::min<std::size_t>(state_.worlds.agentsPerWorld, genomeCount - firstGenome);
-        const std::size_t agentInGroup = genome - firstGenome;
-        const float normalizedRadius = std::sqrt((static_cast<float>(agentInGroup) + 0.5F) /
-                                                 static_cast<float>(agentsInGroup));
-        for (std::size_t trial = 0; trial < config_.trialsPerGenome; ++trial) {
-            const std::size_t index = genome * config_.trialsPerGenome + trial;
-            const float positionAngle =
-                goldenAngle * static_cast<float>(agentInGroup) + static_cast<float>(trial) * 0.43F;
-            const float spawnRadius = normalizedRadius * state_.physics.worldRadius * 0.70F;
-            const float heading =
-                std::fmod(positionAngle * 1.73F + 0.37F, 2.0F * std::numbers::pi_v<float>);
-            AgentState agent{};
-            agent.pose = {std::cos(positionAngle) * spawnRadius,
-                          std::sin(positionAngle) * spawnRadius, heading, agentBodyRadius};
-            agent.motion.w = 1.0F;
-            agent.signal = {0.15F, 0.45F, 0.85F, 0.0F};
-            const Float4 target = stationaryBeaconPosition(static_cast<std::uint32_t>(trial),
-                                                           state_.physics.worldRadius);
-            agent.target = {target.x, target.y, static_cast<float>(trial), 0.0F};
-            const float distance = nearestBeaconDistance(agent, initialSettings);
-            agent.metrics = {distance, distance, 0.0F, 0.0F};
-            agent.penalties.w = static_cast<float>(
-                logicalWorldForAgent(static_cast<std::uint32_t>(index),
-                                     state_.worlds.agentsPerWorld, config_.trialsPerGenome));
-            // After the metrics, because a scenario that moves the spawn moves
-            // the distance the trial is scored against with it.
-            const ScenarioDefinition& scenario =
-                scenarioDefinition(state_.physics.beaconScenario);
-            if (scenario.spawn != nullptr) {
-                scenario.spawn(agent, initialSettings);
-                const float spawned = scenario.targetDistance != nullptr
-                                          ? scenario.targetDistance(agent, initialSettings)
-                                          : nearestBeaconDistance(agent, initialSettings);
-                agent.metrics = {spawned, spawned, 0.0F, 0.0F};
-            }
-            result[index] = agent;
-        }
-    }
-    return result;
-}
-
-// One puck per logical world, placed by the shared kernel from the trial the
-// world belongs to, so which side it starts on is the same question on both
-// sides of the language boundary.
-std::vector<PuckState> SimulationDriver::makeInitialPucks() const {
-    const std::uint32_t worlds = state_.worlds.worldCount;
-    const std::uint32_t trials = std::max(config_.trialsPerGenome, 1U);
-    std::vector<PuckState> result(worlds);
-    for (std::uint32_t world = 0; world < worlds; ++world) {
-        const std::uint32_t trial = world % trials;
-        // The one entry point the scenario's spawn also goes through, so the
-        // puck and the distance the shaping banks against cannot be placed from
-        // two different answers.
-        const ::vkexp::puck::kernel::vec2 start = ::vkexp::puck::kernel::puckStartPositionFor(
-            state_.physics.worldRadius, trial, world, state_.physics.beaconMotionSeed,
-            state_.physics.puckRandomStart);
-        PuckState& state = result[world];
-        // The fourth slot is how far from the middle it was placed, which is what
-        // the rungs are fractions of: a puck carries its own journey so the
-        // reported level does not depend on where the scenario chose to put it.
-        state.pose = {start.x, start.y,
-                      ::vkexp::puck::kernel::puckRadius(state_.physics.worldRadius,
-                                                        state_.physics.puckRadiusRatio),
-                      std::hypot(start.x, start.y)};
-        state.motion = {};
-    }
-    return result;
 }
 
 void SimulationDriver::uploadPopulation() {
@@ -429,19 +251,26 @@ void SimulationDriver::uploadPopulation() {
     genomeBuffer_.write(flattened.data(), flattened.size() * sizeof(float));
     agentBuffers_.read().write(agents_.data(), agents_.size() * sizeof(AgentState));
     agentBuffers_.write().write(agents_.data(), agents_.size() * sizeof(AgentState));
-    if (!pucks_.empty()) {
-        puckField_.write(pucks_.data(), pucks_.size() * sizeof(PuckState));
-    }
+
+    // Derived from the agents rather than carried beside them, which is what
+    // lets a snapshot leave it out: two agents can never be in one cell, so the
+    // grid is a function of where everybody stands.
+    occupancyStaging_.assign(static_cast<std::size_t>(state_.lattice.cellsPerWorld) *
+                                 std::max(state_.worlds.worldCount, 1U),
+                             lattice::kernel::LatticeNoOccupant);
+    lattice::buildOccupancy(agents_, state_.settings, populationLayout(), occupancyStaging_);
+    occupancy_.write(occupancyStaging_.data(), occupancyStaging_.size() * sizeof(std::int32_t));
     hostUploadPending_ = true;
-    trailClearPending_ = true;
 }
 
 void SimulationDriver::resetGeneration() {
-    // The beacon motion seed is a property of the generation, so publishing it
-    // here keeps simulation and visualization on the same random world.
-    state_.physics.beaconMotionSeed = static_cast<std::uint32_t>(evolution_.generation());
-    agents_ = makeInitialAgents();
-    pucks_ = makeInitialPucks();
+    // The beacon seed is a property of the generation, so a genome is scored
+    // against a lattice that moves under it rather than one it can memorise --
+    // and publishing it here keeps the simulation and any view of it on the same
+    // world.
+    state_.settings.beaconSeed = static_cast<std::uint32_t>(evolution_.generation()) * 2654435761U +
+                                 evolution_.settings().seed;
+    agents_ = lattice::makeInitialAgents(state_.settings, populationLayout());
     uploadPopulation();
     state_.statistics.step = 0;
     state_.statistics.generation = evolution_.generation();
@@ -464,7 +293,8 @@ void SimulationDriver::restart() {
     state_.history.medianFitness.clear();
     state_.history.meanFitness.clear();
     state_.history.arrivalRatio.clear();
-    refreshGridForWorldSize();
+    updateWorldLayout();
+    refreshLattice();
     resetGeneration();
 }
 
@@ -475,17 +305,12 @@ void SimulationDriver::loadPopulation(const std::span<const Genome> genomes,
     resetGeneration();
 }
 
-WorldSnapshot SimulationDriver::snapshot() {
+RunSnapshot SimulationDriver::snapshot() {
     agentBuffers_.read().read(agents_.data(), agents_.size() * sizeof(AgentState));
-    WorldSnapshot result;
-    result.physics = state_.physics;
+    RunSnapshot result;
+    result.settings = state_.settings;
     result.genomes.assign(evolution_.population().begin(), evolution_.population().end());
     result.agents = agents_;
-    if (scenarioDefinition(state_.physics.beaconScenario).puck && !pucks_.empty()) {
-        pucks_.resize(state_.worlds.worldCount);
-        puckField_.read(pucks_.data(), pucks_.size() * sizeof(PuckState));
-        result.pucks = pucks_;
-    }
     result.generation = evolution_.generation();
     result.step = state_.statistics.step;
     result.stepsPerGeneration = state_.controls.stepsPerGeneration;
@@ -495,38 +320,35 @@ WorldSnapshot SimulationDriver::snapshot() {
     return result;
 }
 
-void SimulationDriver::restoreSnapshot(const WorldSnapshot& snapshot) {
-    // Order matters. The world layout depends on the physics settings and the
-    // group size, and the trail and grid dimensions depend on the layout, so the
-    // settings go in before anything is sized. The agents go in last, after
-    // uploadPopulation would otherwise have replaced them with fresh ones.
+void SimulationDriver::restoreSnapshot(const RunSnapshot& snapshot) {
     // Population size and trial count are buffer dimensions fixed when the
     // device resources were created, not settings. A snapshot that disagrees
     // cannot be resumed into this driver, and saying so beats writing past the
     // end of the agent buffer.
     if (snapshot.genomes.size() != evolution_.population().size()) {
-        throw WorldSnapshotError("Snapshot holds " + std::to_string(snapshot.genomes.size()) +
-                                 " genomes but this run was launched with " +
-                                 std::to_string(evolution_.population().size()));
+        throw RunSnapshotError("Snapshot holds " + std::to_string(snapshot.genomes.size()) +
+                               " genomes but this run was launched with " +
+                               std::to_string(evolution_.population().size()));
     }
     if (snapshot.trialsPerGenome != config_.trialsPerGenome) {
-        throw WorldSnapshotError("Snapshot ran " + std::to_string(snapshot.trialsPerGenome) +
-                                 " trials per genome but this run was launched with " +
-                                 std::to_string(config_.trialsPerGenome));
+        throw RunSnapshotError("Snapshot ran " + std::to_string(snapshot.trialsPerGenome) +
+                               " trials per genome but this run was launched with " +
+                               std::to_string(config_.trialsPerGenome));
     }
     if (snapshot.agents.size() != evolution_.population().size() * config_.trialsPerGenome) {
-        throw WorldSnapshotError("Snapshot agent count does not match its own genome count");
+        throw RunSnapshotError("Snapshot agent count does not match its own genome count");
     }
 
-    state_.physics = snapshot.physics;
+    // Order matters. The world layout depends on the group size, and the lattice
+    // dimensions depend on the layout, so the settings go in before anything is
+    // sized. The agents go in last, after uploadPopulation would otherwise have
+    // replaced them with fresh ones.
+    state_.settings = snapshot.settings;
     state_.controls.stepsPerGeneration = snapshot.stepsPerGeneration;
     state_.worlds.requestedAgentsPerWorld = snapshot.requestedAgentsPerWorld;
 
-    // The settings that just went in decide how long a genome is -- the world's
-    // scenario and its brain plan are both in the file -- so the run adopts that
-    // before the population is handed over. A snapshot of a different world is a
-    // resumable thing; population size and trial count are the two that are not,
-    // because they are buffer dimensions fixed at launch.
+    // The settings that just went in decide how long a genome is, so the run
+    // adopts that before the population is handed over.
     const std::size_t previousWeights = evolution_.settings().weightCount;
     adoptBrainPlan();
     if (evolution_.settings().weightCount != previousWeights && device_ != VK_NULL_HANDLE) {
@@ -534,15 +356,19 @@ void SimulationDriver::restoreSnapshot(const WorldSnapshot& snapshot) {
     }
     evolution_.setPopulation(snapshot.genomes, snapshot.generation);
     updateWorldLayout();
-    refreshGridForWorldSize();
+    const std::uint32_t requestedCells = latticeCellsPerWorld(snapshot.settings);
+    refreshLattice();
+    // A lattice the budget will not hold is refused rather than silently
+    // shrunk: every agent's recorded cell is an index into the box that was
+    // saved, so resuming into a smaller one would put the whole population
+    // somewhere else and report it as the same run.
+    if (state_.lattice.cellsPerWorld != requestedCells) {
+        throw RunSnapshotError("Snapshot needs a lattice this run cannot allocate at its "
+                               "population size");
+    }
 
-    // After uploadPopulation, which would otherwise send freshly spawned agents.
     agents_ = snapshot.agents;
-    // A snapshot from a world without a puck carries none, and a world that has
-    // one then starts it where the scenario puts it rather than at the origin.
-    pucks_ = snapshot.pucks.empty() ? makeInitialPucks() : snapshot.pucks;
     state_.statistics.step = std::min(snapshot.step, snapshot.stepsPerGeneration);
-
     uploadPopulation();
     state_.statistics.generation = snapshot.generation;
     state_.agents.generation = snapshot.generation;
@@ -555,14 +381,13 @@ bool SimulationDriver::generationComplete() const {
 
 GenerationSummary SimulationDriver::finishGeneration() {
     agentBuffers_.read().read(agents_.data(), agents_.size() * sizeof(AgentState));
-    const ScenarioDefinition& scenario = scenarioDefinition(state_.physics.beaconScenario);
     std::vector<float> fitness(evolution_.population().size());
-    std::size_t achievedObjectives = 0;
+    std::size_t arrived = 0;
     for (std::size_t genome = 0; genome < fitness.size(); ++genome) {
         for (std::size_t trial = 0; trial < config_.trialsPerGenome; ++trial) {
             const AgentState& agent = agents_[genome * config_.trialsPerGenome + trial];
-            fitness[genome] += scenario.fitness(agent, state_.physics.fitness);
-            achievedObjectives += scenario.achievedObjectives(agent);
+            fitness[genome] += agentFitness(agent, state_.settings.fitness);
+            arrived += agent.metrics.y > 0.0F ? 1 : 0;
         }
         fitness[genome] /= static_cast<float>(config_.trialsPerGenome);
     }
@@ -573,13 +398,13 @@ GenerationSummary SimulationDriver::finishGeneration() {
     // numbers. What is published stays individual, and is therefore the same
     // quantity at every sharing level; what selects is the shared vector.
     const std::vector<float> selectionFitness = shareFitnessWithinGroups(
-        fitness, state_.worlds.agentsPerWorld, state_.physics.fitness.groupSharing);
+        fitness, state_.worlds.agentsPerWorld, state_.settings.fitness.groupSharing);
     // Replay scores and reports a generation exactly as training does -- that is
     // how loaded weights get judged -- and then selects nothing. The population
     // is left untouched, so resetGeneration below respawns the same genomes and
-    // the generation counter does not move. Since the beacon motion seed is the
-    // generation number, the next run is the same run again rather than a
-    // similar one, which is what makes a behaviour watchable more than once.
+    // the generation counter does not move. Since the beacon seed is derived
+    // from the generation number, the next run is the same run again rather than
+    // a similar one, which is what makes a behaviour watchable more than once.
     GenerationSummary summary{};
     if (state_.controls.replay) {
         summary.generation = evolution_.generation();
@@ -600,8 +425,7 @@ GenerationSummary SimulationDriver::finishGeneration() {
     state_.statistics.meanFitness = summary.meanFitness;
     state_.statistics.medianFitness = summary.medianFitness;
     state_.statistics.arrivalRatio =
-        static_cast<float>(achievedObjectives) /
-        static_cast<float>(agents_.size() * scenario.objectivesPerAgent);
+        static_cast<float>(arrived) / static_cast<float>(std::max<std::size_t>(agents_.size(), 1));
     // Counted here rather than taken from the history length, which stops
     // growing at maximumSamples, and rather than from the generation number,
     // which stands still under replay. A sweep stage restarts the run, and
@@ -627,7 +451,7 @@ GenerationSummary SimulationDriver::finishGeneration() {
     if (state_.sweep.running && !state_.controls.replay) {
         if (recordSweepGeneration(state_.sweep, summary.bestFitness, summary.medianFitness,
                                   state_.statistics.arrivalRatio)) {
-            state_.physics.fitness.groupSharing = sweepValue(state_.sweep);
+            state_.settings.fitness.groupSharing = sweepValue(state_.sweep);
             // restart() and not resetGeneration(): a stage has to begin from the
             // seeded initial population, or it would measure its setting applied
             // to whatever the previous setting had already evolved.
@@ -645,18 +469,14 @@ void SimulationDriver::beginSweep() {
         return;
     }
     state_.controls.replay = false;
-    state_.physics.fitness.groupSharing = sweepValue(state_.sweep);
+    state_.settings.fitness.groupSharing = sweepValue(state_.sweep);
     restart();
 }
 
 void SimulationDriver::endSweep() { stopSweep(state_.sweep); }
 
-float SimulationDriver::gridCellSize() const {
-    return gridCellSizeForWorld(config_.gridCellSize, state_.physics.worldRadius);
-}
-
-// The budget the field must fit, capped against what the device actually has.
-std::uint64_t SimulationDriver::trailFieldBudget() const {
+// The budget the two grids must each fit, capped against what the device has.
+std::uint64_t SimulationDriver::latticeBudget() const {
     std::uint64_t deviceLocalBytes = 0;
     if (physicalDevice_ != VK_NULL_HANDLE) {
         VkPhysicalDeviceMemoryProperties memory{};
@@ -669,49 +489,43 @@ std::uint64_t SimulationDriver::trailFieldBudget() const {
         }
     }
     if (deviceLocalBytes == 0) {
-        return trailFieldByteBudget;
+        return latticeFieldByteBudget;
     }
-    return std::min(trailFieldByteBudget, deviceLocalBytes / trailFieldHeapFraction);
+    return std::min(latticeFieldByteBudget, deviceLocalBytes / latticeFieldHeapFraction);
 }
 
-// Bytes the field needs for the arena and world count actually in use.
-std::uint64_t SimulationDriver::trailFieldBytes(const float cellSize) const {
-    const auto width =
-        static_cast<std::uint64_t>(trailWidthForWorld(state_.physics.worldRadius, cellSize));
-    return width * width * trail::kernel::TrailChannels * sizeof(std::uint32_t) *
-           state_.worlds.worldCount;
+std::uint64_t SimulationDriver::latticeBytes(const SimulationStep& settings) const {
+    return static_cast<std::uint64_t>(latticeCellsPerWorld(settings)) * sizeof(std::int32_t) *
+           std::max(state_.worlds.worldCount, 1U);
 }
 
-void SimulationDriver::updateTrailDimensions() {
-    // Coarsen until the field fits the budget. A fine grid over a large arena and
-    // two hundred worlds asks for gigabytes, and the first version both allocated
-    // and cleared the worst case -- largest arena, most worlds -- whatever was
-    // actually running, which is what made a resolution change look like a hang.
-    // The capacity is fixed, so the resolution is what gives way, never the
-    // allocation. Walk up the offered resolutions rather than doubling the cell,
-    // so whatever survives is a setting the UI can name back to the user.
-    std::size_t choice = 0;
-    while (choice + 1 < trailCellFractions.size() &&
-           trailCellSizeForBodyFraction(trailCellFractions[choice]) <
-               state_.physics.trailCellSize - 0.0005F) {
-        ++choice;
-    }
-    while (choice + 1 < trailCellFractions.size() &&
-           trailFieldBytes(trailCellSizeForBodyFraction(trailCellFractions[choice])) >
-               trailField_.size()) {
-        ++choice;
-    }
-    const float cellSize = trailCellSizeForBodyFraction(trailCellFractions[choice]);
-    state_.physics.trailCellSize = cellSize;
+void SimulationDriver::refreshLattice() {
+    SimulationStep& settings = state_.settings;
+    settings.latticeWidth = clampLatticeExtent(settings.latticeWidth);
+    settings.latticeHeight = clampLatticeExtent(settings.latticeHeight);
+    settings.latticeDepth = clampLatticeExtent(settings.latticeDepth);
 
-    trailWidth_ = trailWidthForWorld(state_.physics.worldRadius, cellSize);
-    trailCellsPerWorld_ = trailWidth_ * trailWidth_;
-    trailActiveBytes_ = static_cast<VkDeviceSize>(trailFieldBytes(cellSize));
-    if (trailActiveBytes_ > trailField_.size()) {
-        throw std::runtime_error("Trail field does not fit even at the coarsest resolution");
+    // Shrink until the grids fit, halving whichever extent is currently the
+    // longest so the box stays roughly the shape it was asked for. The
+    // allocation is fixed, so the lattice is what gives way -- and the clamped
+    // extents are written back into the settings, so the sliders show the box
+    // that is actually running rather than the one that was requested.
+    const std::uint64_t budget = occupancy_.size() != 0 ? occupancy_.size() : latticeBudget();
+    while (latticeBytes(settings) > budget) {
+        std::uint32_t* longest = &settings.latticeWidth;
+        if (settings.latticeHeight > *longest) {
+            longest = &settings.latticeHeight;
+        }
+        if (settings.latticeDepth > *longest) {
+            longest = &settings.latticeDepth;
+        }
+        if (*longest <= latticeMinimumExtent) {
+            throw std::runtime_error("The lattice does not fit even at its smallest extent");
+        }
+        *longest = std::max(*longest / 2, latticeMinimumExtent);
     }
-    state_.trail = {trailField_.buffer(), trailField_.size(), trailWidth_, trailCellsPerWorld_};
-    state_.puck = {puckField_.buffer(), puckField_.size()};
+
+    state_.lattice = {occupancy_.buffer(), occupancy_.size(), latticeCellsPerWorld(settings)};
 }
 
 void SimulationDriver::updateWorldLayout() {
@@ -730,78 +544,16 @@ void SimulationDriver::updateWorldLayout() {
     }
 }
 
-void SimulationDriver::updateGridDimensions() {
-    gridWidth_ =
-        static_cast<std::uint32_t>(std::ceil((state_.physics.worldRadius * 2.0F) / gridCellSize()));
-    gridCellsPerWorld_ = gridWidth_ * gridWidth_;
-}
-
-void SimulationDriver::ensureGridCapacity() {
-    // The scaled cell size makes this the same width in every world; it stays a
-    // Large-world calculation so a future unscaled cell size cannot under-allocate.
-    const float largestRadius = worldRadiusForSize(WorldSize::Large);
-    const auto maximumGridWidth = static_cast<std::uint32_t>(std::ceil(
-        (largestRadius * 2.0F) / gridCellSizeForWorld(config_.gridCellSize, largestRadius)));
-    const VkDeviceSize requiredBytes =
-        sizeof(std::int32_t) * maximumGridWidth * maximumGridWidth * state_.worlds.worldCount;
-    if (gridHeads_.size() >= requiredBytes) {
-        return;
-    }
-    gridHeads_.reset();
-    gridHeads_.create(physicalDevice_, device_,
-                      {requiredBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT});
-    updateGridDescriptors();
-}
-
-void SimulationDriver::refreshGridForWorldSize() {
-    updateWorldLayout();
-    ensureGridCapacity();
-    updateGridDimensions();
-    updateTrailDimensions();
-}
-
-void SimulationDriver::updateGridDescriptors() {
-    if (gridClearDescriptorSet_ != VK_NULL_HANDLE) {
-        DescriptorSetWriter{}
-            .writeBuffer(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, gridHeads_.buffer(), 0,
-                         gridHeads_.size())
-            .update(device_, gridClearDescriptorSet_);
-    }
-    for (std::size_t index = 0; index < stepDescriptorSets_.size(); ++index) {
-        if (stepDescriptorSets_[index] != VK_NULL_HANDLE) {
-            DescriptorSetWriter{}
-                .writeBuffer(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, gridHeads_.buffer(), 0,
-                             gridHeads_.size())
-                .update(device_, stepDescriptorSets_[index]);
-        }
-        if (gridBuildDescriptorSets_[index] != VK_NULL_HANDLE) {
-            DescriptorSetWriter{}
-                .writeBuffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, gridHeads_.buffer(), 0,
-                             gridHeads_.size())
-                .update(device_, gridBuildDescriptorSets_[index]);
-        }
-    }
-}
-
-GpuStepParameters SimulationDriver::stepParameters(const std::uint32_t generationStep) const {
-    const SimulationStep settings =
-        resolveStepSettings(state_.physics, generationStep, state_.controls.stepsPerGeneration);
+GpuStepParameters SimulationDriver::stepParameters() const {
     // Every field named. Positionally this was eight initialisers for a nine
-    // field aggregate, and the ninth -- worldCount -- kept its default of 1, so
-    // the puck pass returned from every thread but the first and only world zero
-    // ever had a puck that moved. Agents in every other world pushed a puck that
-    // could not be integrated: contact worked, the reward for pushing paid, and
-    // nothing happened. That is the third time a field has been silently dropped
-    // on the way to this struct; see the note on packStepParameters.
-    return packStepParameters(settings,
+    // field aggregate once, and the ninth kept its default, so a whole pass ran
+    // against a world count of one. That is the third time a field has been
+    // silently dropped on the way to this struct; see the note on
+    // packStepParameters.
+    return packStepParameters(state_.settings,
                               StepParameterLayout{.agentCount = state_.agents.agentCount,
                                                   .trialsPerGenome = config_.trialsPerGenome,
                                                   .agentsPerWorld = state_.worlds.agentsPerWorld,
-                                                  .gridCellSize = gridCellSize(),
-                                                  .gridWidth = gridWidth_,
-                                                  .gridCellsPerWorld = gridCellsPerWorld_,
-                                                  .trailWidth = trailWidth_,
-                                                  .trailCellsPerWorld = trailCellsPerWorld_,
                                                   .worldCount = state_.worlds.worldCount});
 }
 
@@ -816,22 +568,18 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
         return 0;
     }
 
+    // Nothing in the block varies with the step any more. The 2D build moved a
+    // beacon and faded a trail, so every step got its own copy; a lattice's
+    // settings are constant across a generation, and the buffer is still indexed
+    // by step only so that a future per-step quantity has somewhere to go.
+    const GpuStepParameters parameters = stepParameters();
     for (std::uint32_t step = 0; step < stepCount; ++step) {
-        stepParameterStaging_[step] = stepParameters(state_.statistics.step + step);
+        stepParameterStaging_[step] = parameters;
     }
     stepParameterBuffer_.write(stepParameterStaging_.data(), sizeof(GpuStepParameters) * stepCount);
     cmdBufferBarrier(commands, stepParameterBuffer_.buffer(), VK_PIPELINE_STAGE_2_HOST_BIT,
                      VK_ACCESS_2_HOST_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                      VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
-
-    if (trailClearPending_) {
-        vkCmdFillBuffer(commands, trailField_.buffer(), 0, trailActiveBytes_, 0);
-        cmdBufferBarrier(commands, trailField_.buffer(), VK_PIPELINE_STAGE_2_CLEAR_BIT,
-                         VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                         VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
-                             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-        trailClearPending_ = false;
-    }
 
     if (hostUploadPending_) {
         for (const VkBuffer buffer : state_.agents.buffers) {
@@ -843,118 +591,45 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
         cmdBufferBarrier(commands, genomeBuffer_.buffer(), VK_PIPELINE_STAGE_2_HOST_BIT,
                          VK_ACCESS_2_HOST_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                          VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+        cmdBufferBarrier(commands, occupancy_.buffer(), VK_PIPELINE_STAGE_2_HOST_BIT,
+                         VK_ACCESS_2_HOST_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                         VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
         hostUploadPending_ = false;
     }
 
-    const GridBuildParameters gridParameters{state_.physics.worldRadius,
-                                             gridCellSize(),
-                                             state_.agents.agentCount,
-                                             state_.worlds.worldCount,
-                                             gridWidth_,
-                                             gridCellsPerWorld_,
-                                             0,
-                                             0};
-    const std::uint32_t totalGridCells = gridCellsPerWorld_ * state_.worlds.worldCount;
-    const std::array<VkDeviceSize, 1> clearRanges{gridHeads_.size()};
-    const DispatchSize gridGroups = checkedDispatchSize(
-        physicalDevice_, {{totalGridCells, 1, 1}, {64, 1, 1}, sizeof(totalGridCells), clearRanges});
-    const std::array<VkDeviceSize, 3> buildRanges{agentBuffers_.read().size(), gridHeads_.size(),
-                                                  gridNext_.size()};
-    const DispatchSize buildGroups = checkedDispatchSize(
+    const std::uint32_t cellCount = state_.lattice.cellsPerWorld * state_.worlds.worldCount;
+    const std::array<VkDeviceSize, 2> clearRanges{claims_.size(), stepParameterBuffer_.size()};
+    const DispatchSize clearGroups = checkedDispatchSize(
         physicalDevice_,
-        {{state_.agents.agentCount, 1, 1}, {64, 1, 1}, sizeof(gridParameters), buildRanges});
-    const std::array<VkDeviceSize, 8> stepRanges{agentBuffers_.read().size(),
-                                                 agentBuffers_.write().size(),
-                                                 genomeBuffer_.size(),
-                                                 gridHeads_.size(),
-                                                 gridNext_.size(),
-                                                 stepParameterBuffer_.size(),
-                                                 trailField_.size(),
-                                                 puckField_.size()};
-    const std::uint32_t trailValueCount =
-        trailCellsPerWorld_ * state_.worlds.worldCount * trail::kernel::TrailChannels;
-    const std::array<VkDeviceSize, 1> decayRanges{trailField_.size()};
-    const DispatchSize trailDecayGroups = checkedDispatchSize(
-        physicalDevice_,
-        {{trailValueCount, 1, 1}, {64, 1, 1}, sizeof(TrailDecayParameters), decayRanges});
-    const std::array<VkDeviceSize, 3> depositRanges{agentBuffers_.read().size(), trailField_.size(),
-                                                    stepParameterBuffer_.size()};
-    const DispatchSize trailDepositGroups = checkedDispatchSize(
-        physicalDevice_,
-        {{state_.agents.agentCount, 1, 1}, {64, 1, 1}, sizeof(std::uint32_t), depositRanges});
+        {{cellCount, 1, 1}, {256, 1, 1}, sizeof(std::uint32_t), clearRanges});
+    const std::array<VkDeviceSize, 6> stepRanges{
+        agentBuffers_.read().size(), agentBuffers_.write().size(), genomeBuffer_.size(),
+        occupancy_.size(),           claims_.size(),               stepParameterBuffer_.size()};
     const DispatchSize stepGroups = checkedDispatchSize(
         physicalDevice_,
         {{state_.agents.agentCount, 1, 1}, {64, 1, 1}, sizeof(std::uint32_t), stepRanges});
-    const std::array<VkDeviceSize, 3> puckRanges{agentBuffers_.write().size(), puckField_.size(),
-                                                 stepParameterBuffer_.size()};
-    const DispatchSize puckGroups = checkedDispatchSize(
+    const std::array<VkDeviceSize, 4> resolveRanges{agentBuffers_.write().size(), occupancy_.size(),
+                                                    claims_.size(),
+                                                    stepParameterBuffer_.size()};
+    const DispatchSize resolveGroups = checkedDispatchSize(
         physicalDevice_,
-        {{std::max(state_.worlds.worldCount, 1U), 1, 1},
-         {64, 1, 1},
-         sizeof(std::uint32_t),
-         puckRanges});
+        {{state_.agents.agentCount, 1, 1}, {64, 1, 1}, sizeof(std::uint32_t), resolveRanges});
 
     for (std::uint32_t step = 0; step < stepCount; ++step) {
-        cmdBufferBarrier(commands, gridHeads_.buffer(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                         VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-        cmdBufferBarrier(commands, gridNext_.buffer(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                         VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-
-        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, gridClearPipeline_.pipeline());
-        vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                gridClearPipeline_.layout(), 0, 1, &gridClearDescriptorSet_, 0,
-                                nullptr);
-        vkCmdPushConstants(commands, gridClearPipeline_.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                           sizeof(totalGridCells), &totalGridCells);
-        vkCmdDispatch(commands, gridGroups.x, 1, 1);
-        cmdBufferBarrier(
-            commands, gridHeads_.buffer(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-
         const std::uint32_t readIndex = agentBuffers_.readIndex();
-        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, gridBuildPipeline_.pipeline());
-        const VkDescriptorSet buildSet = gridBuildDescriptorSets_[readIndex];
-        vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                gridBuildPipeline_.layout(), 0, 1, &buildSet, 0, nullptr);
-        vkCmdPushConstants(commands, gridBuildPipeline_.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                           sizeof(gridParameters), &gridParameters);
-        vkCmdDispatch(commands, buildGroups.x, 1, 1);
-        cmdComputeWriteToComputeRead(commands, gridHeads_.buffer());
-        cmdComputeWriteToComputeRead(commands, gridNext_.buffer());
 
-        // Trail: fade the whole field, then let every agent add to it, then run
-        // the step so all agents read a field nobody is still writing. Splitting
-        // deposit from the step is what keeps the reading order-independent --
-        // depositing inside agent_step would let some agents read a cell another
-        // agent had already marked this tick.
-        if (trailFieldActive(state_.physics.trailMode)) {
-            const TrailDecayParameters decayParameters{trailValueCount,
-                                                       stepParameterStaging_[step].trailSurvival};
-            vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
-                              trailDecayPipeline_.pipeline());
-            vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                    trailDecayPipeline_.layout(), 0, 1, &trailDecayDescriptorSet_,
-                                    0, nullptr);
-            vkCmdPushConstants(commands, trailDecayPipeline_.layout(), VK_SHADER_STAGE_COMPUTE_BIT,
-                               0, sizeof(decayParameters), &decayParameters);
-            vkCmdDispatch(commands, trailDecayGroups.x, 1, 1);
-            cmdComputeWriteToComputeRead(commands, trailField_.buffer());
-
-            vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
-                              trailDepositPipeline_.pipeline());
-            const VkDescriptorSet depositSet = trailDepositDescriptorSets_[readIndex];
-            vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                    trailDepositPipeline_.layout(), 0, 1, &depositSet, 0, nullptr);
-            vkCmdPushConstants(commands, trailDepositPipeline_.layout(),
-                               VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(step), &step);
-            vkCmdDispatch(commands, trailDepositGroups.x, 1, 1);
-            cmdComputeWriteToComputeRead(commands, trailField_.buffer());
-        }
+        // Empty every bid before anybody bids. A barrier and not a loop order:
+        // the clear and the bids are different dispatches precisely because a
+        // cell has to be empty for every agent, not just for the ones that
+        // happened to run after it was cleared.
+        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, clearPipeline_.pipeline());
+        vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, clearPipeline_.layout(),
+                                0, 1, &clearDescriptorSet_, 0, nullptr);
+        vkCmdPushConstants(commands, clearPipeline_.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(step), &step);
+        vkCmdDispatch(commands, clearGroups.x, 1, 1);
+        cmdComputeWriteToComputeRead(commands, claims_.buffer());
 
         vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, stepPipeline_.pipeline());
         const VkDescriptorSet stepSet = stepDescriptorSets_[readIndex];
@@ -963,27 +638,27 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
         vkCmdPushConstants(commands, stepPipeline_.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            sizeof(step), &step);
         vkCmdDispatch(commands, stepGroups.x, 1, 1);
-        cmdBufferBarrier(
-            commands, agentBuffers_.read().buffer(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_READ_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-        cmdComputeWriteToComputeRead(commands, agentBuffers_.write().buffer());
+        // Every bid has to have landed before any of them is read back, and the
+        // records the step wrote have to be visible to the pass that adds to
+        // them.
+        cmdComputeWriteToComputeRead(commands, claims_.buffer());
+        cmdBufferBarrier(commands, agentBuffers_.write().buffer(),
+                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                         VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
-        // After the step, so the puck is pushed by where the agents actually
-        // ended up rather than by where they were before they moved. One thread
-        // per world and no atomics: each thread owns one puck and reads its own
-        // world's agents, so nothing is shared between invocations.
-        if (scenarioDefinition(state_.physics.beaconScenario).puck) {
-            vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
-                              puckStepPipeline_.pipeline());
-            const VkDescriptorSet puckSet = puckStepDescriptorSets_[readIndex];
-            vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                    puckStepPipeline_.layout(), 0, 1, &puckSet, 0, nullptr);
-            vkCmdPushConstants(commands, puckStepPipeline_.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(step), &step);
-            vkCmdDispatch(commands, puckGroups.x, 1, 1);
-            cmdComputeWriteToComputeRead(commands, puckField_.buffer());
-        }
+        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, resolvePipeline_.pipeline());
+        const VkDescriptorSet resolveSet = resolveDescriptorSets_[readIndex];
+        vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                resolvePipeline_.layout(), 0, 1, &resolveSet, 0, nullptr);
+        vkCmdPushConstants(commands, resolvePipeline_.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(step), &step);
+        vkCmdDispatch(commands, resolveGroups.x, 1, 1);
+        cmdComputeWriteToComputeRead(commands, agentBuffers_.write().buffer());
+        cmdComputeWriteToComputeRead(commands, occupancy_.buffer());
+
         agentBuffers_.swap();
         state_.agents.currentIndex = agentBuffers_.readIndex();
     }
@@ -992,11 +667,10 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                      VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_HOST_BIT,
                      VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_HOST_READ_BIT);
-    // The renderer reads the field from the vertex stage, so the deposit pass's
-    // writes need to be made visible there too, not only to the next compute read.
-    cmdBufferBarrier(commands, trailField_.buffer(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                     VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
-                     VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+    cmdBufferBarrier(commands, occupancy_.buffer(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                     VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                     VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_HOST_BIT,
+                     VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_HOST_READ_BIT);
     state_.statistics.step += stepCount;
     return stepCount;
 }
@@ -1005,7 +679,7 @@ GenomeArchiveMetadata genomeArchiveMetadata(const SimulationState& state,
                                             const SimulationDriver& driver,
                                             const neuro::BrainShape& brain) {
     return {driver.evolution().generation(),
-            static_cast<std::uint32_t>(state.physics.beaconScenario),
+            state.settings.beaconSeed,
             driver.evolution().settings().seed,
             state.statistics.bestFitness,
             state.statistics.meanFitness,

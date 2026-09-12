@@ -1,0 +1,33 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "lattice/lattice_kernel.glsl"
+#include "simulation/step_parameters.glsl"
+
+// One thread per cell of every world: empties the bid grid so the step pass can
+// resolve contention with a minimum. A separate dispatch and not the head of the
+// step pass, because every cell has to be empty before any agent bids -- which
+// is a barrier, and a barrier inside a dispatch is not something a compute pass
+// can express.
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) writeonly buffer Claims {
+    int claims[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer StepParameterBlocks {
+    StepParameters stepParameters[];
+};
+
+layout(push_constant) uniform StepSelector {
+    uint stepIndex;
+} selector;
+
+void main() {
+    const StepParameters params = stepParameters[selector.stepIndex];
+    const uint cell = gl_GlobalInvocationID.x;
+    if (cell >= params.cellsPerWorld * params.worldCount) {
+        return;
+    }
+    claims[cell] = LatticeNoClaim;
+}

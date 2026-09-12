@@ -3,11 +3,11 @@
 
 // The std430 agent record, mirroring vkexp::AgentState.
 //
-// Four shaders read this layout -- the step, the grid build, the trail deposit
-// and the vertex stage -- and each used to declare its own copy. Four copies of
-// one contract is exactly what rule 3c exists to prevent: the hidden-state block
-// below would have had to be added to all four by hand, and a shader that missed
-// it would not fail to compile, it would read the wrong fields.
+// Three shaders read this layout -- the step, the resolve and, once there is
+// one, the 3D view -- and each used to declare its own copy. Copies of one
+// contract are exactly what this file exists to prevent: the hidden-state block
+// below would have had to be added to all of them by hand, and a shader that
+// missed it would not fail to compile, it would read the wrong fields.
 //
 // Needs neuro/brain_kernel.glsl included first, for BrainHiddenNeuronCapacity.
 
@@ -16,17 +16,12 @@
 const uint AgentHiddenVectorCount = (BrainHiddenNeuronCapacity + 3u) / 4u;
 
 struct Agent {
-    vec4 pose;
-    vec4 motion;
-    vec4 signal;
-    vec4 target;
-    vec4 metrics;
-    vec4 penalties;
-    vec4 internal;
-    vec4 wallTouch0;
-    vec4 wallTouch1;
-    vec4 agentTouch0;
-    vec4 agentTouch1;
+    ivec4 cell;   // x, y, z, heading as a neighbour index
+    ivec4 intent; // desired x, y, z, and whether the last move was refused
+    ivec4 beacon; // this world's beacon x, y, z, and which world that is
+    vec4 signal;  // broadcast level in .x, three lanes spare
+    vec4 metrics; // best nearness, contacts, effort, refusals
+    vec4 memory;  // the two recurrent cells in .xy, two lanes spare
     // Continuous-time state of every hidden neuron, carried between steps. Zero
     // at the start of a generation, which is the whole of the reset semantics:
     // an agent begins each trial with no memory of the last one.

@@ -3,8 +3,9 @@
 #include "vkexp/compute/ComputeResources.hpp"
 #include "vkexp/evolution/GeneticAlgorithm.hpp"
 #include "vkexp/evolution/GenomeArchive.hpp"
+#include "vkexp/lattice/LatticeWorld.hpp"
+#include "vkexp/simulation/RunSnapshot.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
-#include "vkexp/simulation/WorldSnapshot.hpp"
 
 #include <array>
 #include <cstdint>
@@ -15,7 +16,6 @@ namespace vkexp {
 
 struct SimulationDriverConfig {
     std::uint32_t trialsPerGenome{4};
-    float gridCellSize{0.12F};
     // Upper bound on the steps a single recordSteps() call may batch. It sizes
     // the per-step parameter buffer.
     std::uint32_t maximumStepsPerBatch{128};
@@ -74,24 +74,27 @@ public:
     // to the host, and restoreSnapshot() overwrites it. Unlike loadPopulation
     // these do not restart the generation -- an experiment resumes on the step
     // it was saved on, with the agents where they stood.
-    [[nodiscard]] WorldSnapshot snapshot();
-    void restoreSnapshot(const WorldSnapshot& snapshot);
+    [[nodiscard]] RunSnapshot snapshot();
+    void restoreSnapshot(const RunSnapshot& snapshot);
 
     void updateWorldLayout();
-    void refreshGridForWorldSize();
+    // Re-reads the lattice extents from the settings, clamping them to what the
+    // occupancy allocation can hold, and republishes the view. Called whenever a
+    // slider moves the box.
+    void refreshLattice();
 
     [[nodiscard]] const GeneticAlgorithm& evolution() const { return evolution_; }
     [[nodiscard]] std::span<const AgentState> agents() const { return agents_; }
     [[nodiscard]] const SimulationDriverConfig& config() const { return config_; }
+    [[nodiscard]] lattice::PopulationLayout populationLayout() const;
     // How many times the fixed step resources have been built. Exposed for
     // reconfiguration_smoke, which needs to assert that the answer stays one.
     //
     // Comparing published handles across a reconfiguration does not settle it:
     // freeing a buffer and immediately allocating one of the same size usually
     // hands back the same VkBuffer, so a test written that way passes while the
-    // buffers are being destroyed under live descriptors. That is not a
-    // hypothetical -- the trail assertion here did exactly that. A count of
-    // builds is the invariant itself rather than a proxy for it.
+    // buffers are being destroyed under live descriptors. A count of builds is
+    // the invariant itself rather than a proxy for it.
     [[nodiscard]] std::uint32_t stepResourceBuilds() const { return stepResourceBuilds_; }
 
 private:
@@ -105,16 +108,9 @@ private:
     void resizeGenomeBuffer();
     void resetGeneration();
     void uploadPopulation();
-    void ensureGridCapacity();
-    void updateGridDescriptors();
-    [[nodiscard]] float gridCellSize() const;
-    void updateGridDimensions();
-    [[nodiscard]] std::uint64_t trailFieldBudget() const;
-    [[nodiscard]] std::uint64_t trailFieldBytes(float cellSize) const;
-    void updateTrailDimensions();
-    [[nodiscard]] GpuStepParameters stepParameters(std::uint32_t generationStep) const;
-    [[nodiscard]] std::vector<AgentState> makeInitialAgents() const;
-    [[nodiscard]] std::vector<PuckState> makeInitialPucks() const;
+    [[nodiscard]] std::uint64_t latticeBudget() const;
+    [[nodiscard]] std::uint64_t latticeBytes(const SimulationStep& settings) const;
+    [[nodiscard]] GpuStepParameters stepParameters() const;
 
     SimulationState& state_;
     GeneticAlgorithm evolution_;
@@ -127,39 +123,26 @@ private:
     PingPongBuffer agentBuffers_;
     BufferResource genomeBuffer_;
     BufferResource stepParameterBuffer_;
-    BufferResource gridHeads_;
-    BufferResource gridNext_;
-    BufferResource trailField_;
-    BufferResource puckField_;
+    // Who stands in which cell, and who has bid for which cell. Both one int per
+    // cell per world. The occupancy is host-visible because a reset and a
+    // snapshot restore both write it from the host; the bids are device-local,
+    // because nothing outside a step ever looks at them.
+    BufferResource occupancy_;
+    BufferResource claims_;
     UniqueDescriptorSetLayout stepDescriptorSetLayout_;
-    UniqueDescriptorSetLayout gridClearDescriptorSetLayout_;
-    UniqueDescriptorSetLayout gridBuildDescriptorSetLayout_;
-    UniqueDescriptorSetLayout trailDecayDescriptorSetLayout_;
-    UniqueDescriptorSetLayout trailDepositDescriptorSetLayout_;
-    UniqueDescriptorSetLayout puckStepDescriptorSetLayout_;
+    UniqueDescriptorSetLayout resolveDescriptorSetLayout_;
+    UniqueDescriptorSetLayout clearDescriptorSetLayout_;
     DescriptorAllocator descriptorAllocator_;
     std::array<VkDescriptorSet, 2> stepDescriptorSets_{};
-    VkDescriptorSet gridClearDescriptorSet_{};
-    std::array<VkDescriptorSet, 2> gridBuildDescriptorSets_{};
-    VkDescriptorSet trailDecayDescriptorSet_{};
-    std::array<VkDescriptorSet, 2> trailDepositDescriptorSets_{};
-    std::array<VkDescriptorSet, 2> puckStepDescriptorSets_{};
+    std::array<VkDescriptorSet, 2> resolveDescriptorSets_{};
+    VkDescriptorSet clearDescriptorSet_{};
     ComputePipeline stepPipeline_;
-    ComputePipeline gridClearPipeline_;
-    ComputePipeline gridBuildPipeline_;
-    ComputePipeline trailDecayPipeline_;
-    ComputePipeline trailDepositPipeline_;
-    ComputePipeline puckStepPipeline_;
+    ComputePipeline resolvePipeline_;
+    ComputePipeline clearPipeline_;
     std::vector<AgentState> agents_;
-    std::vector<PuckState> pucks_;
+    std::vector<std::int32_t> occupancyStaging_;
     std::vector<GpuStepParameters> stepParameterStaging_;
-    std::uint32_t gridWidth_{};
-    std::uint32_t gridCellsPerWorld_{};
-    std::uint32_t trailWidth_{};
-    std::uint32_t trailCellsPerWorld_{};
-    VkDeviceSize trailActiveBytes_{};
     bool hostUploadPending_{};
-    bool trailClearPending_{true};
 };
 
 // Provenance for a genome archive, built from the run that produced it. Here

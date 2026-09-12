@@ -1,8 +1,8 @@
 #pragma once
 
 #include "vkexp/evolution/GeneticAlgorithm.hpp"
-#include "vkexp/simulation/AgentTypes.hpp"
 #include "vkexp/simulation/ExperimentSweep.hpp"
+#include "vkexp/simulation/LatticeTypes.hpp"
 
 #include <vulkan/vulkan.h>
 
@@ -23,7 +23,7 @@ struct SimulationControls {
     // flag and SimulationModule acts on it between frames, where the device can
     // be made idle. `snapshotStatus` is what the last attempt did, shown back in
     // the panel so a failed load is visible rather than silent.
-    std::string snapshotPath{"world.vknw"};
+    std::string snapshotPath{"run.vklr"};
     std::string snapshotStatus;
     bool saveRequested{};
     bool loadRequested{};
@@ -42,7 +42,7 @@ struct SimulationControls {
     bool saveBrainStructureRequested{};
 
     // The hidden-layer plan being edited in the Brain window, before it is
-    // applied. Kept beside the other controls rather than in the physics block
+    // applied. Kept beside the other controls rather than in the settings block
     // because it is a draft: what the run is actually using lives in
     // SimulationStep, and these two differing is exactly what "not applied yet"
     // means. All zero means "not started editing".
@@ -71,6 +71,10 @@ struct SimulationStatistics {
     float bestFitness{};
     float meanFitness{};
     float medianFitness{};
+    // The fraction of agents that spent at least one step within the beacon's
+    // contact radius. "Arrival" and not "occupation": a lattice cell holds one
+    // agent, so how long a group could stand on the beacon is a statement about
+    // the contact radius, and whether they got there is a statement about them.
     float arrivalRatio{};
 };
 
@@ -86,19 +90,15 @@ struct EvolutionHistory {
 };
 
 // What the viewport draws. None of this reaches the simulation -- turning the
-// agents off to watch the bare trail field changes the picture, not the run.
+// agents off changes the picture, not the run. Kept while the 3D view is being
+// written, because what a view of a lattice can show is a question with the same
+// answers whatever draws it.
 struct SimulationDisplay {
     bool agents{true};
     bool beacons{true};
-    bool trail{true};
-    // Discs read as a track, squares tile the cell exactly and show the grid the
-    // field really is. Both are worth having in front of you, so this stays a
-    // switch rather than a decision.
-    bool roundTrailMarks{true};
-    // Multiplies the arena fill and the ground outside it, and nothing else: a
-    // dark background is what makes a faint trail and a low-intensity signal
-    // readable, and both are already near the bottom of the range. 1 is the
-    // palette as designed and 0 is black, so the control only ever darkens.
+    // The lattice as a wireframe box, so a sparse world still reads as a volume
+    // rather than as points floating in nothing.
+    bool bounds{true};
     float backgroundBrightness{1.0F};
 };
 
@@ -122,21 +122,13 @@ struct AgentBufferView {
     [[nodiscard]] VkBuffer currentBuffer() const { return buffers[currentIndex]; }
 };
 
-// Published so the renderer can draw the field it never writes. Sized once for
-// the largest arena and the most logical worlds the population can be split
-// into, so the buffer never reallocates and this handle never goes stale.
-struct TrailBufferView {
+// The occupancy grid, published so a view can draw the lattice it never writes.
+// Sized once for the budget and never reallocated, so the handle never goes
+// stale; `cellsPerWorld` says how much of it the running lattice actually uses.
+struct LatticeBufferView {
     VkBuffer buffer{};
     VkDeviceSize size{};
-    std::uint32_t width{};
     std::uint32_t cellsPerWorld{};
-};
-
-// The puck buffer, published so the renderer can draw what the simulation is
-// pushing around rather than a copy of it.
-struct PuckBufferView {
-    VkBuffer buffer{};
-    VkDeviceSize size{};
 };
 
 struct SimulationViewport {
@@ -154,12 +146,11 @@ struct SimulationState {
     EvolutionSettings evolution;
     EvolutionHistory history;
     SimulationWorlds worlds;
-    SimulationStep physics;
+    SimulationStep settings;
     SweepState sweep;
     SimulationDisplay display;
     AgentBufferView agents;
-    TrailBufferView trail;
-    PuckBufferView puck;
+    LatticeBufferView lattice;
     SimulationViewport viewport;
 };
 

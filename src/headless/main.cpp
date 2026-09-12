@@ -5,12 +5,10 @@
 #include "vkexp/compute/HeadlessComputeContext.hpp"
 #include "vkexp/evolution/GenomeArchive.hpp"
 #include "vkexp/neuro/BrainDescription.hpp"
-#include "vkexp/simulation/Locomotion.hpp"
+#include "vkexp/simulation/RunSnapshot.hpp"
 #include "vkexp/simulation/SimulationDriver.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
-#include "vkexp/simulation/WorldSnapshot.hpp"
 #include "vkexp/simulation/Units.hpp"
-#include "vkexp/worlds/WorldScenario.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -29,132 +27,82 @@ namespace {
 constexpr int skipExitCode = 77;
 
 struct Options {
-    vkexp::BeaconScenario scenario{vkexp::BeaconScenario::Stationary};
-    vkexp::WorldShape worldShape{vkexp::WorldShape::Circle};
-    vkexp::WorldSize worldSize{vkexp::WorldSize::Small};
     std::uint64_t generations{20};
-    std::uint32_t stepsPerGeneration{};  // 0 means "whatever the scenario needs"
+    std::uint32_t stepsPerGeneration{900};
     std::uint32_t stepsPerBatch{128};
     std::uint32_t agentsPerWorld{12};
     std::size_t populationSize{512};
     std::uint32_t seed{0xC0FFEEU};
-    bool agentCollisions{true};
-    bool agentLight{true};
-    bool swapDeliveryEnds{false};
-    bool uniformBeaconColor{false};
-    bool blockedDoorPerGeneration{false};
-    float gateLatchSeconds{4.0F};
-    float puckBreakawayPushes{vkexp::puck::kernel::PuckBreakawayPushes};
-    bool puckRandomStart{false};
-    // Absent means "leave the four locomotion numbers at their defaults", which
-    // is the Table robot preset by construction.
-    std::optional<vkexp::LocomotionStyle> locomotion;
+
+    // Absent means "leave the default", which lets a sweep change one term
+    // without restating the rest of SimulationStep.
+    std::optional<std::uint32_t> latticeWidth;
+    std::optional<std::uint32_t> latticeHeight;
+    std::optional<std::uint32_t> latticeDepth;
+    std::optional<float> moveThreshold;
+    std::optional<std::uint32_t> contactRadius;
+    vkexp::Neighborhood neighborhood{vkexp::Neighborhood::Moore};
+
     vkexp::FitnessWeights fitness{};
-    // Optional physics overrides. Absent means "keep the default", which lets a
-    // sweep change one term without restating the rest of SimulationStep.
-    std::optional<float> beaconAngularSpeed;
-    std::optional<float> beaconRadiusRatio;
-    std::optional<float> lightSensorRange;
-    std::optional<float> maximumSpeed;
-    std::optional<float> trailDepositRate;
-    std::optional<float> beaconTrailDepositRate;
-    std::optional<float> trailHalfLife;
-    std::optional<float> trailCellSize;
-    vkexp::TrailMode trailMode{vkexp::TrailMode::Sensed};
     vkexp::NeuronModel neuronModel{vkexp::NeuronModel::TimeConstant};
     bool quiet{};
     std::string savePopulation;
     std::string saveChampion;
     std::string describeBrain;
-    // Empty means the scenario's own hidden layers.
+    // Empty means the default hidden layers.
     std::vector<std::uint32_t> hiddenLayers;
     std::string loadPopulation;
-    std::string saveWorld;
-    std::string loadWorld;
+    std::string saveRun;
+    std::string loadRun;
     std::string csvPath;
 };
 
-std::string scenarioKeyList() {
-    std::string keys;
-    for (const vkexp::ScenarioDefinition* definition : vkexp::scenarioRegistry()) {
-        keys += keys.empty() ? "" : "|";
-        keys += definition->key;
-    }
-    return keys;
-}
-
 void printHelp(const char* executable) {
-    // The scenario list comes from the registry, so a new scenario shows up in
-    // --help without editing this text.
     std::cout << "Usage: " << executable
               << " [options]\n\n"
-                 "Runs neuroevolution without a window and reports per-generation fitness.\n\n"
+                 "Runs neuroevolution on a discrete lattice without a window and reports\n"
+                 "per-generation fitness.\n\n"
                  "Experiment:\n"
-              << "  --scenario <name>        " << scenarioKeyList() << "\n"
-              << "  --generations <n>        generations to run (default 20)\n"
-                 "  --steps <n>              steps per generation (default: what the scenario\n"
-                 "                           needs, usually 900 = 15.0 s)\n"
+                 "  --generations <n>        generations to run (default 20)\n"
+                 "  --steps <n>              steps per generation (default 900 = 15.0 s)\n"
                  "  --population <n>         genomes (default 512)\n"
-                 "  --agents-per-world <n>   agents sharing one logical world (default 12)\n"
+                 "  --agents-per-world <n>   agents sharing one lattice (default 12)\n"
                  "  --seed <n>               genetic algorithm seed (default 12648430)\n"
-                 "  --world-size <name>      small|medium|large\n"
-                 "  --world-shape <name>     circle|square\n"
                  "  --steps-per-batch <n>    steps recorded per submission (default 128)\n\n"
-                 "World physics (default = the value the UI starts with):\n"
-                 "  --beacon-speed <x>       beacon angular speed in rad/s (default 0.35)\n"
-                 "  --orbit-ratio <x>        orbit radius as a fraction of the arena (0.72)\n"
-                 "  --light-range <x>        light sensor range in metres (default 2.4)\n"
-                 "  --max-speed <x>          agent speed limit in m/s (default 0.55)\n"
-                 "  --locomotion <name>      how much the body carries: robot|rover|default|\n"
-                 "                           glider|fish. Sets thrust, turn and the two drags\n"
-                 "                           and nothing else, so every style has the same top\n"
-                 "                           speed and only the inertia differs\n\n"
+                 "The lattice:\n"
+                 "  --lattice <WxHxD>        cells per world (default 32x32x16). Each world\n"
+                 "                           costs W*H*D*4 bytes twice over, and there is one\n"
+                 "                           world per group per trial, so a large box and a\n"
+                 "                           large population are alternatives\n"
+                 "  --neighbourhood <name>   faces|moore: whether a step may be diagonal\n"
+                 "                           (default moore). The input vector is 26 cells wide\n"
+                 "                           either way, so a population carries across\n"
+                 "  --move-threshold <x>     how sure a drive must be to become a step,\n"
+                 "                           0..1 (default 0.25). 0 means never standing still\n"
+                 "  --contact-radius <n>     cells from the beacon that count as reaching it\n"
+                 "                           (default 1). 0 means one agent per world can\n"
+                 "                           score at a time\n\n"
                  "Ablations:\n"
-                 "  --no-agent-collisions    disable agent-agent collisions\n"
-                 "  --no-agent-light         disable perception of other agents' signals\n"
-                 "  --swap-ends              two gaps: trade the ends every other generation\n"
-                 "  --uniform-beacon-color   ablate hue: both ends emit the average colour\n"
-                 "  --doors-by-generation    two doors: the dead end changes per generation,\n"
-                 "                           not per trial\n"
-                 "  --puck-breakaway <n>     puck world: how hard the world has to press before\n"
-                 "                           the puck moves, in agents leaning on it head-on.\n"
-                 "                           Above 1 no single agent can start it\n"
-                 "  --puck-scatter           puck world: place the puck anywhere in a ring each\n"
-                 "                           generation instead of on the axis in front of the\n"
-                 "                           agents, so finding it is part of the task\n"
-                 "  --gate-latch <s>         gate world: seconds the gate keeps running after\n"
-                 "                           the plate is released. 0 means somebody has to\n"
-                 "                           stand on it, so the task needs two agents\n"
-                 "  --no-trail               disable the ground trail field entirely\n"
-                 "  --trail <mode>           off|visual|sensed. visual keeps the field and draws\n"
-                 "                           it while the antennae read zero, which is the\n"
-                 "                           control for any claim about the trail\n"
-                 "  --neuron-model <name>    reactive|time|gated|spiking: where a hidden neuron's "
-                 "time\n"
-                 "                           constant comes from. reactive pins it to the step;\n"
-                 "                           spiking uses leaky integrate-and-fire pulses;\n"
-                 "                           gated recomputes it from inputs (default time)\n\n"
-                 "Trail field:\n"
-                 "  --trail-deposit <x>      agent mark laid per second (default 4.0)\n"
-                 "  --beacon-deposit <x>     beacon mark laid per second (default 12.0)\n"
-                 "  --trail-half-life <x>    seconds for a mark to fade to half (default 6)\n"
-                 "  --trail-cell-size <x>    ground metres per trail cell, 0.02..0.08 "
-                 "(default 0.06)\n\n"
+                 "  --neuron-model <name>    reactive|time|gated|spiking: where a hidden\n"
+                 "                           neuron's time constant comes from. reactive pins\n"
+                 "                           it to the step; spiking uses leaky\n"
+                 "                           integrate-and-fire pulses; gated recomputes it\n"
+                 "                           from inputs (default time)\n"
+                 "  --hidden <a[,b[,c]]>     hidden layer widths, front to back\n\n"
                  "Fitness shaping (sweepable without rebuilding):\n"
-                 "  --objective-bonus <x>    score per completed objective (default 2.0)\n"
-                 "  --motor-cost <x>         fitness charged per unit of effort (default 0.002)\n"
-                 "  --tracking-reward <x>    shaping for a moving beacon (default 0.25)\n"
-                 "  --signal-cost <x>        emission cost relative to moving (default 0.25)\n"
-                 "  --energy-drain <x>       battery drained per effort unit (default 0.0008)\n"
-                 "  --fitness-sharing <x>    0 individual selection, 1 whole-world "
-                 "(default 0)\n\n"
+                 "  --tracking-reward <x>    worth of the nearest it ever got (default 1.0)\n"
+                 "  --objective-bonus <x>    score per step within the contact radius (0.02)\n"
+                 "  --motor-cost <x>         charged per move made (default 0.002)\n"
+                 "  --refusal-penalty <x>    charged per move refused (default 0.01)\n"
+                 "  --signal-cost <x>        broadcast cost relative to moving (default 0.25)\n"
+                 "  --fitness-sharing <x>    0 individual selection, 1 whole-world (default 0)\n\n"
                  "Persistence:\n"
                  "  --load-population <path> resume from a genome archive\n"
-                 "  --load-world <path>      resume a whole experiment mid-generation\n"
-                 "  --save-world <path>      write the world state after the last "
-                 "generation\n"
+                 "  --load-run <path>        resume a whole experiment mid-generation\n"
+                 "  --save-run <path>        write the run state after the last generation\n"
                  "  --save-population <path> write the final population\n"
                  "  --save-champion <path>   write the best genome of the final generation\n"
+                 "  --describe-brain <path>  write the network's structure as JSON and exit\n"
                  "  --csv <path>             append per-generation statistics as CSV\n\n"
                  "Other:\n"
                  "  --quiet                  only print the final summary line\n"
@@ -174,32 +122,6 @@ template <typename T> T parseNumber(const std::string_view text, const std::stri
     return value;
 }
 
-vkexp::BeaconScenario parseScenario(const std::string_view name) {
-    for (const vkexp::ScenarioDefinition* definition : vkexp::scenarioRegistry()) {
-        if (name == definition->key) {
-            return definition->id;
-        }
-    }
-    fail("Unknown scenario: " + std::string{name} + " (expected one of " + scenarioKeyList() + ")");
-}
-
-[[nodiscard]] std::string locomotionKeyList() {
-    std::string keys;
-    for (const vkexp::LocomotionPreset& preset : vkexp::locomotionPresets) {
-        keys += keys.empty() ? "" : "|";
-        keys += preset.key;
-    }
-    return keys;
-}
-
-[[nodiscard]] vkexp::LocomotionStyle parseLocomotion(const std::string_view name) {
-    if (const vkexp::LocomotionPreset* const preset = vkexp::locomotionPresetForKey(name)) {
-        return preset->style;
-    }
-    fail("Unknown locomotion '" + std::string{name} + "' (expected one of " + locomotionKeyList() +
-         ")");
-}
-
 // "20", or "16,8", or "12,8,8": the hidden layers, front to back. Written this
 // way because that is how the network reads out loud, and because it makes the
 // depth visible in a run directory name.
@@ -208,9 +130,8 @@ vkexp::BeaconScenario parseScenario(const std::string_view name) {
     std::size_t start = 0;
     while (start <= text.size()) {
         const std::size_t comma = text.find(',', start);
-        const std::string_view piece =
-            text.substr(start, comma == std::string_view::npos ? std::string_view::npos
-                                                               : comma - start);
+        const std::string_view piece = text.substr(
+            start, comma == std::string_view::npos ? std::string_view::npos : comma - start);
         if (piece.empty()) {
             fail("Empty hidden layer width in '" + std::string{text} + "'");
         }
@@ -227,6 +148,33 @@ vkexp::BeaconScenario parseScenario(const std::string_view name) {
     return widths;
 }
 
+// "32x32x16". Three numbers rather than three options because the box is one
+// decision: a run directory named lattice-32x32x16 says what it was, and three
+// separate flags invite two of them to be changed and the third forgotten.
+void parseLatticeExtents(const std::string_view text, Options& options) {
+    std::vector<std::uint32_t> extents;
+    std::size_t start = 0;
+    while (start <= text.size()) {
+        const std::size_t separator = text.find('x', start);
+        const std::string_view piece = text.substr(
+            start, separator == std::string_view::npos ? std::string_view::npos : separator - start);
+        if (piece.empty()) {
+            fail("Empty extent in '" + std::string{text} + "'");
+        }
+        extents.push_back(parseNumber<std::uint32_t>(piece, "--lattice"));
+        if (separator == std::string_view::npos) {
+            break;
+        }
+        start = separator + 1;
+    }
+    if (extents.size() != 3) {
+        fail("--lattice takes three extents, as in 32x32x16");
+    }
+    options.latticeWidth = extents[0];
+    options.latticeHeight = extents[1];
+    options.latticeDepth = extents[2];
+}
+
 [[nodiscard]] std::string describeLayers(const vkexp::neuro::BrainShape& brain) {
     std::string text;
     for (std::size_t layer = 0; layer < brain.hiddenLayerCount(); ++layer) {
@@ -236,29 +184,18 @@ vkexp::BeaconScenario parseScenario(const std::string_view name) {
     return text;
 }
 
-[[nodiscard]] vkexp::TrailMode parseTrailMode(const std::string_view name) {
-    if (name == "off") {
-        return vkexp::TrailMode::Off;
+[[nodiscard]] vkexp::Neighborhood parseNeighborhood(const std::string_view name) {
+    if (name == "faces" || name == "6") {
+        return vkexp::Neighborhood::Faces;
     }
-    if (name == "visual") {
-        return vkexp::TrailMode::Visual;
+    if (name == "moore" || name == "26") {
+        return vkexp::Neighborhood::Moore;
     }
-    if (name == "sensed") {
-        return vkexp::TrailMode::Sensed;
-    }
-    fail("Unknown trail mode '" + std::string{name} + "'; expected off, visual or sensed");
+    fail("Unknown neighbourhood '" + std::string{name} + "'; expected faces or moore");
 }
 
-[[nodiscard]] const char* trailModeName(const vkexp::TrailMode mode) {
-    switch (mode) {
-    case vkexp::TrailMode::Off:
-        return "OFF";
-    case vkexp::TrailMode::Visual:
-        return "drawn but UNSMELLED";
-    case vkexp::TrailMode::Sensed:
-        return "on";
-    }
-    return "on";
+[[nodiscard]] const char* neighborhoodName(const vkexp::Neighborhood neighborhood) {
+    return neighborhood == vkexp::Neighborhood::Faces ? "faces only (6)" : "Moore (26)";
 }
 
 // Short names because they end up in run directories and CSV filenames.
@@ -275,7 +212,8 @@ vkexp::BeaconScenario parseScenario(const std::string_view name) {
     if (name == "spiking") {
         return vkexp::NeuronModel::Spiking;
     }
-    fail("Unknown neuron model '" + std::string{name} + "'; expected reactive, time, gated or spiking");
+    fail("Unknown neuron model '" + std::string{name} +
+         "'; expected reactive, time, gated or spiking");
 }
 
 // The short form, for files rather than for reading.
@@ -320,13 +258,10 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
         if (argument == "--help" || argument == "-h") {
             helpRequested = true;
             return options;
-        } else if (argument == "--scenario") {
-            options.scenario = parseScenario(next(index, argument));
         } else if (argument == "--generations") {
             options.generations = parseNumber<std::uint64_t>(next(index, argument), argument);
         } else if (argument == "--steps") {
-            options.stepsPerGeneration =
-                parseNumber<std::uint32_t>(next(index, argument), argument);
+            options.stepsPerGeneration = parseNumber<std::uint32_t>(next(index, argument), argument);
         } else if (argument == "--steps-per-batch") {
             options.stepsPerBatch = parseNumber<std::uint32_t>(next(index, argument), argument);
         } else if (argument == "--population") {
@@ -335,73 +270,28 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.agentsPerWorld = parseNumber<std::uint32_t>(next(index, argument), argument);
         } else if (argument == "--seed") {
             options.seed = parseNumber<std::uint32_t>(next(index, argument), argument);
-        } else if (argument == "--world-size") {
-            const std::string_view name = next(index, argument);
-            options.worldSize =
-                name == "small"    ? vkexp::WorldSize::Small
-                : name == "medium" ? vkexp::WorldSize::Medium
-                : name == "large"
-                    ? vkexp::WorldSize::Large
-                    : throw std::runtime_error("Unknown world size: " + std::string{name});
-        } else if (argument == "--world-shape") {
-            const std::string_view name = next(index, argument);
-            options.worldShape =
-                name == "circle" ? vkexp::WorldShape::Circle
-                : name == "square"
-                    ? vkexp::WorldShape::Square
-                    : throw std::runtime_error("Unknown world shape: " + std::string{name});
+        } else if (argument == "--lattice") {
+            parseLatticeExtents(next(index, argument), options);
+        } else if (argument == "--neighbourhood" || argument == "--neighborhood") {
+            options.neighborhood = parseNeighborhood(next(index, argument));
+        } else if (argument == "--move-threshold") {
+            options.moveThreshold = parseNumber<float>(next(index, argument), argument);
+        } else if (argument == "--contact-radius") {
+            options.contactRadius = parseNumber<std::uint32_t>(next(index, argument), argument);
+        } else if (argument == "--tracking-reward") {
+            options.fitness.trackingReward = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--objective-bonus") {
             options.fitness.objectiveBonus = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--motor-cost") {
             options.fitness.motorCostWeight = parseNumber<float>(next(index, argument), argument);
-        } else if (argument == "--tracking-reward") {
-            options.fitness.trackingReward = parseNumber<float>(next(index, argument), argument);
+        } else if (argument == "--refusal-penalty") {
+            options.fitness.refusalPenalty = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--signal-cost") {
             options.fitness.signalCostFactor = parseNumber<float>(next(index, argument), argument);
-        } else if (argument == "--energy-drain") {
-            options.fitness.energyDrain = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--fitness-sharing") {
             options.fitness.groupSharing = parseNumber<float>(next(index, argument), argument);
-        } else if (argument == "--beacon-speed") {
-            options.beaconAngularSpeed = parseNumber<float>(next(index, argument), argument);
-        } else if (argument == "--orbit-ratio") {
-            options.beaconRadiusRatio = parseNumber<float>(next(index, argument), argument);
-        } else if (argument == "--light-range") {
-            options.lightSensorRange = parseNumber<float>(next(index, argument), argument);
-        } else if (argument == "--max-speed") {
-            options.maximumSpeed = parseNumber<float>(next(index, argument), argument);
-        } else if (argument == "--no-trail") {
-            options.trailMode = vkexp::TrailMode::Off;
-        } else if (argument == "--trail") {
-            options.trailMode = parseTrailMode(next(index, argument));
-        } else if (argument == "--trail-deposit") {
-            options.trailDepositRate = parseNumber<float>(next(index, argument), argument);
-        } else if (argument == "--beacon-deposit") {
-            options.beaconTrailDepositRate = parseNumber<float>(next(index, argument), argument);
-        } else if (argument == "--trail-cell-size") {
-            options.trailCellSize = parseNumber<float>(next(index, argument), argument);
-        } else if (argument == "--trail-half-life") {
-            options.trailHalfLife = parseNumber<float>(next(index, argument), argument);
-        } else if (argument == "--no-agent-collisions") {
-            options.agentCollisions = false;
-        } else if (argument == "--locomotion") {
-            options.locomotion = parseLocomotion(next(index, argument));
         } else if (argument == "--neuron-model") {
             options.neuronModel = parseNeuronModel(next(index, argument));
-        } else if (argument == "--no-agent-light") {
-            options.agentLight = false;
-        } else if (argument == "--swap-ends") {
-            options.swapDeliveryEnds = true;
-        } else if (argument == "--uniform-beacon-color") {
-            options.uniformBeaconColor = true;
-        } else if (argument == "--doors-by-generation") {
-            options.blockedDoorPerGeneration = true;
-        } else if (argument == "--puck-breakaway") {
-            options.puckBreakawayPushes = parseNumber<float>(next(index, argument), argument);
-        } else if (argument == "--puck-scatter") {
-            options.puckRandomStart = true;
-        } else if (argument == "--gate-latch") {
-            options.gateLatchSeconds = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--quiet") {
             options.quiet = true;
         } else if (argument == "--save-population") {
@@ -414,10 +304,10 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.describeBrain = next(index, argument);
         } else if (argument == "--load-population") {
             options.loadPopulation = next(index, argument);
-        } else if (argument == "--save-world") {
-            options.saveWorld = next(index, argument);
-        } else if (argument == "--load-world") {
-            options.loadWorld = next(index, argument);
+        } else if (argument == "--save-run") {
+            options.saveRun = next(index, argument);
+        } else if (argument == "--load-run") {
+            options.loadRun = next(index, argument);
         } else if (argument == "--csv") {
             options.csvPath = next(index, argument);
         } else {
@@ -430,18 +320,17 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
     return options;
 }
 
-// Writing down the structure is not a run: it follows from the scenario and the
-// neuron model alone, needs no device, and answers a question about the build
-// rather than about an experiment. So it is its own action, like --help, and the
-// run options around it are not even validated.
+// Writing down the structure is not a run: it follows from the brain plan and
+// the neuron model alone, needs no device, and answers a question about the
+// build rather than about an experiment. So it is its own action, like --help,
+// and the run options around it are not even validated.
 void describeBrainAndExit(const Options& options) {
     vkexp::SimulationStep settings{};
     for (std::size_t layer = 0; layer < options.hiddenLayers.size(); ++layer) {
         settings.hiddenLayers[layer] = options.hiddenLayers[layer];
     }
     const vkexp::neuro::BrainDescription description = vkexp::neuro::describeBrain(
-        vkexp::resolvedBrain(vkexp::scenarioDefinition(options.scenario), settings),
-        neuronModelKey(options.neuronModel));
+        vkexp::resolvedBrain(settings), neuronModelKey(options.neuronModel));
     std::ofstream stream{options.describeBrain, std::ios::trunc};
     if (!stream) {
         fail("Unable to write the brain description to " + options.describeBrain);
@@ -456,66 +345,28 @@ void describeBrainAndExit(const Options& options) {
 }
 
 int run(const Options& options) {
-    vkexp::HeadlessComputeContext context{{"vkneuro headless evolution"}};
+    vkexp::HeadlessComputeContext context{{"vklat headless evolution"}};
 
     vkexp::SimulationState state;
-    // Unset means the scenario's own nominal, so a world that needs a longer
-    // trial than the usual one gets it without having to be remembered about.
-    // Naming --steps overrides it, including downwards.
-    state.controls.stepsPerGeneration =
-        options.stepsPerGeneration > 0
-            ? options.stepsPerGeneration
-            : vkexp::scenarioDefinition(options.scenario).nominalStepsPerGeneration;
+    state.controls.stepsPerGeneration = options.stepsPerGeneration;
     state.worlds.requestedAgentsPerWorld = options.agentsPerWorld;
-    state.physics.beaconScenario = options.scenario;
-    state.physics.worldShape = options.worldShape;
-    state.physics.worldSize = options.worldSize;
-    state.physics.worldRadius = vkexp::worldRadiusForSize(options.worldSize);
-    state.physics.lightSensorRange = vkexp::lightRangeForWorld(state.physics);
-    state.physics.agentCollisionsEnabled = options.agentCollisions;
-    state.physics.agentLightEnabled = options.agentLight;
-    state.physics.swapDeliveryEnds = options.swapDeliveryEnds;
-    state.physics.uniformBeaconColor = options.uniformBeaconColor;
-    state.physics.blockedDoorPerGeneration = options.blockedDoorPerGeneration;
-    state.physics.gateLatchSeconds = options.gateLatchSeconds;
-    state.physics.puckBreakawayPushes = options.puckBreakawayPushes;
-    state.physics.puckRandomStart = options.puckRandomStart;
-    if (options.locomotion) {
-        vkexp::applyLocomotionPreset(state.physics, *options.locomotion);
+    if (options.latticeWidth) {
+        state.settings.latticeWidth = *options.latticeWidth;
+        state.settings.latticeHeight = *options.latticeHeight;
+        state.settings.latticeDepth = *options.latticeDepth;
     }
-    state.physics.fitness = options.fitness;
-    if (options.beaconAngularSpeed) {
-        state.physics.beaconAngularSpeed = *options.beaconAngularSpeed;
+    state.settings.neighborhood = options.neighborhood;
+    if (options.moveThreshold) {
+        state.settings.moveThreshold = std::clamp(*options.moveThreshold, 0.0F, 1.0F);
     }
-    if (options.beaconRadiusRatio) {
-        state.physics.beaconRadiusRatio = *options.beaconRadiusRatio;
+    if (options.contactRadius) {
+        state.settings.beaconContactRadius = *options.contactRadius;
     }
-    if (options.lightSensorRange) {
-        state.physics.lightSensorRange = *options.lightSensorRange;
-    }
-    if (options.maximumSpeed) {
-        state.physics.maximumSpeed = *options.maximumSpeed;
-    }
-    state.physics.trailMode = options.trailMode;
+    state.settings.fitness = options.fitness;
     for (std::size_t layer = 0; layer < options.hiddenLayers.size(); ++layer) {
-        state.physics.hiddenLayers[layer] = options.hiddenLayers[layer];
+        state.settings.hiddenLayers[layer] = options.hiddenLayers[layer];
     }
-    state.physics.neuronModel = options.neuronModel;
-    if (options.trailDepositRate) {
-        state.physics.trailDepositRate = *options.trailDepositRate;
-    }
-    if (options.beaconTrailDepositRate) {
-        state.physics.beaconTrailDepositRate = *options.beaconTrailDepositRate;
-    }
-    if (options.trailHalfLife) {
-        state.physics.trailHalfLife = *options.trailHalfLife;
-    }
-    if (options.trailCellSize) {
-        state.physics.trailCellSize =
-            std::clamp(*options.trailCellSize,
-                       vkexp::trailCellSizeForBodyFraction(vkexp::trailCellFractionFinest),
-                       vkexp::trailCellSizeForBodyFraction(vkexp::trailCellFractionCoarsest));
-    }
+    state.settings.neuronModel = options.neuronModel;
 
     vkexp::EvolutionSettings evolution;
     evolution.populationSize = options.populationSize;
@@ -527,27 +378,25 @@ int run(const Options& options) {
     vkexp::SimulationDriver driver{state, evolution, config};
     driver.createResources(context.physicalDevice(), context.device());
 
-    // Before the scenario is resolved: a snapshot carries the world it ran in, so
-    // it decides the scenario, the arena and the physics. The command line only
-    // fills in what the file does not cover.
-    if (!options.loadWorld.empty() && !options.loadPopulation.empty()) {
-        fail("--load-world and --load-population both set the population; pass one");
+    // A snapshot carries the lattice it ran in, so it decides the box, the
+    // beacon placement and the shaping. The command line only fills in what the
+    // file does not cover.
+    if (!options.loadRun.empty() && !options.loadPopulation.empty()) {
+        fail("--load-run and --load-population both set the population; pass one");
     }
-    if (!options.loadWorld.empty()) {
-        const vkexp::WorldSnapshot world = vkexp::loadWorldSnapshot(options.loadWorld);
-        driver.restoreSnapshot(world);
+    if (!options.loadRun.empty()) {
+        const vkexp::RunSnapshot snapshot = vkexp::loadRunSnapshot(options.loadRun);
+        driver.restoreSnapshot(snapshot);
         if (!options.quiet) {
-            std::cout << "Resumed " << world.genomes.size() << " genomes from "
-                      << options.loadWorld << " at generation " << world.generation << ", step "
-                      << world.step << " of " << world.stepsPerGeneration << " ("
-                      << vkexp::scenarioDefinition(world.physics.beaconScenario).name << ")\n";
+            std::cout << "Resumed " << snapshot.genomes.size() << " genomes from "
+                      << options.loadRun << " at generation " << snapshot.generation << ", step "
+                      << snapshot.step << " of " << snapshot.stepsPerGeneration << '\n';
         }
     }
 
-    const vkexp::ScenarioDefinition& scenario =
-        vkexp::scenarioDefinition(state.physics.beaconScenario);
-    const vkexp::neuro::BrainShape runBrain = vkexp::resolvedBrain(scenario, state.physics);
-    if (!options.hiddenLayers.empty() && runBrain.hiddenLayerCount() != options.hiddenLayers.size()) {
+    const vkexp::neuro::BrainShape runBrain = vkexp::resolvedBrain(state.settings);
+    if (!options.hiddenLayers.empty() &&
+        runBrain.hiddenLayerCount() != options.hiddenLayers.size()) {
         fail("The requested hidden layers do not fit the genome capacity");
     }
 
@@ -559,9 +408,8 @@ int run(const Options& options) {
                       << options.loadPopulation << " at generation " << archive.metadata.generation
                       << '\n';
             // Whether anything about the layout was actually checked, rather
-            // than only the number of weights. A version 1 file cannot say what
-            // its weights mean, and a resumed run that quietly reinterprets them
-            // still produces a plausible curve.
+            // than only the number of weights. A file that cannot say what its
+            // weights mean still produces a plausible curve when reinterpreted.
             std::cout << "Structure:  "
                       << (archive.describedStructure
                               ? "checked against the file"
@@ -578,13 +426,22 @@ int run(const Options& options) {
             fail("Unable to open CSV output: " + options.csvPath);
         }
         if (!existed) {
-            *csv << "generation,scenario,seed,best,median,mean,arrival_ratio\n";
+            *csv << "generation,lattice,seed,best,median,mean,arrival_ratio\n";
         }
     }
 
+    // After the driver has had its say: refreshLattice clamps the box to what
+    // the occupancy allocation holds at this population size, and reporting the
+    // box that was asked for rather than the one that is running is how a run
+    // gets filed under the wrong name.
+    const std::string latticeText = std::to_string(state.settings.latticeWidth) + "x" +
+                                    std::to_string(state.settings.latticeHeight) + "x" +
+                                    std::to_string(state.settings.latticeDepth);
+
     if (!options.quiet) {
         std::cout << "Device:     " << context.deviceName() << '\n'
-                  << "Scenario:   " << scenario.name << '\n'
+                  << "Lattice:    " << latticeText << " = " << latticeCellsPerWorld(state.settings)
+                  << " cells per world, " << neighborhoodName(state.settings.neighborhood) << '\n'
                   << "Brain:      " << runBrain.inputCount << " -> " << describeLayers(runBrain)
                   << " -> " << runBrain.outputCount << '\n'
                   << "Trial:      " << state.controls.stepsPerGeneration
@@ -592,39 +449,23 @@ int run(const Options& options) {
                   << vkexp::units::secondsForSteps(state.controls.stepsPerGeneration,
                                                    vkexp::units::fixedTimeStep)
                   << " s at " << vkexp::units::simulationRateHz << " Hz\n"
-                  << std::setprecision(2) << "World:      " << state.physics.worldRadius * 2.0F
-                  << " m across, body "
-                  << vkexp::units::metresToCentimetres(vkexp::agentBodyRadius * 2.0F) << " cm\n"
                   << std::defaultfloat << std::setprecision(6)
                   << "Population: " << driver.evolution().population().size() << " genomes x "
                   << driver.config().trialsPerGenome << " trials = " << state.agents.agentCount
-                  << " agents in " << state.worlds.worldCount << " logical worlds\n"
-                  << "Ablations:  agent collisions "
-                  << (state.physics.agentCollisionsEnabled ? "on" : "OFF") << ", agent light "
-                  << (state.physics.agentLightEnabled ? "on" : "OFF") << ", trail "
-                  << trailModeName(state.physics.trailMode) << ", beacon hue "
-                  << (state.physics.uniformBeaconColor ? "ABLATED" : "on") << '\n'
-                  << "Neurons:    " << neuronModelName(state.physics.neuronModel) << '\n';
-        // Only when it is on, and only where it does something, so a default
-        // run's output stays comparable with every run recorded before it.
-        if (state.physics.swapDeliveryEnds &&
-            vkexp::scenarioDefinition(state.physics.beaconScenario).tunables.swapDeliveryEnds) {
-            std::cout << "World:      the two ends trade places on odd generations\n";
-        }
-        if (state.physics.blockedDoorPerGeneration &&
-            vkexp::scenarioDefinition(state.physics.beaconScenario)
-                .tunables.blockedDoorPerGeneration) {
-            std::cout << "World:      the dead end changes by generation, not by trial\n";
-        }
-        // Only when it is on, so a default run's output stays byte-identical to
+                  << " agents in " << state.worlds.worldCount << " lattices\n"
+                  << "Movement:   threshold " << std::fixed << std::setprecision(2)
+                  << state.settings.moveThreshold << ", beacon reached within "
+                  << std::defaultfloat << std::setprecision(6)
+                  << state.settings.beaconContactRadius << " cell(s)\n"
+                  << "Neurons:    " << neuronModelName(state.settings.neuronModel) << '\n';
+        // Only when it is on, so a default run's output stays comparable with
         // every run recorded before the option existed.
-        if (state.physics.fitness.groupSharing > 0.0F) {
+        if (state.settings.fitness.groupSharing > 0.0F) {
             std::cout << "Selection:  group fitness sharing " << std::fixed << std::setprecision(2)
-                      << state.physics.fitness.groupSharing << std::defaultfloat
+                      << state.settings.fitness.groupSharing << std::defaultfloat
                       << std::setprecision(6) << " (plotted fitness stays individual)\n";
         }
-        std::cout << '\n'
-                  << "  gen        best      median        mean   arrival\n";
+        std::cout << '\n' << "  gen        best      median        mean   arrival\n";
     }
 
     const std::uint64_t firstGeneration = driver.evolution().generation();
@@ -646,7 +487,7 @@ int run(const Options& options) {
                       << state.statistics.arrivalRatio << '\n';
         }
         if (csv) {
-            *csv << generation << ',' << scenario.name << ',' << options.seed << ','
+            *csv << generation << ',' << latticeText << ',' << options.seed << ','
                  << state.statistics.bestFitness << ',' << state.statistics.medianFitness << ','
                  << state.statistics.meanFitness << ',' << state.statistics.arrivalRatio << '\n';
         }
@@ -667,12 +508,12 @@ int run(const Options& options) {
                       << '\n';
         }
     }
-    if (!options.saveWorld.empty()) {
+    if (!options.saveRun.empty()) {
         // The device is idle here -- the last generation was waited on before it
         // was scored -- which is what snapshot() requires to read the agents back.
-        vkexp::saveWorldSnapshot(options.saveWorld, driver.snapshot());
+        vkexp::saveRunSnapshot(options.saveRun, driver.snapshot());
         if (!options.quiet) {
-            std::cout << "Saved the world to " << options.saveWorld << '\n';
+            std::cout << "Saved the run to " << options.saveRun << '\n';
         }
     }
     if (!options.saveChampion.empty()) {

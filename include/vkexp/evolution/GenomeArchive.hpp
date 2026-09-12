@@ -22,7 +22,11 @@ public:
 // to the experiment that produced it.
 struct GenomeArchiveMetadata {
     std::uint64_t generation{};
-    std::uint32_t scenario{};
+    // Which lattice the weights were trained against, as the beacon seed that
+    // placed it. It occupies the slot the scenario number used to, and says the
+    // same kind of thing: the one number that distinguishes one world from
+    // another now that there is only one kind of world.
+    std::uint32_t beaconSeed{};
     std::uint32_t seed{};
     float bestFitness{};
     float meanFitness{};
@@ -51,10 +55,14 @@ struct GenomeArchive {
 
 // 2 added the structure block; 3 added the hidden layer plan, because a genome
 // is now as long as its own network rather than one length everything shares.
-// Older files still load: a file without a plan is one hidden layer, which is
-// what every file written before plans existed holds.
-inline constexpr std::uint32_t genomeArchiveVersion = 3;
-inline constexpr std::uint32_t genomeArchiveOldestVersion = 1;
+// 4 is the lattice. Nothing about the format changed -- the scenario slot became
+// the beacon seed, which is the same width -- but everything the numbers mean
+// did: the input vector is a neighbourhood rather than a photoreceptor array,
+// and weights from a 2D run would load and steer nothing. So 4 is the oldest
+// readable version too, which is the only honest thing to say about a file whose
+// every weight now addresses a different sensor.
+inline constexpr std::uint32_t genomeArchiveVersion = 4;
+inline constexpr std::uint32_t genomeArchiveOldestVersion = 4;
 
 // Writes a versioned little-endian archive, followed by the JSON structure the
 // weights are laid out under. Six numbers in a header can say that a file no

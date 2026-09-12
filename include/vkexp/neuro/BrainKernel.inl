@@ -6,23 +6,47 @@
 // the same declaration. Adding a sensor changes the counts here and nothing
 // else: the construction below is written once and derives every offset.
 //
-// Same common-subset rules as ScenarioKernel.inl: VKEXP_BRAIN_FN in front of
+// Same common-subset rules as LatticeKernel.inl: VKEXP_BRAIN_FN in front of
 // every function, only uint/bool across boundaries, no standard library. Note
 // that GLSL reserves more words than C++ does -- `input`, `output`, `layout`,
 // `filter`, `active` and friends cannot be identifiers here.
+//
+// What this file is *not* is where the world is described. It knows the input
+// vector has a block for the neighbourhood and how wide that block is; what a
+// neighbour is, and how one is reached, is LatticeKernel.inl's business. That
+// split is what lets the lattice change shape without the genome changing
+// length.
 
 // --- preset: change these when the sensor suite or brain width changes -------
 
-const uint BrainLightReceptorCount = 7u;
-const uint BrainLightChannels = 4u; // RGB + luminance
-const uint BrainTactileSectorCount = 8u;
-const uint BrainTactileChannels = 2u;     // wall + agent
-const uint BrainAntennaCount = 3u;        // left, centre, right ground feelers
-const uint BrainAntennaChannels = 3u;     // RGB of the trail under the tip
-const uint BrainSelfInputCount = 4u;      // speed, turn rate, energy, own signal
-const uint BrainTaskInputCount = 2u;      // cargo level, seeking-home flag
-const uint BrainRecurrentCount = 2u;      // memory cells, fed back as inputs
-const uint BrainActuatorOutputCount = 6u; // left, right, R, G, B, intensity
+// The Moore neighbourhood, one slot per surrounding cell. Restated rather than
+// included from LatticeKernel.inl because the two kernels compile into separate
+// namespaces on the C++ side and GLSL has no namespaces at all; testLatticeBrain
+// asserts the two agree, which is the same arrangement the 2D build used for the
+// body radius it shared with the scenario kernel.
+const uint BrainNeighborCount = 26u;
+// Something is standing there, the lattice ends there, and how loudly its
+// occupant is signalling. The third channel is the whole of agent-to-agent
+// perception: an agent reads its neighbour's broadcast, never its state.
+const uint BrainNeighborChannels = 3u;
+// Unit vector to the beacon, and how near it is.
+const uint BrainBeaconInputCount = 4u;
+// Heading as a unit vector, and whether the last move was refused. The heading
+// is fed back rather than kept implicit because a move is chosen in lattice axes
+// and not relative to a facing: without this the network has no way to know
+// which way it was already going.
+const uint BrainSelfInputCount = 4u;
+const uint BrainRecurrentCount = 2u; // memory cells, fed back as inputs
+
+// One drive per axis rather than one per direction. Twenty-seven directions
+// would need twenty-seven outputs and an argmax over them; three signed drives
+// with a dead zone span the same moves, cost three slots, and leave "stay put"
+// reachable by not committing. See LatticeKernel.inl for how a drive becomes a
+// step.
+const uint BrainMoveOutputCount = 3u;
+const uint BrainSignalOutputCount = 1u;
+const uint BrainActuatorOutputCount = BrainMoveOutputCount + BrainSignalOutputCount;
+
 // Hidden neurons in total, across however many layers there are, and how many
 // layers there may be. Both are compile-time because both size arrays: the
 // shader's scratch buffers, and the state block on the agent record. A plan
@@ -38,101 +62,34 @@ const uint BrainHiddenNeuronCapacity = 32u;
 const uint BrainHiddenLayerCapacity = 3u;
 
 // The one hidden layer this network had before plans existed, and still what a
-// scenario means when it does not say otherwise. Separate from the capacity on
+// world means when it does not say otherwise. Separate from the capacity on
 // purpose: raising how many neurons there *may* be must not quietly widen every
 // world's brain, which is exactly what sharing one constant would have done.
 const uint BrainDefaultHiddenWidth = 20u;
 
 // --- derived layout: never edited by hand ------------------------------------
 
-const uint BrainLightBlockSize = BrainLightReceptorCount * BrainLightChannels;
-const uint BrainTactileBlockSize = BrainTactileSectorCount * BrainTactileChannels;
-const uint BrainAntennaBlockSize = BrainAntennaCount * BrainAntennaChannels;
+const uint BrainNeighborBlockSize = BrainNeighborCount * BrainNeighborChannels;
 
-// The antenna block sits inside the reactive prefix, ahead of the task and
-// recurrent blocks that scenarios trim: every scenario can smell the ground.
-const uint BrainLightOffset = 0u;
-const uint BrainTactileOffset = BrainLightOffset + BrainLightBlockSize;
-const uint BrainAntennaOffset = BrainTactileOffset + BrainTactileBlockSize;
-const uint BrainSelfOffset = BrainAntennaOffset + BrainAntennaBlockSize;
-const uint BrainTaskOffset = BrainSelfOffset + BrainSelfInputCount;
-const uint BrainRecurrentInputOffset = BrainTaskOffset + BrainTaskInputCount;
+// The neighbourhood goes first and keeps its width whatever the movement
+// setting is: "how many directions can I see" and "how many can I walk" are
+// separate claims, and only the second changes what the brain has to solve.
+const uint BrainNeighborOffset = 0u;
+const uint BrainBeaconOffset = BrainNeighborOffset + BrainNeighborBlockSize;
+const uint BrainSelfOffset = BrainBeaconOffset + BrainBeaconInputCount;
+const uint BrainRecurrentInputOffset = BrainSelfOffset + BrainSelfInputCount;
 const uint BrainInputCapacity = BrainRecurrentInputOffset + BrainRecurrentCount;
 
-const uint BrainMotorLeftOutput = 0u;
-const uint BrainMotorRightOutput = 1u;
-const uint BrainSignalColorOutput = 2u; // three consecutive channels
-const uint BrainSignalIntensityOutput = 5u;
+const uint BrainMoveOutput = 0u; // three consecutive channels, x then y then z
+const uint BrainSignalIntensityOutput = BrainMoveOutputCount;
 const uint BrainRecurrentOutputOffset = BrainActuatorOutputCount;
 const uint BrainOutputCapacity = BrainActuatorOutputCount + BrainRecurrentCount;
 
-VKEXP_BRAIN_FN uint brainLightChannelIndex(uint receptor, uint channel) {
-    return BrainLightOffset + receptor * BrainLightChannels + channel;
+VKEXP_BRAIN_FN uint brainNeighborChannelIndex(uint neighbor, uint channel) {
+    return BrainNeighborOffset + neighbor * BrainNeighborChannels + channel;
 }
 
-VKEXP_BRAIN_FN uint brainTactileChannelIndex(uint sector, uint channel) {
-    return BrainTactileOffset + sector * BrainTactileChannels + channel;
-}
-
-VKEXP_BRAIN_FN uint brainAntennaChannelIndex(uint antenna, uint channel) {
-    return BrainAntennaOffset + antenna * BrainAntennaChannels + channel;
-}
-
-// --- sensor response model ---------------------------------------------------
-//
-// What a receptor *is*: how sharply it is tuned, how light falls off with range,
-// and how RGB collapses to luminance. These use float math, so they carry the
-// VKEXP_BRAIN_MATH_FN marker instead -- the C++ side cannot make them constexpr.
-
-const float BrainReceptorSharpness = 12.0f;
-const float BrainLightFalloffWidth = 0.25f;
-const float BrainDistanceAttenuation = 2.0f;
-const float BrainLuminanceRed = 0.2126f;
-const float BrainLuminanceGreen = 0.7152f;
-const float BrainLuminanceBlue = 0.0722f;
-
-// Smooth cut-off at the edge of sensor range.
-VKEXP_BRAIN_MATH_FN float brainRangeFalloff(float distanceToLight, float range) {
-    const float fade =
-        clamp((range - distanceToLight) / (range * BrainLightFalloffWidth), 0.0f, 1.0f);
-    return fade * fade * (3.0f - 2.0f * fade);
-}
-
-// Directional tuning of one receptor; `alignment` is a clamped cosine.
-VKEXP_BRAIN_MATH_FN float brainReceptorResponse(float alignment) {
-    return pow(alignment, BrainReceptorSharpness);
-}
-
-VKEXP_BRAIN_MATH_FN float brainDistanceAttenuation(float normalizedDistanceSquared) {
-    return 1.0f / (1.0f + normalizedDistanceSquared * BrainDistanceAttenuation);
-}
-
-// Trail deposits are unbounded -- a cell many agents stand on keeps growing --
-// so the reading is squashed into [0, 1) rather than clamped, which keeps a
-// strong scent distinguishable from an overwhelming one.
-VKEXP_BRAIN_MATH_FN float brainTrailResponse(float deposit) { return deposit / (1.0f + deposit); }
-
-// --- antenna geometry --------------------------------------------------------
-//
-// Where the ground feelers sit. They reach well past the body on purpose: the
-// three tips have to land in different trail cells for the reading to carry a
-// gradient at all, so their lateral spread is what sets the usable trail
-// resolution. At 12 cm and 0.7 rad the outer tips are 15 cm apart, which stays
-// legible on the 6 cm trail cells.
-
-const float BrainAntennaLength = 0.12f;    // m from the body centre
-const float BrainAntennaHalfSpread = 0.7f; // rad from the heading
-
-// Angle of one antenna relative to the agent's heading.
-VKEXP_BRAIN_MATH_FN float brainAntennaAngle(uint antenna) {
-    const float fraction =
-        BrainAntennaCount > 1u ? float(antenna) / float(BrainAntennaCount - 1u) - 0.5f : 0.0f;
-    return fraction * 2.0f * BrainAntennaHalfSpread;
-}
-
-VKEXP_BRAIN_MATH_FN float brainLuminance(float red, float green, float blue) {
-    return red * BrainLuminanceRed + green * BrainLuminanceGreen + blue * BrainLuminanceBlue;
-}
+VKEXP_BRAIN_FN uint brainBeaconInputIndex(uint channel) { return BrainBeaconOffset + channel; }
 
 // --- activation --------------------------------------------------------------
 //

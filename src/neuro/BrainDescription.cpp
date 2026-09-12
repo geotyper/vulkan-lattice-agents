@@ -325,8 +325,8 @@ BrainDescription describeBrain(const BrainShape shape, const std::string_view ne
     description.neuronModel = std::string{neuronModel};
 
     // Sensor blocks, each asking the kernel where its first channel lands rather
-    // than restating an offset. A scenario that trims the input vector keeps a
-    // dense prefix, so a block past the active count is simply not there.
+    // than restating an offset. A plan that trims the input vector keeps a dense
+    // prefix, so a block past the active count is simply not there.
     const auto addInput = [&](std::string name, const uint offset, const uint count,
                               const uint rows, const uint columns) {
         if (offset >= inputCount) {
@@ -336,14 +336,10 @@ BrainDescription describeBrain(const BrainShape shape, const std::string_view ne
             vectorBlock(std::move(name), offset, std::min(count, inputCount - offset), rows,
                         columns));
     };
-    addInput("light", bk::brainLightChannelIndex(0u, 0u), bk::BrainLightBlockSize,
-             bk::BrainLightReceptorCount, bk::BrainLightChannels);
-    addInput("tactile", bk::brainTactileChannelIndex(0u, 0u), bk::BrainTactileBlockSize,
-             bk::BrainTactileSectorCount, bk::BrainTactileChannels);
-    addInput("antennae", bk::brainAntennaChannelIndex(0u, 0u), bk::BrainAntennaBlockSize,
-             bk::BrainAntennaCount, bk::BrainAntennaChannels);
+    addInput("neighbourhood", bk::brainNeighborChannelIndex(0u, 0u), bk::BrainNeighborBlockSize,
+             bk::BrainNeighborCount, bk::BrainNeighborChannels);
+    addInput("beacon", bk::brainBeaconInputIndex(0u), bk::BrainBeaconInputCount, 0, 0);
     addInput("self", bk::BrainSelfOffset, bk::BrainSelfInputCount, 0, 0);
-    addInput("task", bk::BrainTaskOffset, bk::BrainTaskInputCount, 0, 0);
     addInput("memory_in", bk::BrainRecurrentInputOffset, bk::BrainRecurrentCount, 0, 0);
 
     const auto addOutput = [&](std::string name, const uint offset, const uint count) {
@@ -353,10 +349,8 @@ BrainDescription describeBrain(const BrainShape shape, const std::string_view ne
         description.outputs.push_back(
             vectorBlock(std::move(name), offset, std::min(count, outputCount - offset)));
     };
-    addOutput("motor_left", bk::BrainMotorLeftOutput, 1u);
-    addOutput("motor_right", bk::BrainMotorRightOutput, 1u);
-    addOutput("signal_color", bk::BrainSignalColorOutput, 3u);
-    addOutput("signal_intensity", bk::BrainSignalIntensityOutput, 1u);
+    addOutput("move", bk::BrainMoveOutput, bk::BrainMoveOutputCount);
+    addOutput("signal", bk::BrainSignalIntensityOutput, bk::BrainSignalOutputCount);
     addOutput("memory_out", bk::BrainRecurrentOutputOffset, bk::BrainRecurrentCount);
 
     // The genome, block by block, in the order it is laid out. Offsets come from

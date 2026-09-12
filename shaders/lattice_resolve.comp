@@ -1,0 +1,87 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "neuro/brain_kernel.glsl"
+#include "lattice/lattice_kernel.glsl"
+#include "simulation/step_parameters.glsl"
+#include "simulation/agent_layout.glsl"
+
+// The move half of a step: every bid is in, so who won is settled and each agent
+// can be told the answer without looking at any other. This is also where the
+// step's accumulators are charged, so that what fitness counts and what the
+// lattice did are decided in one place.
+//
+// The occupancy writes below never collide. An agent only ever clears its own
+// former cell, and a cell can only be won if it was empty when the step began --
+// so the cell being written and the cell being cleared are always different
+// cells with different owners.
+//
+// Mirrors the "resolve" loop of vkexp::stepLatticeCpu.
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+// The buffer the step pass just wrote, read and written in place: this pass adds
+// to a record rather than producing a new one.
+layout(std430, set = 0, binding = 0) buffer Agents {
+    Agent agents[];
+};
+layout(std430, set = 0, binding = 1) buffer Occupancy {
+    int occupancy[];
+};
+layout(std430, set = 0, binding = 2) readonly buffer Claims {
+    int claims[];
+};
+layout(std430, set = 0, binding = 3) readonly buffer StepParameterBlocks {
+    StepParameters stepParameters[];
+};
+
+layout(push_constant) uniform StepSelector {
+    uint stepIndex;
+} selector;
+
+void main() {
+    const uint id = gl_GlobalInvocationID.x;
+    const StepParameters params = stepParameters[selector.stepIndex];
+    if (id >= params.agentCount) {
+        return;
+    }
+
+    Agent agent = agents[id];
+    const uint worldBase = uint(agent.beacon.w) * params.cellsPerWorld;
+
+    bool refused = agent.intent.w != 0;
+    bool moved = false;
+    if (agent.intent.xyz != agent.cell.xyz) {
+        const uint wanted = latticeCellIndex(agent.intent.x, agent.intent.y, agent.intent.z,
+                                             params.latticeWidth, params.latticeHeight);
+        if (claims[worldBase + wanted] == int(id)) {
+            const uint vacated = latticeCellIndex(agent.cell.x, agent.cell.y, agent.cell.z,
+                                                  params.latticeWidth, params.latticeHeight);
+            occupancy[worldBase + vacated] = LatticeNoOccupant;
+            occupancy[worldBase + wanted] = int(id);
+            agent.cell.w = int(latticeNeighborIndex(agent.intent.x - agent.cell.x,
+                                                    agent.intent.y - agent.cell.y,
+                                                    agent.intent.z - agent.cell.z));
+            agent.cell.xyz = agent.intent.xyz;
+            moved = true;
+        } else {
+            refused = true; // lost the cell to a lower-numbered agent
+        }
+    }
+    // The flag the next step reads back as a self input, so a policy can notice
+    // it is stuck without having to infer it from the neighbourhood.
+    agent.intent = ivec4(agent.cell.xyz, refused ? 1 : 0);
+
+    agent.metrics.z += (moved ? 1.0 : 0.0) + params.fitness.signalCostFactor * agent.signal.x;
+    if (refused) {
+        agent.metrics.w += 1.0;
+    }
+    const uint distance =
+        latticeStepDistance(params.neighborhood, agent.beacon.x - agent.cell.x,
+                            agent.beacon.y - agent.cell.y, agent.beacon.z - agent.cell.z);
+    agent.metrics.x = max(agent.metrics.x, latticeNearness(distance, params.maximumDistance));
+    if (latticeBeaconReached(distance, params.beaconContactRadius)) {
+        agent.metrics.y += 1.0;
+    }
+
+    agents[id] = agent;
+}

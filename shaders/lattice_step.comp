@@ -1,0 +1,187 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "neuro/brain_kernel.glsl"
+#include "lattice/lattice_kernel.glsl"
+#include "simulation/step_parameters.glsl"
+#include "simulation/agent_layout.glsl"
+
+// The decide half of a step: every agent senses the lattice as it stands, runs
+// its brain, and bids for the cell it wants. Nothing moves here. An agent that
+// moved would change what the agents after it see, and the outcome would then
+// depend on the order the invocations happened to run in -- which is exactly
+// what no GPU promises and what the CPU reference could not reproduce.
+//
+// Mirrors the "decide" loop of vkexp::stepLatticeCpu.
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer InputAgents {
+    Agent inputAgents[];
+};
+layout(std430, set = 0, binding = 1) writeonly buffer OutputAgents {
+    Agent outputAgents[];
+};
+layout(std430, set = 0, binding = 2) readonly buffer GenomeWeights {
+    float weights[];
+};
+// The lattice as it stands at the top of the step. Read only here: it is the
+// resolve pass that moves anybody.
+layout(std430, set = 0, binding = 3) readonly buffer Occupancy {
+    int occupancy[];
+};
+layout(std430, set = 0, binding = 4) buffer Claims {
+    int claims[];
+};
+// Step parameters live in a storage buffer indexed by step rather than in push
+// constants, so a batch of steps is one upload instead of one push per step.
+layout(std430, set = 0, binding = 5) readonly buffer StepParameterBlocks {
+    StepParameters stepParameters[];
+};
+
+layout(push_constant) uniform StepSelector {
+    uint stepIndex;
+} selector;
+
+// Assigned once at the top of main; every helper below reads it.
+StepParameters params;
+
+#include "neuro/brain_forward.glsl"
+
+// Mirrors vkexp::sampleAgentInputs. `worldBase` is where this agent's own
+// world's cells begin: a sensor that could address another world's cells is a
+// sensor that will, once a world index is off by one somewhere.
+void senseLattice(Agent agent, uint worldBase, out float sensed[BrainInputCapacity]) {
+    for (uint index = 0; index < BrainInputCapacity; ++index) {
+        sensed[index] = 0.0;
+    }
+
+    // All twenty-six under both movement settings. See LatticeKernel.inl for why
+    // the width does not follow the neighbourhood.
+    for (uint neighbor = 0; neighbor < BrainNeighborCount; ++neighbor) {
+        const int x = agent.cell.x + latticeNeighborX(neighbor);
+        const int y = agent.cell.y + latticeNeighborY(neighbor);
+        const int z = agent.cell.z + latticeNeighborZ(neighbor);
+
+        float occupied = 0.0;
+        float blocked = 0.0;
+        float signal = 0.0;
+        if (!latticeInBounds(x, y, z, params.latticeWidth, params.latticeHeight,
+                             params.latticeDepth)) {
+            // The edge of the lattice reads as a wall rather than as an empty
+            // cell. There is no boundary geometry and no push-out: a lattice
+            // ends, and the one place that has to be said is here and in the
+            // move rule below.
+            blocked = 1.0;
+        } else {
+            const uint cell =
+                latticeCellIndex(x, y, z, params.latticeWidth, params.latticeHeight);
+            const int occupant = occupancy[worldBase + cell];
+            if (occupant != LatticeNoOccupant) {
+                occupied = 1.0;
+                signal = clamp(inputAgents[uint(occupant)].signal.x, 0.0, 1.0);
+            }
+        }
+        sensed[brainNeighborChannelIndex(neighbor, LatticeNeighborOccupied)] = occupied;
+        sensed[brainNeighborChannelIndex(neighbor, LatticeNeighborBlocked)] = blocked;
+        sensed[brainNeighborChannelIndex(neighbor, LatticeNeighborSignal)] = signal;
+    }
+
+    const int deltaX = agent.beacon.x - agent.cell.x;
+    const int deltaY = agent.beacon.y - agent.cell.y;
+    const int deltaZ = agent.beacon.z - agent.cell.z;
+    const float distanceToBeacon = latticeVectorLength(deltaX, deltaY, deltaZ);
+    const uint steps = latticeStepDistance(params.neighborhood, deltaX, deltaY, deltaZ);
+    sensed[brainBeaconInputIndex(0u)] = latticeDirectionComponent(deltaX, distanceToBeacon);
+    sensed[brainBeaconInputIndex(1u)] = latticeDirectionComponent(deltaY, distanceToBeacon);
+    sensed[brainBeaconInputIndex(2u)] = latticeDirectionComponent(deltaZ, distanceToBeacon);
+    sensed[brainBeaconInputIndex(3u)] = latticeNearness(steps, params.maximumDistance);
+
+    // The heading, as the unit step it last took. An agent that has not moved
+    // reads zero on all three, which is a distinguishable state and not a
+    // direction -- see the note on the heading field in LatticeTypes.hpp.
+    const uint heading = uint(agent.cell.w);
+    if (heading < BrainNeighborCount) {
+        const int headingX = latticeNeighborX(heading);
+        const int headingY = latticeNeighborY(heading);
+        const int headingZ = latticeNeighborZ(heading);
+        const float headingLength = latticeVectorLength(headingX, headingY, headingZ);
+        sensed[BrainSelfOffset] = latticeDirectionComponent(headingX, headingLength);
+        sensed[BrainSelfOffset + 1u] = latticeDirectionComponent(headingY, headingLength);
+        sensed[BrainSelfOffset + 2u] = latticeDirectionComponent(headingZ, headingLength);
+    }
+    sensed[BrainSelfOffset + 3u] = agent.intent.w != 0 ? 1.0 : 0.0;
+
+    sensed[BrainRecurrentInputOffset] = clamp(agent.memory.x, -1.0, 1.0);
+    sensed[BrainRecurrentInputOffset + 1u] = clamp(agent.memory.y, -1.0, 1.0);
+}
+
+void main() {
+    const uint id = gl_GlobalInvocationID.x;
+    params = stepParameters[selector.stepIndex];
+    if (id >= params.agentCount) {
+        return;
+    }
+
+    Agent agent = inputAgents[id];
+    const uint world = uint(agent.beacon.w);
+    const uint worldBase = world * params.cellsPerWorld;
+
+    float sensed[BrainInputCapacity];
+    senseLattice(agent, worldBase, sensed);
+
+    const uint inputCount = brainLayoutInputCount(params.brainLayout);
+    const uint outputCount = brainLayoutOutputCount(params.brainLayout);
+    const uint layers = params.brainHiddenLayers;
+    const uint base = (id / params.trialsPerGenome) * params.brainGenomeStride;
+
+    float produced[BrainOutputCapacity];
+    brainForward(agent, sensed, base, inputCount, outputCount, layers, params.neuronModel,
+                 params.deltaTime, produced);
+
+    agent.signal.x = clamp(produced[BrainSignalIntensityOutput], 0.0, 1.0);
+    if (outputCount >= BrainOutputCapacity) {
+        agent.memory.x = produced[BrainRecurrentOutputOffset];
+        agent.memory.y = produced[BrainRecurrentOutputOffset + 1u];
+    } else {
+        agent.memory.x = 0.0;
+        agent.memory.y = 0.0;
+    }
+
+    const float driveX = produced[BrainMoveOutput];
+    const float driveY = produced[BrainMoveOutput + 1u];
+    const float driveZ = produced[BrainMoveOutput + 2u];
+    const int stepX =
+        latticeMoveComponent(params.neighborhood, 0u, driveX, driveY, driveZ, params.moveThreshold);
+    const int stepY =
+        latticeMoveComponent(params.neighborhood, 1u, driveX, driveY, driveZ, params.moveThreshold);
+    const int stepZ =
+        latticeMoveComponent(params.neighborhood, 2u, driveX, driveY, driveZ, params.moveThreshold);
+
+    agent.intent = ivec4(agent.cell.xyz, 0);
+    if (stepX != 0 || stepY != 0 || stepZ != 0) {
+        const int wantedX = agent.cell.x + stepX;
+        const int wantedY = agent.cell.y + stepY;
+        const int wantedZ = agent.cell.z + stepZ;
+        if (!latticeInBounds(wantedX, wantedY, wantedZ, params.latticeWidth, params.latticeHeight,
+                             params.latticeDepth)) {
+            agent.intent.w = 1; // walked into the edge of the lattice
+        } else {
+            const uint wanted = latticeCellIndex(wantedX, wantedY, wantedZ, params.latticeWidth,
+                                                 params.latticeHeight);
+            if (!latticeCellEnterable(occupancy[worldBase + wanted])) {
+                agent.intent.w = 1; // somebody was already standing there
+            } else {
+                agent.intent = ivec4(wantedX, wantedY, wantedZ, 0);
+                // The bid. atomicMin and not atomicCompSwap: a minimum is
+                // associative and commutative, so the winner is the same
+                // whatever order the atomics land in. That is what
+                // latticeBetterClaim says on the CPU side, and the reason the
+                // whole arbitration is a minimum over agent indices rather than
+                // a first-come claim.
+                atomicMin(claims[worldBase + wanted], int(id));
+            }
+        }
+    }
+
+    outputAgents[id] = agent;
+}

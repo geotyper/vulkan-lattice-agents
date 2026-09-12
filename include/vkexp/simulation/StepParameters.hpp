@@ -1,22 +1,17 @@
 #pragma once
 
-#include "vkexp/simulation/AgentTypes.hpp"
+#include "vkexp/simulation/LatticeTypes.hpp"
 
 #include <cstdint>
 
 namespace vkexp {
 
-// What the packing needs that SimulationStep does not carry: buffer dimensions
-// and the population layout, all owned by whoever created the device resources.
+// What the packing needs that SimulationStep does not carry: the population
+// layout, all owned by whoever created the device resources.
 struct StepParameterLayout {
     std::uint32_t agentCount{};
     std::uint32_t trialsPerGenome{1};
     std::uint32_t agentsPerWorld{1};
-    float gridCellSize{};
-    std::uint32_t gridWidth{};
-    std::uint32_t gridCellsPerWorld{};
-    std::uint32_t trailWidth{1};
-    std::uint32_t trailCellsPerWorld{1};
     std::uint32_t worldCount{1};
 };
 
@@ -28,10 +23,7 @@ struct StepParameterLayout {
 // obstacle count. Both times the shader ran with the field at zero while the CPU
 // reference ran with it set, so parity reported a numeric drift rather than a
 // missing feature, which is a slow way to find a field you forgot to copy.
-//
-// `resolved` must already have been through resolveStepSettings for the step
-// being packed; the scenario is looked up from it.
-[[nodiscard]] GpuStepParameters packStepParameters(const SimulationStep& resolved,
+[[nodiscard]] GpuStepParameters packStepParameters(const SimulationStep& settings,
                                                    const StepParameterLayout& layout);
 
 } // namespace vkexp
