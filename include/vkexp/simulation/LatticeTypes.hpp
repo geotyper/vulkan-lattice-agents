@@ -62,7 +62,7 @@ inline constexpr std::uint32_t latticeDefaultDepth = 16;
 inline constexpr std::uint64_t latticeFieldByteBudget = 256ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint64_t latticeFieldHeapFraction = 16; // at most a sixteenth of VRAM
 
-inline constexpr std::uint32_t minimumAgentsPerWorld = 10;
+inline constexpr std::uint32_t minimumAgentsPerWorld = 1;
 
 [[nodiscard]] constexpr std::uint32_t
 clampAgentsPerWorld(const std::uint32_t genomeCount, const std::uint32_t requestedAgentsPerWorld) {
@@ -317,9 +317,9 @@ struct SimulationStep {
 }
 
 [[nodiscard]] constexpr std::uint32_t latticeMaximumDistance(const SimulationStep& settings) {
-    return lattice::kernel::latticeMaximumDistance(static_cast<std::uint32_t>(settings.neighborhood),
-                                                   settings.latticeWidth, settings.latticeHeight,
-                                                   settings.latticeDepth);
+    return lattice::kernel::latticeMaximumDistance(
+        static_cast<std::uint32_t>(settings.neighborhood), settings.latticeWidth,
+        settings.latticeHeight, settings.latticeDepth);
 }
 
 // A lattice big enough to hold every agent a world can be given, and inside the
@@ -398,9 +398,14 @@ static_assert(offsetof(GpuStepParameters, fitness) == 80);
 }
 
 [[nodiscard]] constexpr GpuFitnessWeights packFitnessWeights(const FitnessWeights& weights) {
-    return {weights.trackingReward,   weights.objectiveBonus,  weights.motorCostWeight,
-            weights.refusalPenalty,   weights.signalCostFactor, 0.0F,
-            0.0F,                     0.0F};
+    return {weights.trackingReward,
+            weights.objectiveBonus,
+            weights.motorCostWeight,
+            weights.refusalPenalty,
+            weights.signalCostFactor,
+            0.0F,
+            0.0F,
+            0.0F};
 }
 
 } // namespace vkexp

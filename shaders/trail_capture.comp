@@ -1,0 +1,34 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// One breadcrumb per agent after a resolved movement step. The buffer is a
+// fixed-size ring per agent, so its cost depends on the population and not on
+// how large or how numerous the logical lattices are.
+
+#include "neuro/brain_kernel.glsl"
+#include "simulation/agent_layout.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Agents {
+    Agent agents[];
+};
+layout(std430, set = 0, binding = 1) writeonly buffer TrailHistory {
+    ivec4 trailSamples[];
+};
+
+layout(push_constant) uniform CaptureParameters {
+    uint agentCount;
+    uint cursor;
+    uint capacity;
+    uint reserved;
+} capture;
+
+void main() {
+    const uint id = gl_GlobalInvocationID.x;
+    if (id >= capture.agentCount || capture.capacity == 0u) {
+        return;
+    }
+    const uint slot = id * capture.capacity + capture.cursor;
+    trailSamples[slot] = ivec4(agents[id].cell.xyz, 1);
+}

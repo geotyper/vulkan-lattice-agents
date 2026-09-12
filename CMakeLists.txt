@@ -42,6 +42,12 @@ set(SHADER_SOURCES
     lattice_clear.comp
     lattice_step.comp
     lattice_resolve.comp
+    trail_capture.comp
+    view_voxels.vert
+    view_voxels.frag
+    view_voxels_oit.frag
+    view_resolve.vert
+    view_resolve.frag
 )
 # Sources compiled into both the shaders and vklat_domain: the network preset
 # and the lattice kernel.
@@ -155,6 +161,17 @@ target_compile_definitions(vklat_simulation PRIVATE
 )
 vkexp_enable_warnings(vklat_simulation)
 
+add_library(vklat_visualization STATIC
+    src/graphics/LatticeRenderer.cpp
+)
+add_dependencies(vklat_visualization vkexp_shaders)
+target_include_directories(vklat_visualization PUBLIC include)
+target_link_libraries(vklat_visualization PUBLIC vklat_domain vkexp_compute)
+target_compile_definitions(vklat_visualization PRIVATE
+    VKEXP_SHADER_DIR="${SHADER_BINARY_DIR}"
+)
+vkexp_enable_warnings(vklat_visualization)
+
 add_library(vklat_ui STATIC
     src/ui/SimulationUiModule.cpp
 )
@@ -172,7 +189,7 @@ vkexp_enable_warnings(vklat_headless)
 
 add_executable(vulkan_lattice_agents src/main.cpp)
 target_link_libraries(vulkan_lattice_agents PRIVATE
-    vklat_simulation vklat_ui
+    vklat_simulation vklat_visualization vklat_ui
 )
 target_compile_definitions(vulkan_lattice_agents PRIVATE
     $<$<AND:$<BOOL:${VKEXP_ENABLE_VALIDATION}>,$<CONFIG:Debug>>:VKEXP_ENABLE_VALIDATION>

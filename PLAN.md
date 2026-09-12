@@ -44,7 +44,7 @@ GPU per step: lattice_clear -> lattice_step (sense, brain, bid)
      |
 storage barrier
      |
-(3D view of the selected lattice -- not written yet)
+3D view of the selected lattice -> off-screen image -> ImGui
 ```
 
 Generation transitions are intentionally synchronous. The GPU performs the
@@ -83,9 +83,9 @@ learnable and the shaping is readable.
 
 ### L2. Seeing it
 
-- [ ] a 3D view of the selected lattice: instanced cubes for agents, the beacon
+- [x] a 3D view of the selected lattice: instanced cubes for agents, the beacon
       marked, an orbit camera and a slice control;
-- [ ] a per-world picker that reaches trials as well as groups;
+- [x] a per-world picker that reaches trials as well as groups;
 - [ ] inspect one agent: its neighbourhood vector, activations and drives;
 - [ ] generation timing.
 
@@ -282,25 +282,15 @@ agents it was built from.
 
 ## Immediate next step
 
-The renderer. It is the one piece of the conversion deliberately left undone,
-and it is now the thing blocking the questions worth asking: whether a champion
-walks a straight line to the beacon or feels its way along neighbours, whether
-groups clump or spread, and whether a refusal is a mistake or a queue. None of
-that is visible in a fitness curve, and all of it is visible in a picture of
-sixteen thousand cells.
-
-Instanced cubes over the agent buffer, the beacon marked, an orbit camera and a
-slice so the inside of a 3D box can be seen at all. The agent buffer is already
-published and already read-only for a consumer, which is what the 2D renderer
-established and what survives it.
-
-After that, measure before extending. The four neuron models and both
+Measure before extending. The four neuron models and both
 neighbourhoods are one flag apart from each other, and none of the comparisons
 has been run on the lattice: arrival is the number to read, not best fitness,
 because a policy that never arrives and one that arrives and leaves both look
-like adequate fitness.
+like adequate fitness. The completed renderer makes the difference inspectable:
+replay a champion, slice through the box, and distinguish a direct route from a
+queue, a clump or repeated refusals.
 
 Held deliberately: obstacles, deposits and a second agent kind are all the same
 change -- another value a cell can hold -- and writing one of them well is worth
 more than writing all three. The lattice makes them cheap enough that the reason
-to wait is the renderer, not the difficulty.
+to wait is evidence, not rendering infrastructure.

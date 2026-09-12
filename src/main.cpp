@@ -1,4 +1,5 @@
 #include "vkexp/core/Application.hpp"
+#include "vkexp/graphics/LatticeRenderer.hpp"
 #include "vkexp/simulation/SimulationModule.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
 #include "vkexp/ui/ImGuiModule.hpp"
@@ -49,12 +50,11 @@ int main(const int argc, char** argv) {
         auto imgui = std::make_unique<vkexp::ImGuiModule>(app.profiler());
         auto& imguiBackend = *imgui;
         // Attachment and render order is an explicit dependency graph: the
-        // simulation publishes its buffers, then ImGui draws the panels that
-        // read them. A view of the lattice goes between the two once there is
-        // one -- it is step 5 of LATTICE_PLAN.md, and deliberately last, because
-        // the 2D renderer drew normalised coordinates with no camera at all and
-        // so had nothing to carry over.
+        // simulation publishes its buffers, the view reads them into an
+        // off-screen image, and ImGui composites that image into a panel. The
+        // renderer never writes back, so the arrow only points one way.
         app.addModule(std::make_unique<vkexp::SimulationModule>(state, app.profiler()));
+        app.addModule(std::make_unique<vkexp::LatticeRenderer>(state, app.profiler()));
         app.addModule(std::move(imgui));
         app.addModule(
             std::make_unique<vkexp::SimulationUiModule>(state, imguiBackend, app.profiler()));

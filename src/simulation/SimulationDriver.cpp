@@ -15,6 +15,15 @@ namespace {
 constexpr VkMemoryPropertyFlags hostMemory =
     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
+struct TrailCaptureParameters {
+    std::uint32_t agentCount{};
+    std::uint32_t cursor{};
+    std::uint32_t capacity{};
+    std::uint32_t reserved{};
+};
+
+static_assert(sizeof(TrailCaptureParameters) == 16);
+
 void createStorageLayout(const VkDevice device, const std::uint32_t bindingCount,
                          UniqueDescriptorSetLayout& layout) {
     std::vector<VkDescriptorSetLayoutBinding> bindings(bindingCount);
@@ -110,6 +119,11 @@ void SimulationDriver::createStepResources() {
     occupancy_.create(physicalDevice_, device_,
                       {budget, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
     claims_.create(physicalDevice_, device_, {budget, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT});
+    const VkDeviceSize trailHistoryBytes =
+        static_cast<VkDeviceSize>(agentCount) * trailHistoryCapacity * sizeof(Int4);
+    trailHistory_.create(
+        physicalDevice_, device_,
+        {trailHistoryBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT});
 
     updateWorldLayout();
     refreshLattice();
@@ -117,7 +131,8 @@ void SimulationDriver::createStepResources() {
     createStorageLayout(device_, 6, stepDescriptorSetLayout_);
     createStorageLayout(device_, 4, resolveDescriptorSetLayout_);
     createStorageLayout(device_, 2, clearDescriptorSetLayout_);
-    descriptorAllocator_.create(device_, {8, {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 24}}});
+    createStorageLayout(device_, 2, trailCaptureDescriptorSetLayout_);
+    descriptorAllocator_.create(device_, {10, {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 32}}});
 
     for (std::uint32_t readIndex = 0; readIndex < 2; ++readIndex) {
         const VkBuffer readBuffer =
@@ -150,6 +165,17 @@ void SimulationDriver::createStepResources() {
             .writeBuffer(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stepParameterBuffer_.buffer(), 0,
                          stepParameterBuffer_.size())
             .update(device_, resolveDescriptorSets_[readIndex]);
+
+        // `writeBuffer` is the resolved buffer for this read index. The agent
+        // ping-pong swaps immediately before capture, making that same handle
+        // the current read buffer and therefore the state actually displayed.
+        trailCaptureDescriptorSets_[readIndex] =
+            descriptorAllocator_.allocate(trailCaptureDescriptorSetLayout_.get());
+        DescriptorSetWriter{}
+            .writeBuffer(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, writeBuffer, 0, agentBytes)
+            .writeBuffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, trailHistory_.buffer(), 0,
+                         trailHistory_.size())
+            .update(device_, trailCaptureDescriptorSets_[readIndex]);
     }
     clearDescriptorSet_ = descriptorAllocator_.allocate(clearDescriptorSetLayout_.get());
     DescriptorSetWriter{}
@@ -173,6 +199,12 @@ void SimulationDriver::createStepResources() {
                          .addDescriptorSetLayout(clearDescriptorSetLayout_.get())
                          .addPushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, sizeof(std::uint32_t))
                          .build();
+    trailCapturePipeline_ =
+        ComputePipelineBuilder{physicalDevice_, device_}
+            .shader(VKEXP_SHADER_DIR "/trail_capture.comp.spv")
+            .addDescriptorSetLayout(trailCaptureDescriptorSetLayout_.get())
+            .addPushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, sizeof(TrailCaptureParameters))
+            .build();
 
     state_.agents = {{agentBuffers_.read().buffer(), agentBuffers_.write().buffer()},
                      agentBytes,
@@ -181,6 +213,7 @@ void SimulationDriver::createStepResources() {
                      genomeCount,
                      config_.trialsPerGenome,
                      0};
+    state_.trails = {trailHistory_.buffer(), trailHistory_.size(), trailHistoryCapacity};
 }
 
 VkDeviceSize SimulationDriver::genomeBufferBytes() const {
@@ -223,16 +256,21 @@ void SimulationDriver::resizeGenomeBuffer() {
 void SimulationDriver::destroyResources() {
     state_.agents = {};
     state_.lattice = {};
+    state_.trails = {};
+    trailCapturePipeline_ = {};
     clearPipeline_ = {};
     resolvePipeline_ = {};
     stepPipeline_ = {};
     descriptorAllocator_.reset();
+    trailCaptureDescriptorSetLayout_.reset();
     clearDescriptorSetLayout_.reset();
     resolveDescriptorSetLayout_.reset();
     stepDescriptorSetLayout_.reset();
     clearDescriptorSet_ = VK_NULL_HANDLE;
+    trailCaptureDescriptorSets_ = {};
     resolveDescriptorSets_ = {};
     stepDescriptorSets_ = {};
+    trailHistory_.reset();
     claims_.reset();
     occupancy_.reset();
     stepParameterBuffer_.reset();
@@ -261,6 +299,12 @@ void SimulationDriver::uploadPopulation() {
     lattice::buildOccupancy(agents_, state_.settings, populationLayout(), occupancyStaging_);
     occupancy_.write(occupancyStaging_.data(), occupancyStaging_.size() * sizeof(std::int32_t));
     hostUploadPending_ = true;
+    // Histories are derived pictures, not snapshot state. A fresh generation or
+    // a restored population starts with no breadcrumbs and fills them from its
+    // next resolved step onward.
+    trailClearPending_ = true;
+    state_.trails.recordedTicks = 0;
+    state_.trails.newest = 0;
 }
 
 void SimulationDriver::resetGeneration() {
@@ -414,8 +458,8 @@ GenerationSummary SimulationDriver::finishGeneration() {
         summary = evolution_.evolve(selectionFitness);
     }
     summary.bestFitness = *std::max_element(fitness.begin(), fitness.end());
-    summary.meanFitness = std::accumulate(fitness.begin(), fitness.end(), 0.0F) /
-                          static_cast<float>(fitness.size());
+    summary.meanFitness =
+        std::accumulate(fitness.begin(), fitness.end(), 0.0F) / static_cast<float>(fitness.size());
     {
         std::vector<float> sorted = fitness;
         std::sort(sorted.begin(), sorted.end());
@@ -597,24 +641,39 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
                              VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
         hostUploadPending_ = false;
     }
+    if (trailClearPending_) {
+        vkCmdFillBuffer(commands, trailHistory_.buffer(), 0, trailHistory_.size(), 0);
+        cmdBufferBarrier(commands, trailHistory_.buffer(), VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                         VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        trailClearPending_ = false;
+    }
 
     const std::uint32_t cellCount = state_.lattice.cellsPerWorld * state_.worlds.worldCount;
     const std::array<VkDeviceSize, 2> clearRanges{claims_.size(), stepParameterBuffer_.size()};
     const DispatchSize clearGroups = checkedDispatchSize(
-        physicalDevice_,
-        {{cellCount, 1, 1}, {256, 1, 1}, sizeof(std::uint32_t), clearRanges});
-    const std::array<VkDeviceSize, 6> stepRanges{
-        agentBuffers_.read().size(), agentBuffers_.write().size(), genomeBuffer_.size(),
-        occupancy_.size(),           claims_.size(),               stepParameterBuffer_.size()};
+        physicalDevice_, {{cellCount, 1, 1}, {256, 1, 1}, sizeof(std::uint32_t), clearRanges});
+    const std::array<VkDeviceSize, 6> stepRanges{agentBuffers_.read().size(),
+                                                 agentBuffers_.write().size(),
+                                                 genomeBuffer_.size(),
+                                                 occupancy_.size(),
+                                                 claims_.size(),
+                                                 stepParameterBuffer_.size()};
     const DispatchSize stepGroups = checkedDispatchSize(
         physicalDevice_,
         {{state_.agents.agentCount, 1, 1}, {64, 1, 1}, sizeof(std::uint32_t), stepRanges});
     const std::array<VkDeviceSize, 4> resolveRanges{agentBuffers_.write().size(), occupancy_.size(),
-                                                    claims_.size(),
-                                                    stepParameterBuffer_.size()};
+                                                    claims_.size(), stepParameterBuffer_.size()};
     const DispatchSize resolveGroups = checkedDispatchSize(
         physicalDevice_,
         {{state_.agents.agentCount, 1, 1}, {64, 1, 1}, sizeof(std::uint32_t), resolveRanges});
+    const std::array<VkDeviceSize, 2> trailCaptureRanges{agentBuffers_.read().size(),
+                                                         trailHistory_.size()};
+    const DispatchSize trailCaptureGroups =
+        checkedDispatchSize(physicalDevice_, {{state_.agents.agentCount, 1, 1},
+                                              {64, 1, 1},
+                                              sizeof(TrailCaptureParameters),
+                                              trailCaptureRanges});
 
     for (std::uint32_t step = 0; step < stepCount; ++step) {
         const std::uint32_t readIndex = agentBuffers_.readIndex();
@@ -642,17 +701,15 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
         // records the step wrote have to be visible to the pass that adds to
         // them.
         cmdComputeWriteToComputeRead(commands, claims_.buffer());
-        cmdBufferBarrier(commands, agentBuffers_.write().buffer(),
-                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                         VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
-                             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        cmdBufferBarrier(
+            commands, agentBuffers_.write().buffer(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
         vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, resolvePipeline_.pipeline());
         const VkDescriptorSet resolveSet = resolveDescriptorSets_[readIndex];
-        vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                resolvePipeline_.layout(), 0, 1, &resolveSet, 0, nullptr);
+        vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, resolvePipeline_.layout(),
+                                0, 1, &resolveSet, 0, nullptr);
         vkCmdPushConstants(commands, resolvePipeline_.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            sizeof(step), &step);
         vkCmdDispatch(commands, resolveGroups.x, 1, 1);
@@ -661,6 +718,33 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
 
         agentBuffers_.swap();
         state_.agents.currentIndex = agentBuffers_.readIndex();
+
+        const TrailCaptureParameters trailCapture{
+            state_.agents.agentCount,
+            (state_.statistics.step + step) % trailHistoryCapacity,
+            trailHistoryCapacity,
+            0,
+        };
+        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          trailCapturePipeline_.pipeline());
+        const VkDescriptorSet trailCaptureSet = trailCaptureDescriptorSets_[readIndex];
+        vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                trailCapturePipeline_.layout(), 0, 1, &trailCaptureSet, 0, nullptr);
+        vkCmdPushConstants(commands, trailCapturePipeline_.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(trailCapture), &trailCapture);
+        vkCmdDispatch(commands, trailCaptureGroups.x, 1, 1);
+        state_.trails.newest = trailCapture.cursor;
+        state_.trails.recordedTicks =
+            std::min(state_.trails.recordedTicks + 1U, state_.trails.capacity);
+        if (step + 1U < stepCount) {
+            // A batch may be configured longer than the ring. Serialize captures
+            // so a wrapped slot always contains the newest step, independent of
+            // how workgroups from consecutive dispatches overlap.
+            cmdBufferBarrier(
+                commands, trailHistory_.buffer(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        }
     }
 
     cmdBufferBarrier(commands, agentBuffers_.read().buffer(),
@@ -671,6 +755,9 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
                      VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                      VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_HOST_BIT,
                      VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_HOST_READ_BIT);
+    cmdBufferBarrier(commands, trailHistory_.buffer(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                     VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+                     VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
     state_.statistics.step += stepCount;
     return stepCount;
 }

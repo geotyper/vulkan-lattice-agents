@@ -89,17 +89,70 @@ struct EvolutionHistory {
     std::size_t maximumSamples{256};
 };
 
+// Solid voxels hide each other; see-through ones let a box be read from
+// outside. Which is wanted depends on how crowded the world is, so it is a
+// setting rather than a decision. See LatticeRenderer for why the transparent
+// path resolves without sorting anything.
+enum class VoxelStyle : std::uint32_t {
+    Solid = 0,
+    Transparent = 1,
+};
+
+enum class CameraProjection : std::uint32_t {
+    Perspective = 0,
+    Orthographic = 1,
+};
+
+// Where the camera is, in the lattice's own terms. An orbit rather than a free
+// camera: the thing being looked at is a box with a known centre, and every
+// control that cannot lose the box is one fewer way to end up staring at
+// nothing.
+struct LatticeCamera {
+    // Start exactly side-on: the eye is on +x at the world's centre height and
+    // looks at the origin, which is also the centre used by every lattice
+    // vertex. Orbiting remains available from this unambiguous home view.
+    float yaw{1.570796327F}; // radians around the up axis
+    float pitch{};           // radians above the horizon, clamped short of the poles
+    // Multiples of the box's half-diagonal, so the default frames any lattice
+    // rather than the one it was tuned on.
+    float distance{2.3F};
+    CameraProjection projection{CameraProjection::Perspective};
+    bool spin{};
+    float spinRate{0.15F}; // radians per second while spinning
+};
+
 // What the viewport draws. None of this reaches the simulation -- turning the
-// agents off changes the picture, not the run. Kept while the 3D view is being
-// written, because what a view of a lattice can show is a question with the same
-// answers whatever draws it.
+// agents off changes the picture, not the run.
 struct SimulationDisplay {
     bool agents{true};
     bool beacons{true};
+    bool trails{true};
     // The lattice as a wireframe box, so a sparse world still reads as a volume
     // rather than as points floating in nothing.
     bool bounds{true};
     float backgroundBrightness{1.0F};
+
+    VoxelStyle voxelStyle{VoxelStyle::Solid};
+    // How much of its cell a voxel fills. Below 1 the lattice reads as a grid of
+    // separate bodies; at 1 a pair of neighbours is one block.
+    float voxelScale{0.78F};
+    // Only read in the transparent style.
+    float voxelOpacity{0.34F};
+    // A breadcrumb history rather than simulation state: it is written after
+    // movement and never read by an agent. Each agent has the same fixed ring;
+    // this chooses how much of its newest end is drawn.
+    std::uint32_t trailLength{160};
+    float trailOpacity{0.20F};
+    float trailScale{0.32F};
+
+    // A slab of the lattice, so the inside of a box can be seen without making
+    // everything see-through. The axis is 0, 1 or 2; the bounds are in cells and
+    // are clamped to the lattice when the extents change.
+    std::uint32_t sliceAxis{2};
+    std::uint32_t sliceLow{};
+    std::uint32_t sliceHigh{latticeMaximumExtent};
+
+    LatticeCamera camera;
 };
 
 struct SimulationWorlds {
@@ -131,6 +184,19 @@ struct LatticeBufferView {
     std::uint32_t cellsPerWorld{};
 };
 
+inline constexpr std::uint32_t trailHistoryCapacity = 256;
+
+// One ivec4 position per agent per recorded tick, arranged as fixed-size rings.
+// The fourth lane is a validity flag, so a restored mid-generation snapshot can
+// start with an empty visual history rather than displaying old records.
+struct TrailBufferView {
+    VkBuffer buffer{};
+    VkDeviceSize size{};
+    std::uint32_t capacity{};
+    std::uint32_t recordedTicks{};
+    std::uint32_t newest{};
+};
+
 struct SimulationViewport {
     VkImageView imageView{};
     VkSampler sampler{};
@@ -151,6 +217,7 @@ struct SimulationState {
     SimulationDisplay display;
     AgentBufferView agents;
     LatticeBufferView lattice;
+    TrailBufferView trails;
     SimulationViewport viewport;
 };
 

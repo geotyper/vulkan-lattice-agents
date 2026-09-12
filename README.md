@@ -34,9 +34,9 @@ Movement:   threshold 0.25, beacon reached within 1 cell(s)
 ```
 
 - 512 genomes, each evaluated in four trials (2048 GPU agents);
-- the population partitioned into configurable logical groups (12 agents per
-  lattice by default, with an all-agents mode), so with the default group size
-  512 genomes occupy 43 groups and 172 independent lattices;
+- the population partitioned into configurable logical groups from one agent to
+  the whole population (12 agents per lattice by default), so with the default
+  group size 512 genomes occupy 43 groups and 172 independent lattices;
 - 26 neighbouring cells read as three channels each -- occupied, blocked,
   and what the occupant is broadcasting -- 78 inputs;
 - a unit direction to the beacon and a nearness scalar, 4 inputs;
@@ -58,7 +58,11 @@ Movement:   threshold 0.25, beacon reached within 1 cell(s)
 - adjustable lattice extents, generation length, agents per world, neighbourhood,
   move threshold, contact radius and every fitness coefficient, all as sliders
   and all as command-line flags;
-- separate Simulation, Genetic Algorithm, Brain, Lattice and profiler windows;
+- separate Simulation, Genetic Algorithm, Brain, view-settings, clean Lattice view and profiler
+  windows;
+- a live 3D view of one selected world, with instanced agent voxels, a marked
+  beacon, perspective/orthographic orbit and zoom controls, an axis-aligned
+  slice and optional see-through voxels and coloured breadcrumb trails;
 - fitness/arrival history graphs for completed generations.
 
 The four trials are not four independently trained populations. Every genome
@@ -66,10 +70,20 @@ controls four agents with the same weights but different spawn cells and a
 different beacon, and their scores are averaged before selection, which
 discourages a solution that only works from one corner of one lattice.
 
-**There is no viewport yet.** The 3D renderer is the last step of the
-conversion, and the Lattice window says so where the view will go. Everything
-else in the window is live, which is the point of building it in this order:
-a UI regression shows up now rather than under a renderer.
+**The viewport reads the simulation; it does not participate in it.** Solid
+voxels write depth and make a crowd's surface readable. See-through voxels use
+weighted blended order-independent transparency, so looking inside a world does
+not require reading the GPU agent buffer back and sorting it on the CPU. The
+camera starts side-on, centred on the lattice, and can switch between perspective
+and orthographic projection. A slice
+along x, y or z is the exact alternative when adjacency matters more than the
+whole population. Drag the picture to orbit and use the wheel to zoom.
+
+`Trails` records the last 256 resolved cells of every agent in a fixed GPU ring
+and draws a configurable newest span as smaller translucent voxels. Colour is
+stable per genome, making paths separable when agents cross. This history is a
+picture only: it is not an input to the brain, does not affect fitness, and is
+cleared at a generation boundary or snapshot restore.
 
 ## The lattice
 
@@ -537,6 +551,11 @@ vklat_headless        (batch composition root)
   |     lattice_clear.comp    empties the claim grid
   |     lattice_step.comp     senses, runs the brain, bids for a cell
   |     lattice_resolve.comp  moves the winners and charges the metrics
+  |     trail_capture.comp    records display-only per-agent breadcrumbs
+  |
+  +-- vklat_visualization
+  |     LatticeRenderer       off-screen 3D view, camera, depth and OIT resolve
+  |     view_*.vert|frag      procedural cubes and the transparency resolve
   |
   +-- vklat_ui
   |     SimulationUiModule    controls, statistics, brain, sweeps
@@ -548,7 +567,8 @@ vklat_headless        (batch composition root)
 The shared contracts are small:
 
 - `SimulationState` carries controls, statistics, the published agent-buffer
-  view and the published occupancy view;
+  and occupancy views, the breadcrumb-history view, and the renderer's
+  published viewport image;
 - `AgentState` is an explicitly checked 224-byte std430-compatible structure,
   with the variable-length hidden block last so every earlier offset is fixed;
 - `LatticeKernel.inl` is the world: cell indexing, both neighbourhoods, the move
@@ -738,13 +758,12 @@ no compute device exists.
 
 ## What is next
 
-The 3D renderer is step 5 of the conversion and the one piece deliberately left
-undone: everything the window shows is live except the view of the lattice
-itself, and the Lattice window says so. Building it last was the point -- a UI
-regression surfaces now, against panels that are already exercised, rather than
-underneath a new renderer.
+The view makes the next step measurement rather than more rendering: compare
+the four neuron models and both neighbourhoods from the same seeds, reading
+arrival rather than best fitness and using replay plus the slice to distinguish
+a direct route from a queue or a clump.
 
-After that, the lattice makes a set of experiments cheap that the arena made
+After that, the lattice makes a set of extensions cheap that the arena made
 expensive: static obstacles are a second occupancy value, a second agent kind is
 a third, and a cell that remembers what was broadcast into it is a field with no
 diffusion constant to tune.

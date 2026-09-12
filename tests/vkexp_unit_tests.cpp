@@ -1,13 +1,13 @@
 #include "vkexp/compute/ComputeResources.hpp"
 #include "vkexp/evolution/GeneticAlgorithm.hpp"
 #include "vkexp/evolution/GenomeArchive.hpp"
+#include "vkexp/lattice/LatticeKernel.hpp"
+#include "vkexp/lattice/LatticeWorld.hpp"
 #include "vkexp/neuro/BrainDescription.hpp"
 #include "vkexp/neuro/BrainKernel.hpp"
 #include "vkexp/neuro/NeuralNetwork.hpp"
 #include "vkexp/profiling/CpuProfiler.hpp"
 #include "vkexp/profiling/ProfilerTypes.hpp"
-#include "vkexp/lattice/LatticeKernel.hpp"
-#include "vkexp/lattice/LatticeWorld.hpp"
 #include "vkexp/simulation/CpuLattice.hpp"
 #include "vkexp/simulation/ExperimentSweep.hpp"
 #include "vkexp/simulation/LatticeSensors.hpp"
@@ -21,11 +21,11 @@
 #include <cmath>
 #include <cstring>
 #include <exception>
-#include <numeric>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <numeric>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -183,10 +183,18 @@ void testLogicalWorldPartition() {
     constexpr std::uint32_t genomes = 25;
     constexpr std::uint32_t agentsPerWorld = 10;
     constexpr std::uint32_t trials = 4;
-    check(vkexp::clampAgentsPerWorld(genomes, 0) == vkexp::minimumAgentsPerWorld,
-          "World partition clamps an empty group size");
+    check(vkexp::minimumAgentsPerWorld == 1,
+          "World partition permits an agent to have its own world");
+    check(vkexp::clampAgentsPerWorld(genomes, 0) == 1,
+          "World partition clamps an empty group size to one");
     check(vkexp::clampAgentsPerWorld(genomes, 100) == genomes,
           "World partition supports all agents in one group");
+    check(vkexp::worldGroupCount(genomes, 1) == genomes,
+          "One-agent worlds create one group per genome");
+    check(vkexp::logicalWorldCount(genomes, 1, trials) == genomes * trials,
+          "One-agent groups preserve every evaluation trial");
+    check(vkexp::agentsInLogicalWorld(genomes, 1, trials, genomes * trials - 1) == 1,
+          "The last one-agent trial contains exactly one agent");
     check(vkexp::worldGroupCount(genomes, agentsPerWorld) == 3,
           "World partition rounds up the group count");
     check(vkexp::logicalWorldCount(genomes, agentsPerWorld, trials) == 12,
@@ -419,8 +427,7 @@ void testBrainForwardPass() {
     // And the kernel agrees about where that is, which is the other half of the
     // claim: the layout above is the one the shader walks, not a second opinion.
     check(bk::brainLayerWeightIndex(0u, sources, layers, 0u, 2u, 1u) == 2u * sources + 1u &&
-              bk::brainLayerBiasIndex(0u, sources, layers, 0u, 1u) ==
-                  wiredNeurons * sources + 1u,
+              bk::brainLayerBiasIndex(0u, sources, layers, 0u, 1u) == wiredNeurons * sources + 1u,
           "The kernel addresses the first layer row by row, biases after the rows");
     for (bk::uint source = 0; source < sources; ++source) {
         vkexp::neuro::Inputs oneHot{};
@@ -444,7 +451,8 @@ void testBrainForwardPass() {
         (void)vkexp::neuro::evaluate(wiring, twoHot, state, 1.0F, bk::NeuronModelReactive, wired);
         bool summed = true;
         for (bk::uint neuron = 0; neuron < 3; ++neuron) {
-            summed = summed && closeTo(state[neuron], weightFor(neuron, 1u) + weightFor(neuron, 4u));
+            summed =
+                summed && closeTo(state[neuron], weightFor(neuron, 1u) + weightFor(neuron, 4u));
         }
         check(summed, "Two live inputs are summed, not chosen between");
     }
@@ -535,8 +543,8 @@ void testLayeredBrain() {
     // plan or a mistake, and guessing between them is worse than saying no.
     const vkexp::neuro::BrainShape holed{8, 4, 6, 0, 2};
     check(!holed.fitsCapacity(), "A plan with a hole in the middle is refused");
-    const vkexp::neuro::BrainShape overspent{
-        8, vkexp::neuro::Topology::hiddenNeuronCapacity, 6, vkexp::neuro::Topology::hiddenNeuronCapacity, 0};
+    const vkexp::neuro::BrainShape overspent{8, vkexp::neuro::Topology::hiddenNeuronCapacity, 6,
+                                             vkexp::neuro::Topology::hiddenNeuronCapacity, 0};
     check(!overspent.fitsCapacity(), "A plan spending more neurons than there are is refused");
     check(deep.fitsCapacity() && flat.fitsCapacity(), "and the plans that do fit are accepted");
 
@@ -581,8 +589,8 @@ void testLayeredBrain() {
     inputs[0] = 0.8F;
 
     vkexp::neuro::HiddenState state{};
-    const vkexp::neuro::Outputs deepOut = vkexp::neuro::evaluate(
-        weights, inputs, state, 1.0F, bk::NeuronModelReactive, deep);
+    const vkexp::neuro::Outputs deepOut =
+        vkexp::neuro::evaluate(weights, inputs, state, 1.0F, bk::NeuronModelReactive, deep);
     const float expected =
         std::tanh(2.0F * std::tanh(1.75F * std::tanh(1.25F * std::tanh(1.5F * 0.8F))));
     check(closeTo(deepOut[0], expected),
@@ -592,8 +600,8 @@ void testLayeredBrain() {
     // the depth is being ignored somewhere and every assertion above is about a
     // network nobody is running.
     vkexp::neuro::HiddenState flatState{};
-    const vkexp::neuro::Outputs flatOut = vkexp::neuro::evaluate(
-        weights, inputs, flatState, 1.0F, bk::NeuronModelReactive, flat);
+    const vkexp::neuro::Outputs flatOut =
+        vkexp::neuro::evaluate(weights, inputs, flatState, 1.0F, bk::NeuronModelReactive, flat);
     check(std::abs(flatOut[0] - deepOut[0]) > 1.0e-3F,
           "and a flat plan on the same weights is a different network, not the same one");
 
@@ -682,8 +690,8 @@ void testBrainDescription() {
         return block != nullptr && index >= block->offset && index < block->offset + block->count;
     };
     check(inside("hidden0_weights", bk::brainLayerWeightIndex(0u, inputs, layers, 0u, 0u, 0u)) &&
-              inside("hidden0_weights", bk::brainLayerWeightIndex(0u, inputs, layers, 0u,
-                                                                  hidden - 1u, inputs - 1u)),
+              inside("hidden0_weights",
+                     bk::brainLayerWeightIndex(0u, inputs, layers, 0u, hidden - 1u, inputs - 1u)),
           "Both corners of the input-to-hidden matrix fall in its block");
     check(inside("hidden0_bias", bk::brainLayerBiasIndex(0u, inputs, layers, 0u, 0u)) &&
               inside("hidden0_bias", bk::brainLayerBiasIndex(0u, inputs, layers, 0u, hidden - 1u)),
@@ -696,11 +704,11 @@ void testBrainDescription() {
               inside("output_bias",
                      bk::brainOutputBiasIndex(0u, inputs, layers, outputs, outputs - 1u)),
           "Both ends of the output bias fall in its block");
-    check(inside("time_constants",
-                 bk::brainTimeConstantGeneIndex(0u, inputs, layers, outputs, 0u)) &&
-              inside("time_constants",
-                     bk::brainTimeConstantGeneIndex(0u, inputs, layers, outputs, hidden - 1u)),
-          "Both ends of the time constants fall in their block");
+    check(
+        inside("time_constants", bk::brainTimeConstantGeneIndex(0u, inputs, layers, outputs, 0u)) &&
+            inside("time_constants",
+                   bk::brainTimeConstantGeneIndex(0u, inputs, layers, outputs, hidden - 1u)),
+        "Both ends of the time constants fall in their block");
     check(inside("gate0_weights",
                  bk::brainGateWeightIndex(0u, inputs, layers, outputs, 0u, 0u, 0u)) &&
               inside("gate0_weights", bk::brainGateWeightIndex(0u, inputs, layers, outputs, 0u,
@@ -713,11 +721,11 @@ void testBrainDescription() {
 
     // And the sensor blocks against the sensor index functions, which is the
     // half a weight-block check cannot reach.
-    check(inside("neighbourhood", bk::brainNeighborChannelIndex(0u, 0u)) &&
-              inside("neighbourhood",
-                     bk::brainNeighborChannelIndex(bk::BrainNeighborCount - 1u,
-                                                   bk::BrainNeighborChannels - 1u)),
-          "The neighbourhood block covers every cell channel");
+    check(
+        inside("neighbourhood", bk::brainNeighborChannelIndex(0u, 0u)) &&
+            inside("neighbourhood", bk::brainNeighborChannelIndex(bk::BrainNeighborCount - 1u,
+                                                                  bk::BrainNeighborChannels - 1u)),
+        "The neighbourhood block covers every cell channel");
     check(inside("beacon", bk::brainBeaconInputIndex(0u)) &&
               inside("beacon", bk::brainBeaconInputIndex(bk::BrainBeaconInputCount - 1u)),
           "The beacon block covers every beacon channel");
@@ -737,8 +745,7 @@ void testBrainDescription() {
           "and writing it again produces the same document");
 
     // A trimmed scenario describes a smaller network, not a broken one.
-    const vkexp::neuro::BrainDescription trimmed =
-        vkexp::neuro::describeBrain({52, 20, 8});
+    const vkexp::neuro::BrainDescription trimmed = vkexp::neuro::describeBrain({52, 20, 8});
     check(tiles(trimmed.inputs, 52) && tiles(trimmed.weights, trimmed.weightCount),
           "A trimmed shape still tiles both vectors");
     check(!vkexp::neuro::compareBrainDescriptions(description, trimmed).empty(),
@@ -764,8 +771,7 @@ void testBrainDescription() {
     moved.inputs.front().count += 1;
     const std::vector<std::string> differences =
         vkexp::neuro::compareBrainDescriptions(description, moved);
-    check(!differences.empty() &&
-              differences.front().find("neighbourhood") != std::string::npos,
+    check(!differences.empty() && differences.front().find("neighbourhood") != std::string::npos,
           "A moved block is reported by its own name");
 }
 
@@ -783,8 +789,8 @@ void testGenomeArchiveRoundTrip() {
     // A trimmed shape rather than the default one, so the file has something to
     // say that the build would not have assumed.
     const vkexp::neuro::BrainShape archivePlan{70, 20, 4};
-    const vkexp::GenomeArchiveMetadata metadata{42,   4,  0xC0FFEEU, 1.5F, 0.25F, 70, 20, 4,
-                                               archivePlan.packedLayers()};
+    const vkexp::GenomeArchiveMetadata metadata{
+        42, 4, 0xC0FFEEU, 1.5F, 0.25F, 70, 20, 4, archivePlan.packedLayers()};
     vkexp::saveGenomeArchive(path, genomes, metadata);
 
     const vkexp::GenomeArchive loaded = vkexp::loadGenomeArchive(path);
@@ -872,7 +878,14 @@ void testGenomeArchiveRoundTrip() {
     std::vector<vkexp::Genome> deepGenomes(2, vkexp::Genome{vkexp::neuro::makeWeights(deepPlan)});
     deepGenomes.front().weights.front() = 0.5F;
     const vkexp::GenomeArchiveMetadata deepMetadata{
-        7, 5, 1U, 0.5F, 0.25F, 88, static_cast<std::uint32_t>(deepPlan.hiddenTotal()), 6,
+        7,
+        5,
+        1U,
+        0.5F,
+        0.25F,
+        88,
+        static_cast<std::uint32_t>(deepPlan.hiddenTotal()),
+        6,
         deepPlan.packedLayers()};
     vkexp::saveGenomeArchive(deepPath, deepGenomes, deepMetadata);
     const vkexp::GenomeArchive deepLoaded = vkexp::loadGenomeArchive(deepPath);
@@ -880,8 +893,7 @@ void testGenomeArchiveRoundTrip() {
           "An archive of a three-layer brain comes back at that brain's length");
     check(deepLoaded.description.hiddenLayers == std::vector<std::uint32_t>{12, 8, 8},
           "and says which three layers they were");
-    check(deepLoaded.genomes.front().weights.front() == 0.5F,
-          "and the weights survive it");
+    check(deepLoaded.genomes.front().weights.front() == 0.5F, "and the weights survive it");
 
     // A corrupted magic must fail loudly rather than load noise as a population.
     const std::filesystem::path corrupted = path.parent_path() / "corrupted.vkng";
@@ -1045,16 +1057,15 @@ void testRunSnapshotRoundTrip() {
     small.latticeHeight = 6;
     small.latticeDepth = 4;
     const vkexp::lattice::PopulationLayout layout{12, 10, 2};
-    const std::vector<vkexp::AgentState> spawned =
-        vkexp::lattice::makeInitialAgents(small, layout);
+    const std::vector<vkexp::AgentState> spawned = vkexp::lattice::makeInitialAgents(small, layout);
     std::vector<std::int32_t> first(static_cast<std::size_t>(vkexp::latticeCellsPerWorld(small)) *
                                     layout.worldCount());
     std::vector<std::int32_t> second(first.size());
     vkexp::lattice::buildOccupancy(spawned, small, layout, first);
     vkexp::lattice::buildOccupancy(spawned, small, layout, second);
-    check(first == second && std::count(first.begin(), first.end(),
-                                        vkexp::lattice::kernel::LatticeNoOccupant) ==
-                                 static_cast<std::ptrdiff_t>(first.size() - spawned.size()),
+    check(first == second &&
+              std::count(first.begin(), first.end(), vkexp::lattice::kernel::LatticeNoOccupant) ==
+                  static_cast<std::ptrdiff_t>(first.size() - spawned.size()),
           "The occupancy grid is exactly recoverable from the agents, so it need not be saved");
 
     // A file written for another agent layout is refused rather than
@@ -1077,8 +1088,8 @@ void testRunSnapshotRoundTrip() {
 }
 
 void testPopulationReload() {
-    const vkexp::EvolutionSettings settings{8,     2,    3, 0.5F, 0.1F, 0.2F, 42U,
-                                            vkexp::neuro::defaultBrainShape.weightCount()};
+    const vkexp::EvolutionSettings settings{
+        8, 2, 3, 0.5F, 0.1F, 0.2F, 42U, vkexp::neuro::defaultBrainShape.weightCount()};
     vkexp::GeneticAlgorithm evolution{settings};
     std::vector<vkexp::Genome> replacement(
         settings.populationSize,
@@ -1129,8 +1140,7 @@ void testStepParameterPacking() {
     check(packed.latticeWidth == 20 && packed.latticeHeight == 16 && packed.latticeDepth == 8 &&
               packed.cellsPerWorld == 20 * 16 * 8,
           "The lattice extents and their product reach the shader");
-    check(packed.neighborhood ==
-              static_cast<std::uint32_t>(vkexp::Neighborhood::Faces),
+    check(packed.neighborhood == static_cast<std::uint32_t>(vkexp::Neighborhood::Faces),
           "The neighbourhood reaches the shader");
     // Derived on the host so every invocation of every pass does not recompute
     // it. Under a faces-only neighbourhood the axes advance one at a time, so
@@ -1202,7 +1212,8 @@ void testNeuronTimeConstants() {
     // one rather than a second network.
     vkexp::neuro::Weights weights = vkexp::neuro::makeWeights(vkexp::neuro::maximumBrainShape);
     constexpr auto inputCount = static_cast<kernel::uint>(vkexp::neuro::Topology::inputCount);
-    constexpr auto hiddenCount = static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity);
+    constexpr auto hiddenCount =
+        static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity);
     constexpr kernel::uint layers = kernel::brainPackHiddenLayers(hiddenCount, 0u, 0u);
     weights[kernel::brainLayerWeightIndex(0u, inputCount, layers, 0u, 0u, 0u)] = 3.0F;
     weights[kernel::brainOutputWeightIndex(0u, inputCount, layers, 0u, 0u)] = 3.0F;
@@ -1240,7 +1251,8 @@ void testNeuronTimeConstants() {
 void testGatedNeurons() {
     namespace kernel = vkexp::neuro::kernel;
     constexpr auto inputCount = static_cast<kernel::uint>(vkexp::neuro::Topology::inputCount);
-    constexpr auto hiddenCount = static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity);
+    constexpr auto hiddenCount =
+        static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity);
     constexpr auto outputCount = static_cast<kernel::uint>(vkexp::neuro::Topology::outputCount);
     constexpr kernel::uint layers = kernel::brainPackHiddenLayers(hiddenCount, 0u, 0u);
     const float step = vkexp::units::fixedTimeStep;
@@ -1258,8 +1270,7 @@ void testGatedNeurons() {
     for (const float gene : {-2.0F, 0.0F, 1.5F}) {
         vkexp::neuro::Weights fixed = weights;
         vkexp::neuro::Weights gated = weights;
-        fixed[kernel::brainTimeConstantGeneIndex(0u, inputCount, layers, outputCount, 0u)] =
-            gene;
+        fixed[kernel::brainTimeConstantGeneIndex(0u, inputCount, layers, outputCount, 0u)] = gene;
         gated[kernel::brainGateBiasIndex(0u, inputCount, layers, outputCount, 0u, 0u)] = gene;
 
         vkexp::neuro::HiddenState fixedState{};
@@ -1267,8 +1278,7 @@ void testGatedNeurons() {
         for (int index = 0; index < 20; ++index) {
             (void)vkexp::neuro::evaluate(fixed, inputs, fixedState, step,
                                          kernel::NeuronModelTimeConstant);
-            (void)vkexp::neuro::evaluate(gated, inputs, gatedState, step,
-                                         kernel::NeuronModelGated);
+            (void)vkexp::neuro::evaluate(gated, inputs, gatedState, step, kernel::NeuronModelGated);
         }
         check(closeTo(fixedState[0], gatedState[0], 1.0e-6F),
               "A gate that ignores its inputs is the fixed-time-constant neuron");
@@ -1280,8 +1290,7 @@ void testGatedNeurons() {
     // makes the neuron follow -- the opposite of a GRU update gate, and worth
     // pinning down here because the sign is the easy thing to get backwards.
     vkexp::neuro::Weights listening = weights;
-    listening[kernel::brainGateWeightIndex(0u, inputCount, layers, outputCount, 0u, 0u, 1u)] =
-        8.0F;
+    listening[kernel::brainGateWeightIndex(0u, inputCount, layers, outputCount, 0u, 0u, 1u)] = 8.0F;
     vkexp::neuro::Inputs holding = inputs;
     holding[1] = 1.0F; // drives the gate up, so the neuron should barely move
     vkexp::neuro::HiddenState held{};
@@ -1298,16 +1307,14 @@ void testGatedNeurons() {
     // The gate block is real genome, not a reinterpretation of existing weights.
     // Asserted against the widest plan, which is what the genome is sized for:
     // under a narrower plan the genome has a tail nothing reads, by design.
-    constexpr kernel::uint widest =
-        kernel::brainPackHiddenLayers(static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity),
-                                      0u, 0u);
-    constexpr auto capacityInputs =
-        static_cast<kernel::uint>(vkexp::neuro::Topology::inputCount);
-    constexpr auto capacityOutputs =
-        static_cast<kernel::uint>(vkexp::neuro::Topology::outputCount);
-    check(kernel::brainGateBiasIndex(0u, capacityInputs, widest, capacityOutputs, 0u,
-                                     static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity) -
-                                         1u) == vkexp::neuro::Topology::maximumWeightCount - 1u,
+    constexpr kernel::uint widest = kernel::brainPackHiddenLayers(
+        static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity), 0u, 0u);
+    constexpr auto capacityInputs = static_cast<kernel::uint>(vkexp::neuro::Topology::inputCount);
+    constexpr auto capacityOutputs = static_cast<kernel::uint>(vkexp::neuro::Topology::outputCount);
+    check(kernel::brainGateBiasIndex(
+              0u, capacityInputs, widest, capacityOutputs, 0u,
+              static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity) - 1u) ==
+              vkexp::neuro::Topology::maximumWeightCount - 1u,
           "The gate block ends exactly at the end of the genome");
     check(kernel::brainGateWeightIndex(0u, inputCount, layers, outputCount, 0u, 0u, 0u) >
               kernel::brainTimeConstantGeneIndex(0u, inputCount, layers, outputCount,
@@ -1318,7 +1325,8 @@ void testGatedNeurons() {
 void testSpikingNeuronModel() {
     namespace kernel = vkexp::neuro::kernel;
     constexpr auto inputCount = static_cast<kernel::uint>(vkexp::neuro::Topology::inputCount);
-    constexpr auto hiddenCount = static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity);
+    constexpr auto hiddenCount =
+        static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity);
     constexpr kernel::uint layers = kernel::brainPackHiddenLayers(hiddenCount, 0u, 0u);
     const float step = vkexp::units::fixedTimeStep;
 
@@ -1337,9 +1345,9 @@ void testSpikingNeuronModel() {
             spiked = true;
         }
     }
-    check(spiked, "Spiking LIF neuron accumulates potential, fires spike, and resets membrane potential");
+    check(spiked,
+          "Spiking LIF neuron accumulates potential, fires spike, and resets membrane potential");
 }
-
 
 // Below this the plateau the straight-line shaping creates has no perceptual way
 // out, which is what 450 generations of Two doors demonstrated.
@@ -1375,8 +1383,10 @@ void testExperimentSweep() {
     // report an advance the caller would act on by restarting a fourth run.
     check(!vkexp::recordSweepGeneration(sweep, 1.0F, 1.0F, 0.5F), "No advance mid-final-stage");
     (void)vkexp::recordSweepGeneration(sweep, 1.0F, 1.0F, 0.5F);
-    check(!vkexp::recordSweepGeneration(sweep, 4.0F, 2.0F, 0.9F), "The final stage does not advance");
-    check(!sweep.running && sweep.stages.size() == 3, "A finished sweep stops with every stage kept");
+    check(!vkexp::recordSweepGeneration(sweep, 4.0F, 2.0F, 0.9F),
+          "The final stage does not advance");
+    check(!sweep.running && sweep.stages.size() == 3,
+          "A finished sweep stops with every stage kept");
     check(closeTo(sweep.stages.back().bestFitness.back(), 4.0F),
           "The last generation of the last stage is kept");
     check(!vkexp::recordSweepGeneration(sweep, 9.0F, 9.0F, 9.0F),
@@ -1418,7 +1428,6 @@ void testGeneticAlgorithm() {
     check(evolution.population().front().weights == original.back().weights,
           "GA preserves champion as first elite");
 }
-
 
 // --- the lattice ------------------------------------------------------------
 //
@@ -1515,8 +1524,7 @@ void testLatticeNeighbourhood() {
 
     // Nearness is what the brain reads and what the shaping banks: 1 on the
     // beacon, 0 at the far corner, and never outside that range.
-    check(closeTo(lk::latticeNearness(0, 10), 1.0F) &&
-              closeTo(lk::latticeNearness(10, 10), 0.0F) &&
+    check(closeTo(lk::latticeNearness(0, 10), 1.0F) && closeTo(lk::latticeNearness(10, 10), 0.0F) &&
               closeTo(lk::latticeNearness(5, 10), 0.5F) &&
               closeTo(lk::latticeNearness(99, 10), 0.0F),
           "Nearness runs from 1 on the beacon to 0 at the far corner");
@@ -1560,8 +1568,8 @@ void testLatticeMoveRule() {
           "A cell may be entered only when it is empty");
     // The arbitration itself: a minimum over agent indices, so the winner does
     // not depend on the order the bids arrive in.
-    check(lk::latticeBetterClaim(lk::LatticeNoClaim, 4) == 4 &&
-              lk::latticeBetterClaim(4, 9) == 4 && lk::latticeBetterClaim(9, 4) == 4,
+    check(lk::latticeBetterClaim(lk::LatticeNoClaim, 4) == 4 && lk::latticeBetterClaim(4, 9) == 4 &&
+              lk::latticeBetterClaim(9, 4) == 4,
           "A contested cell goes to the lowest agent index, whichever bid first");
 }
 
@@ -1591,9 +1599,9 @@ void testLatticeSpawn() {
               "Nobody spawns on the beacon, which would solve the world before the first step");
         check(static_cast<std::uint32_t>(agent.cell.w) == lk::LatticeNeighborCount,
               "A fresh agent has no heading, which is not the same as heading at neighbour zero");
-        occupied.emplace_back(world, lk::latticeCellIndex(agent.cell.x, agent.cell.y, agent.cell.z,
-                                                          settings.latticeWidth,
-                                                          settings.latticeHeight));
+        occupied.emplace_back(world,
+                              lk::latticeCellIndex(agent.cell.x, agent.cell.y, agent.cell.z,
+                                                   settings.latticeWidth, settings.latticeHeight));
     }
     std::sort(occupied.begin(), occupied.end());
     check(std::adjacent_find(occupied.begin(), occupied.end()) == occupied.end(),
@@ -1639,30 +1647,30 @@ void testLatticeSensing() {
     agent.intent = {2, 2, 2, 0};
 
     // Agent 1 stands one cell along +x, broadcasting.
-    const std::uint32_t plusX = lk::latticeCellIndex(3, 2, 2, settings.latticeWidth,
-                                                     settings.latticeHeight);
+    const std::uint32_t plusX =
+        lk::latticeCellIndex(3, 2, 2, settings.latticeWidth, settings.latticeHeight);
     occupancy[plusX] = 1;
 
-    const vkexp::neuro::Inputs middle = vkexp::sampleAgentInputs(agent, signals, occupancy,
-                                                                 settings);
+    const vkexp::neuro::Inputs middle =
+        vkexp::sampleAgentInputs(agent, signals, occupancy, settings);
     const std::uint32_t neighborPlusX = lk::latticeNeighborIndex(1, 0, 0);
-    check(closeTo(middle[bk::brainNeighborChannelIndex(neighborPlusX, lk::LatticeNeighborOccupied)],
-                  1.0F) &&
-              closeTo(middle[bk::brainNeighborChannelIndex(neighborPlusX,
-                                                           lk::LatticeNeighborBlocked)],
-                      0.0F) &&
-              closeTo(middle[bk::brainNeighborChannelIndex(neighborPlusX,
-                                                           lk::LatticeNeighborSignal)],
-                      0.75F),
-          "An occupied neighbour reads as occupied, unblocked, and broadcasting what it emits");
+    check(
+        closeTo(middle[bk::brainNeighborChannelIndex(neighborPlusX, lk::LatticeNeighborOccupied)],
+                1.0F) &&
+            closeTo(
+                middle[bk::brainNeighborChannelIndex(neighborPlusX, lk::LatticeNeighborBlocked)],
+                0.0F) &&
+            closeTo(middle[bk::brainNeighborChannelIndex(neighborPlusX, lk::LatticeNeighborSignal)],
+                    0.75F),
+        "An occupied neighbour reads as occupied, unblocked, and broadcasting what it emits");
     const std::uint32_t neighborMinusX = lk::latticeNeighborIndex(-1, 0, 0);
-    check(closeTo(middle[bk::brainNeighborChannelIndex(neighborMinusX,
-                                                       lk::LatticeNeighborOccupied)],
-                  0.0F) &&
-              closeTo(middle[bk::brainNeighborChannelIndex(neighborMinusX,
-                                                           lk::LatticeNeighborBlocked)],
-                      0.0F),
-          "An empty neighbour inside the lattice reads as neither occupied nor blocked");
+    check(
+        closeTo(middle[bk::brainNeighborChannelIndex(neighborMinusX, lk::LatticeNeighborOccupied)],
+                0.0F) &&
+            closeTo(
+                middle[bk::brainNeighborChannelIndex(neighborMinusX, lk::LatticeNeighborBlocked)],
+                0.0F),
+        "An empty neighbour inside the lattice reads as neither occupied nor blocked");
 
     // The direction to the beacon is a unit vector, and the nearness is what the
     // shaping banks. Two cells along +x in a 5-wide box under Moore is 2 of a
@@ -1679,9 +1687,9 @@ void testLatticeSensing() {
     const vkexp::neuro::Inputs edge = vkexp::sampleAgentInputs(agent, signals, occupancy, settings);
     check(closeTo(edge[bk::brainNeighborChannelIndex(neighborMinusX, lk::LatticeNeighborBlocked)],
                   1.0F) &&
-              closeTo(edge[bk::brainNeighborChannelIndex(neighborMinusX,
-                                                         lk::LatticeNeighborOccupied)],
-                      0.0F),
+              closeTo(
+                  edge[bk::brainNeighborChannelIndex(neighborMinusX, lk::LatticeNeighborOccupied)],
+                  0.0F),
           "A neighbour outside the lattice reads as blocked rather than empty");
 
     // An agent that has not moved reads zero on all three heading channels,
@@ -1719,8 +1727,8 @@ void testLatticeContention() {
     const std::size_t moveBias = bk::brainOutputBiasIndex(
         0U, static_cast<std::uint32_t>(brain.inputCount), brain.packedLayers(),
         static_cast<std::uint32_t>(brain.outputCount), bk::BrainMoveOutput);
-    weights[moveBias] = 8.0F;                  // genome 0 drives +x
-    weights[stride + moveBias] = -8.0F;        // genome 1 drives -x
+    weights[moveBias] = 8.0F;           // genome 0 drives +x
+    weights[stride + moveBias] = -8.0F; // genome 1 drives -x
 
     std::vector<vkexp::AgentState> agents(2);
     for (vkexp::AgentState& agent : agents) {
@@ -1738,9 +1746,9 @@ void testLatticeContention() {
     vkexp::lattice::buildOccupancy(agents, settings, layout, occupancy);
     std::vector<std::int32_t> claims(occupancy.size());
 
-    vkexp::stepLatticeCpu({agents, occupancy, claims, weights, stride, layout.groupSize(),
-                           layout.trialsPerGenome},
-                          settings);
+    vkexp::stepLatticeCpu(
+        {agents, occupancy, claims, weights, stride, layout.groupSize(), layout.trialsPerGenome},
+        settings);
     check(agents[0].cell.x == 2 && agents[0].cell.y == 2 && agents[0].cell.z == 2,
           "The lower-numbered agent takes the contested cell");
     check(agents[1].cell.x == 3, "The higher-numbered agent stays where it was");
@@ -1755,18 +1763,18 @@ void testLatticeContention() {
     // The occupancy grid follows: the winner's old cell is empty and its new one
     // names it. Two agents sharing a cell is the one thing the grid cannot say.
     check(occupancy[lk::latticeCellIndex(1, 2, 2, settings.latticeWidth, settings.latticeHeight)] ==
-              lk::LatticeNoOccupant &&
-          occupancy[lk::latticeCellIndex(2, 2, 2, settings.latticeWidth, settings.latticeHeight)] ==
-              0 &&
-          occupancy[lk::latticeCellIndex(3, 2, 2, settings.latticeWidth, settings.latticeHeight)] ==
-              1,
+                  lk::LatticeNoOccupant &&
+              occupancy[lk::latticeCellIndex(2, 2, 2, settings.latticeWidth,
+                                             settings.latticeHeight)] == 0 &&
+              occupancy[lk::latticeCellIndex(3, 2, 2, settings.latticeWidth,
+                                             settings.latticeHeight)] == 1,
           "The occupancy grid follows the move that actually happened");
 
     // Now the loser is asked to walk into the winner, which it cannot: a cell may
     // only be entered if it was empty when the step began.
-    vkexp::stepLatticeCpu({agents, occupancy, claims, weights, stride, layout.groupSize(),
-                           layout.trialsPerGenome},
-                          settings);
+    vkexp::stepLatticeCpu(
+        {agents, occupancy, claims, weights, stride, layout.groupSize(), layout.trialsPerGenome},
+        settings);
     check(agents[1].cell.x == 3 && closeTo(agents[1].metrics.w, 2.0F),
           "Walking into an occupied cell is refused and charged");
 }

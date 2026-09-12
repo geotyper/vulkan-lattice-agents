@@ -103,6 +103,16 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::SetNextWindowSize(ImVec2(330.0F, 470.0F), ImGuiCond_FirstUseEver);
     ImGui::Begin("Simulation");
 
+    ImGui::Text("Generation %llu", static_cast<unsigned long long>(state_.statistics.generation));
+    const std::uint32_t generationSteps = std::max(state_.controls.stepsPerGeneration, 1U);
+    const float generationProgress =
+        std::clamp(static_cast<float>(state_.statistics.step) / static_cast<float>(generationSteps),
+                   0.0F, 1.0F);
+    char tickProgress[48];
+    std::snprintf(tickProgress, sizeof(tickProgress), "%u / %u ticks", state_.statistics.step,
+                  state_.controls.stepsPerGeneration);
+    ImGui::ProgressBar(generationProgress, ImVec2(-1.0F, 0.0F), tickProgress);
+
     ImGui::Checkbox("Paused", &state_.controls.paused);
     int stepsPerFrame = static_cast<int>(state_.controls.stepsPerFrame);
     if (ImGui::SliderInt("Steps / frame", &stepsPerFrame, 1, 64)) {
@@ -116,14 +126,41 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                          ImGuiSliderFlags_Logarithmic)) {
         state_.controls.stepsPerGeneration = static_cast<std::uint32_t>(stepsPerGeneration);
     }
-    ImGui::TextDisabled(
-        "trial %.1f s at %.0f Hz (%.1f ms per step)",
-        static_cast<double>(units::secondsForSteps(state_.controls.stepsPerGeneration,
-                                                   state_.settings.deltaTime)),
-        static_cast<double>(1.0F / state_.settings.deltaTime),
-        static_cast<double>(state_.settings.deltaTime * 1000.0F));
+    ImGui::TextDisabled("trial %.1f s at %.0f Hz (%.1f ms per step)",
+                        static_cast<double>(units::secondsForSteps(
+                            state_.controls.stepsPerGeneration, state_.settings.deltaTime)),
+                        static_cast<double>(1.0F / state_.settings.deltaTime),
+                        static_cast<double>(state_.settings.deltaTime * 1000.0F));
 
     ImGui::SeparatorText("The lattice");
+    int requestedAgentsPerWorld = static_cast<int>(state_.worlds.requestedAgentsPerWorld);
+    const int populationSize = static_cast<int>(std::max(state_.agents.genomeCount, 1U));
+    requestedAgentsPerWorld = std::clamp(requestedAgentsPerWorld, 1, populationSize);
+    if (ImGui::SliderInt("Agents / world", &requestedAgentsPerWorld, 1, populationSize)) {
+        state_.worlds.requestedAgentsPerWorld = static_cast<std::uint32_t>(requestedAgentsPerWorld);
+        state_.controls.resetRequested = true;
+    }
+    ImGui::SetItemTooltip("How many genomes share one logical lattice. One gives every agent its "
+                          "own world; the maximum puts the whole population together. Changing "
+                          "it restarts the run and may shrink the lattice to stay in its fixed "
+                          "GPU memory budget.");
+    if (ImGui::SmallButton("1 agent")) {
+        state_.worlds.requestedAgentsPerWorld = 1;
+        state_.controls.resetRequested = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("12 agents")) {
+        state_.worlds.requestedAgentsPerWorld = std::min(12U, state_.agents.genomeCount);
+        state_.controls.resetRequested = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("All agents")) {
+        state_.worlds.requestedAgentsPerWorld = state_.agents.genomeCount;
+        state_.controls.resetRequested = true;
+    }
+    ImGui::TextDisabled("%u groups x %u trials = %u worlds", state_.worlds.groupCount,
+                        state_.agents.trialsPerGenome, state_.worlds.worldCount);
+
     // Every extent is a buffer dimension, so a change here can only take effect
     // on a reset. They are sliders and not fixed because what the plan leaves
     // open is exactly how much room the neighbourhood work needs -- and the
@@ -138,8 +175,8 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     // the driver shrinks the box rather than growing the buffer -- so the numbers
     // here are what is running, not what was asked for.
     const std::uint32_t cells = latticeCellsPerWorld(state_.settings);
-    const double gridBytes = static_cast<double>(cells) * state_.worlds.worldCount *
-                             sizeof(std::int32_t);
+    const double gridBytes =
+        static_cast<double>(cells) * state_.worlds.worldCount * sizeof(std::int32_t);
     ImGui::TextDisabled("%u cells per world, %u worlds, %.1f MB of occupancy", cells,
                         state_.worlds.worldCount, gridBytes / (1024.0 * 1024.0));
     if (state_.worlds.agentsPerWorld > 0 && cells > 0) {
@@ -180,8 +217,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4{0.95F, 0.75F, 0.25F, 1.0F}, "one winner per world");
     }
-    ImGui::TextDisabled("beacon seed %u, redrawn every generation",
-                        state_.settings.beaconSeed);
+    ImGui::TextDisabled("beacon seed %u, redrawn every generation", state_.settings.beaconSeed);
 
     ImGui::SeparatorText("Fitness shaping");
     ImGui::SliderFloat("Tracking reward", &state_.settings.fitness.trackingReward, 0.0F, 4.0F,
@@ -193,8 +229,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                        "%.3f");
     ImGui::SetItemTooltip("Score per step spent within the contact radius. Per step rather than "
                           "per arrival, for the reason the contact radius exists.");
-    ImGui::SliderFloat("Motor cost", &state_.settings.fitness.motorCostWeight, 0.0F, 0.05F,
-                       "%.4f");
+    ImGui::SliderFloat("Motor cost", &state_.settings.fitness.motorCostWeight, 0.0F, 0.05F, "%.4f");
     ImGui::SliderFloat("Refusal penalty", &state_.settings.fitness.refusalPenalty, 0.0F, 0.1F,
                        "%.4f");
     ImGui::SetItemTooltip("Charged per move that could not happen -- into a wall, into a "
@@ -296,14 +331,6 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
         ImGui::TextWrapped("%s", state_.controls.snapshotStatus.c_str());
     }
 
-    ImGui::SeparatorText("Show");
-    ImGui::Checkbox("Agents", &state_.display.agents);
-    ImGui::SameLine();
-    ImGui::Checkbox("Beacons", &state_.display.beacons);
-    ImGui::SameLine();
-    ImGui::Checkbox("Bounds", &state_.display.bounds);
-    ImGui::SliderFloat("Background", &state_.display.backgroundBrightness, 0.0F, 1.0F, "%.2f");
-
     ImGui::SeparatorText("Brain contract");
     // One integrator, four sources for the rate it runs at, and the same genome
     // under all of them -- so this is a live ablation rather than a choice
@@ -379,9 +406,9 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     // Say so when the plots are a window onto a longer run, rather than letting
     // a curve that has stopped extending read as a run that has stopped.
     if (state_.history.bestFitness.size() < state_.statistics.evaluatedGenerations) {
-        ImGui::TextDisabled("last %zu generations of %llu", state_.history.bestFitness.size(),
-                            static_cast<unsigned long long>(
-                                state_.statistics.evaluatedGenerations));
+        ImGui::TextDisabled(
+            "last %zu generations of %llu", state_.history.bestFitness.size(),
+            static_cast<unsigned long long>(state_.statistics.evaluatedGenerations));
     }
     plotHistory("Best", state_.history.bestFitness);
     plotHistory("Median", state_.history.medianFitness);
@@ -472,9 +499,9 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     }
     ImGui::End();
 
-    ImGui::SetNextWindowPos(ImVec2(360.0F, 16.0F), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(1040.0F, 820.0F), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Lattice");
+    ImGui::SetNextWindowPos(ImVec2(710.0F, 16.0F), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(330.0F, 330.0F), ImGuiCond_FirstUseEver);
+    ImGui::Begin("View settings");
     if (state_.worlds.worldCount > 0) {
         int visibleWorld = static_cast<int>(state_.worlds.selectedWorld + 1);
         if (ImGui::SliderInt("Visible world", &visibleWorld, 1,
@@ -492,16 +519,21 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                             state_.worlds.groupCount, visibleTrial + 1,
                             state_.agents.trialsPerGenome, visibleAgentCount);
     }
-    // The 3D view is step 5 of the plan and deliberately last: until it exists,
-    // everything a run needs is in the panels and the headless runner, and a
-    // placeholder that says so beats a black rectangle that looks broken.
+    drawViewControls();
+    ImGui::End();
+
+    // The view is deliberately only a picture. Selection, projection and all
+    // other controls live in View settings, leaving every pixel here available
+    // to the lattice and making this window suitable for moving to a second
+    // monitor without carrying a strip of controls with it.
+    ImGui::SetNextWindowPos(ImVec2(360.0F, 360.0F), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(1040.0F, 520.0F), ImGuiCond_FirstUseEver);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0F, 0.0F));
+    ImGui::Begin("Lattice view", nullptr,
+                 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar();
     if (state_.viewport.imageView == VK_NULL_HANDLE) {
-        ImGui::TextDisabled("No view of the lattice yet.");
-        ImGui::TextWrapped("The 3D renderer is the last piece of the lattice conversion: the "
-                           "2D one drew normalised coordinates with no camera at all, so there "
-                           "was nothing to carry over. Until then the run is readable through "
-                           "the panels here and through the headless runner, which is what the "
-                           "statistics and the sweeps were built for.");
+        ImGui::TextDisabled("The view has not published an image yet.");
     } else {
         const ImVec2 available = ImGui::GetContentRegionAvail();
         if (available.x >= 64.0F && available.y >= 64.0F) {
@@ -509,11 +541,130 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
             state_.viewport.requestedHeight = static_cast<std::uint32_t>(std::floor(available.y));
             const ImTextureID texture =
                 static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(viewportDescriptor_));
+            const ImVec2 origin = ImGui::GetCursorScreenPos();
             ImGui::Image(texture, available);
+            // The camera is dragged on the picture rather than typed into
+            // sliders: a box is a thing one turns over, and three numbers are
+            // how that gets stored, not how it gets done. The button sits on top
+            // of the image because an ImGui::Image is not something that can be
+            // held.
+            ImGui::SetCursorScreenPos(origin);
+            ImGui::InvisibleButton("##orbit", available,
+                                   ImGuiButtonFlags_MouseButtonLeft |
+                                       ImGuiButtonFlags_MouseButtonRight);
+            LatticeCamera& camera = state_.display.camera;
+            if (ImGui::IsItemActive()) {
+                const ImVec2 drag = ImGui::GetIO().MouseDelta;
+                camera.yaw -= drag.x * 0.008F;
+                camera.pitch = std::clamp(camera.pitch + drag.y * 0.008F, -1.53F, 1.53F);
+            }
+            if (ImGui::IsItemHovered()) {
+                const float wheel = ImGui::GetIO().MouseWheel;
+                if (wheel != 0.0F) {
+                    camera.distance =
+                        std::clamp(camera.distance * std::exp(-wheel * 0.12F), 0.35F, 12.0F);
+                }
+            }
         }
     }
     ImGui::End();
     profilerPanel_.draw(context.profiler);
+}
+
+void SimulationUiModule::drawViewControls() {
+    SimulationDisplay& display = state_.display;
+    if (!ImGui::CollapsingHeader("View", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    int style = static_cast<int>(display.voxelStyle);
+    constexpr const char* styles[] = {"Solid", "See-through"};
+    if (ImGui::Combo("Voxels", &style, styles, static_cast<int>(std::size(styles)))) {
+        display.voxelStyle = static_cast<VoxelStyle>(style);
+    }
+    ImGui::SetItemTooltip("Solid voxels hide the ones behind them, which is what makes a "
+                          "crowd readable. See-through ones let the whole box be read at "
+                          "once and resolve without sorting anything.");
+
+    ImGui::BeginDisabled(display.voxelStyle != VoxelStyle::Transparent);
+    ImGui::SliderFloat("Opacity", &display.voxelOpacity, 0.02F, 1.0F, "%.2f");
+    ImGui::EndDisabled();
+    ImGui::SliderFloat("Cell fill", &display.voxelScale, 0.10F, 1.0F, "%.2f");
+    ImGui::SetItemTooltip("How much of its cell a voxel fills. At 1.0 two neighbours are one "
+                          "block, which is the honest picture of a lattice and a poor picture "
+                          "of two agents.");
+
+    ImGui::Checkbox("Agents", &display.agents);
+    ImGui::SameLine();
+    ImGui::Checkbox("Trails", &display.trails);
+    ImGui::SameLine();
+    ImGui::Checkbox("Beacon", &display.beacons);
+    ImGui::SameLine();
+    ImGui::Checkbox("Box", &display.bounds);
+    ImGui::SliderFloat("Background", &display.backgroundBrightness, 0.0F, 1.0F, "%.2f");
+
+    ImGui::BeginDisabled(!display.trails);
+    int trailLength = static_cast<int>(display.trailLength);
+    const int maximumTrailLength = static_cast<int>(std::max(state_.trails.capacity, 1U));
+    if (ImGui::SliderInt("Trail ticks", &trailLength, 1, maximumTrailLength)) {
+        display.trailLength = static_cast<std::uint32_t>(trailLength);
+    }
+    ImGui::SliderFloat("Trail opacity", &display.trailOpacity, 0.01F, 0.80F, "%.2f");
+    ImGui::SliderFloat("Trail size", &display.trailScale, 0.08F, 0.90F, "%.2f");
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("Each agent leaves a coloured voxel breadcrumb after a resolved tick. "
+                          "The history is display-only: agents cannot sense it and it does not "
+                          "change movement or fitness.");
+
+    // A slab of the box, which is the other way of seeing inside one: solid
+    // voxels and a thin slice answer "who is next to whom", see-through ones
+    // answer "where is everybody".
+    int axis = static_cast<int>(std::min(display.sliceAxis, 2U));
+    constexpr const char* axes[] = {"x", "y", "z"};
+    const std::array<std::uint32_t, 3> extents{
+        state_.settings.latticeWidth, state_.settings.latticeHeight, state_.settings.latticeDepth};
+    if (ImGui::Combo("Slice axis", &axis, axes, static_cast<int>(std::size(axes)))) {
+        display.sliceAxis = static_cast<std::uint32_t>(axis);
+        display.sliceLow = 0;
+        display.sliceHigh = extents[static_cast<std::size_t>(axis)] - 1;
+    }
+    const auto extent = static_cast<int>(extents[static_cast<std::size_t>(axis)]);
+    int low = std::clamp(static_cast<int>(display.sliceLow), 0, extent - 1);
+    int high = std::clamp(static_cast<int>(display.sliceHigh), low, extent - 1);
+    // Extents can shrink on a simulation reset. Persist the clamp even when the
+    // user does not touch this control; otherwise the slider shows the last
+    // cell while the renderer still receives the old, now-empty slab.
+    display.sliceLow = static_cast<std::uint32_t>(low);
+    display.sliceHigh = static_cast<std::uint32_t>(high);
+    if (ImGui::DragIntRange2("Slice", &low, &high, 0.25F, 0, extent - 1, "%d", "%d")) {
+        display.sliceLow = static_cast<std::uint32_t>(low);
+        display.sliceHigh = static_cast<std::uint32_t>(high);
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("All")) {
+        display.sliceLow = 0;
+        display.sliceHigh = static_cast<std::uint32_t>(extent - 1);
+    }
+
+    LatticeCamera& camera = display.camera;
+    int projection = static_cast<int>(camera.projection);
+    constexpr const char* projections[] = {"Perspective", "Orthographic"};
+    if (ImGui::Combo("Projection", &projection, projections,
+                     static_cast<int>(std::size(projections)))) {
+        camera.projection = static_cast<CameraProjection>(projection);
+    }
+    ImGui::Checkbox("Spin", &camera.spin);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!camera.spin);
+    ImGui::SliderFloat("rad/s", &camera.spinRate, 0.02F, 1.20F, "%.2f");
+    ImGui::EndDisabled();
+    if (ImGui::SmallButton("Reset view")) {
+        camera = LatticeCamera{};
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("drag to orbit, wheel to zoom");
+    // The colours carry the three things a still frame cannot say by itself.
+    ImGui::TextDisabled("agents: blue far / warm near / red refused; trails: colour per genome");
 }
 
 void SimulationUiModule::drawBrainWindow(const neuro::BrainShape& brain) {

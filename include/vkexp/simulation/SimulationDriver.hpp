@@ -129,20 +129,27 @@ private:
     // because nothing outside a step ever looks at them.
     BufferResource occupancy_;
     BufferResource claims_;
+    // Display-only breadcrumb rings. Captured after resolve so a marker is the
+    // cell the agent actually won, never the cell it merely requested.
+    BufferResource trailHistory_;
     UniqueDescriptorSetLayout stepDescriptorSetLayout_;
     UniqueDescriptorSetLayout resolveDescriptorSetLayout_;
     UniqueDescriptorSetLayout clearDescriptorSetLayout_;
+    UniqueDescriptorSetLayout trailCaptureDescriptorSetLayout_;
     DescriptorAllocator descriptorAllocator_;
     std::array<VkDescriptorSet, 2> stepDescriptorSets_{};
     std::array<VkDescriptorSet, 2> resolveDescriptorSets_{};
+    std::array<VkDescriptorSet, 2> trailCaptureDescriptorSets_{};
     VkDescriptorSet clearDescriptorSet_{};
     ComputePipeline stepPipeline_;
     ComputePipeline resolvePipeline_;
     ComputePipeline clearPipeline_;
+    ComputePipeline trailCapturePipeline_;
     std::vector<AgentState> agents_;
     std::vector<std::int32_t> occupancyStaging_;
     std::vector<GpuStepParameters> stepParameterStaging_;
     bool hostUploadPending_{};
+    bool trailClearPending_{};
 };
 
 // Provenance for a genome archive, built from the run that produced it. Here

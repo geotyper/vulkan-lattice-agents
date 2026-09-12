@@ -154,7 +154,7 @@ void ImageResource::create(const VkPhysicalDevice physicalDevice, const VkDevice
     viewInfo.image = image_.get();
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format = config.format;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.aspectMask = config.aspect;
     viewInfo.subresourceRange.levelCount = 1;
     viewInfo.subresourceRange.layerCount = 1;
     VkImageView view{};

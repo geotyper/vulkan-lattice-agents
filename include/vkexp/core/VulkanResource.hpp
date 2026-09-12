@@ -114,6 +114,11 @@ struct ImageResourceConfig {
     VkImageUsageFlags usage{};
     VkMemoryPropertyFlags memoryProperties{VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
     VkFilter filter{VK_FILTER_LINEAR};
+    // Which aspect the view names. Colour for everything the compute path makes;
+    // a depth attachment is the one case where the view has to say so, and a
+    // view created with the wrong aspect is rejected at attachment time rather
+    // than at creation, which is a long way from the mistake.
+    VkImageAspectFlags aspect{VK_IMAGE_ASPECT_COLOR_BIT};
 };
 
 class ImageResource {

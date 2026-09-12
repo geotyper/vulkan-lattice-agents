@@ -30,6 +30,10 @@ private:
     // they are. Separate because it is a question about the brain rather than
     // about the world, and because it is edited rarely and read often.
     void drawBrainWindow(const neuro::BrainShape& brain);
+    // Everything about the picture and nothing about the run. It has its own
+    // settings window so the render window itself can remain an unobstructed
+    // image, with no selectors or menus taking space from the lattice.
+    void drawViewControls();
 
     SimulationState& state_;
     ImGuiModule& imgui_;

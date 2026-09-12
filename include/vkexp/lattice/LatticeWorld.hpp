@@ -19,11 +19,11 @@ struct PopulationLayout {
     [[nodiscard]] std::uint32_t agentCount() const { return genomeCount * trialsPerGenome; }
 
     // The group size actually in force, which is not always the one asked for:
-    // clampAgentsPerWorld floors it at ten, or at the population if that is
-    // smaller. Everything that divides agents into worlds asks here rather than
-    // reading the field, because a caller that indexed with the unclamped number
-    // would address worlds that worldCount() says do not exist -- which is a
-    // write past the end of the occupancy grid rather than a wrong answer.
+    // clampAgentsPerWorld keeps it between one and the population. Everything
+    // that divides agents into worlds asks here rather than reading the field,
+    // because a caller that indexed with the unclamped number would address
+    // worlds that worldCount() says do not exist -- which is a write past the
+    // end of the occupancy grid rather than a wrong answer.
     [[nodiscard]] std::uint32_t groupSize() const {
         return clampAgentsPerWorld(genomeCount, agentsPerWorld);
     }
