@@ -54,10 +54,7 @@ void main() {
     echo[at++] = params.worldMode;
     echo[at++] = params.buildIntervalTicks;
     echo[at++] = floatBitsToUint(params.buildThreshold);
-    echo[at++] = floatBitsToUint(params.constructionCourseFill);
-    echo[at++] = params.constructionHeightLead;
     echo[at++] = params.allowSideSupportedBlocks;
-    echo[at++] = params.constructionSupportRadius;
     echo[at++] = params.resourceHeight;
     echo[at++] = params.beaconSeed;
     echo[at++] = floatBitsToUint(params.fitness.shaping.x);

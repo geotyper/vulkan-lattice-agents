@@ -52,16 +52,15 @@ template <typename Visit> void visitSettings(SimulationStep& settings, Visit&& v
     visit(settings.fitness.groupSharing);
     visit(settings.fitness.boundaryPenalty);
     visit(settings.buildThreshold);
-    visit(settings.constructionCourseFill);
 }
 
-constexpr std::uint32_t settingsFloatCount = 11;
+constexpr std::uint32_t settingsFloatCount = 10;
 
 // visitSettings and SettingsIntegers together have to name every field of
 // SimulationStep, and this is what notices when a new tunable is added and
 // quietly not saved. If it fires: add the field to one of the two lists above,
 // bump runSnapshotVersion, then update this number.
-static_assert(sizeof(SimulationStep) == 108,
+static_assert(sizeof(SimulationStep) == 96,
               "SimulationStep changed shape -- update the run snapshot field lists");
 
 // The fields that are not floats, kept apart so the float list above stays a
@@ -79,13 +78,11 @@ struct SettingsIntegers {
     std::uint32_t neuronModel{};
     std::uint32_t worldMode{};
     std::uint32_t buildIntervalTicks{};
-    std::uint32_t constructionHeightLead{};
     std::uint32_t allowSideSupportedBlocks{};
-    std::uint32_t constructionSupportRadius{};
     std::uint32_t resourceHeight{};
 };
 
-static_assert(sizeof(SettingsIntegers) == 64);
+static_assert(sizeof(SettingsIntegers) == 56);
 
 void readExactly(std::ifstream& stream, void* destination, const std::size_t bytes,
                  const std::filesystem::path& path) {
@@ -148,9 +145,7 @@ void saveRunSnapshot(const std::filesystem::path& path, const RunSnapshot& snaps
                                     static_cast<std::uint32_t>(settings.neuronModel),
                                     static_cast<std::uint32_t>(settings.worldMode),
                                     settings.buildIntervalTicks,
-                                    settings.constructionHeightLead,
                                     settings.allowSideSupportedBlocks,
-                                    settings.constructionSupportRadius,
                                     settings.resourceHeight};
     stream.write(reinterpret_cast<const char*>(&integers), sizeof(integers));
 
@@ -278,8 +273,6 @@ RunSnapshot loadRunSnapshot(const std::filesystem::path& path) {
     snapshot.settings.neuronModel = static_cast<NeuronModel>(integers.neuronModel);
     snapshot.settings.worldMode = static_cast<WorldMode>(integers.worldMode);
     snapshot.settings.buildIntervalTicks = integers.buildIntervalTicks;
-    snapshot.settings.constructionHeightLead = integers.constructionHeightLead;
-    snapshot.settings.constructionSupportRadius = integers.constructionSupportRadius;
     snapshot.settings.resourceHeight = integers.resourceHeight;
     snapshot.settings.allowSideSupportedBlocks = integers.allowSideSupportedBlocks;
 

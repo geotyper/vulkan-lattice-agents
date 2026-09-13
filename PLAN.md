@@ -392,6 +392,13 @@ world builds one path or several. A run where deliveries rise while block count
 falls is the result worth having, because it means the group found a cheaper
 route rather than a bigger pile.
 
+**One rule fewer than construction started with.** The construction frontier --
+whether a block may stand this far above the filled part of the world -- was
+removed after the refusal counters showed it rejecting five attempts in two and
+a half million. Support from below already refuses everything it refused, so it
+was a second statement of the first rule with its own three sliders. Height is
+now limited by what holds a block up, and by the ceiling.
+
 **What is deliberately not in the first version.** A depleting resource,
 several resource nodes, a resource that has to be carried to a particular
 deposit rather than to the floor, and any cost per block. Each is a separate

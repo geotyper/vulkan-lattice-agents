@@ -39,13 +39,14 @@ struct RunSnapshot {
     std::uint32_t seed{};
 };
 
-// Version 7 adds the harvest world and where its resource sits. Version 6
-// replaces the global course frontier with a local one and stores its radius. Version 5 added optional cardinal side support. The per-course
+// Version 8 drops the construction frontier, which refused nothing the support
+// rule had not already refused. Version 7 adds the harvest world and where its
+// resource sits. Version 5 added optional cardinal side support. The per-course
 // counters introduced with version 4 are derived from the stored structure
 // field.
 // It is not a continuation of the old 2D format: the agent record, settings and
 // world all changed at once, and that format has different magic.
-inline constexpr std::uint32_t runSnapshotVersion = 7;
+inline constexpr std::uint32_t runSnapshotVersion = 8;
 
 // Versioned and little-endian, like the genome archive, and just as strict: a
 // file from another brain topology or another agent layout is rejected rather

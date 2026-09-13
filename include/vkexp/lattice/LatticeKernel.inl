@@ -116,16 +116,15 @@ const uint LatticeBuildNoFacing = 2u;   // no cardinal heading to build against
 const uint LatticeBuildOffLattice = 3u; // the face points out of the world
 const uint LatticeBuildBlocked = 4u;    // a block already stands there
 const uint LatticeBuildUnsupported = 5u; // nothing under it, and no side support
-const uint LatticeBuildAboveFrontier = 6u; // too far above the local foundation
-const uint LatticeBuildInTheWay = 7u;   // an agent is standing in the cell
+const uint LatticeBuildInTheWay = 6u;   // an agent is standing in the cell
 // The last two are recorded by the resolve pass rather than the decide pass,
 // because whether a bid won is not known until every bid is in. Without them
 // the funnel stopped at "a bid was placed" and how many became blocks had to be
 // divided out of the cooldown count, which is arithmetic standing in for a
 // measurement.
-const uint LatticeBuildPlaced = 8u;     // the bid won and a block stands there
-const uint LatticeBuildContested = 9u;  // the bid was placed and lost
-const uint LatticeBuildOutcomeCount = 10u;
+const uint LatticeBuildPlaced = 7u;     // the bid won and a block stands there
+const uint LatticeBuildContested = 8u;  // the bid was placed and lost
+const uint LatticeBuildOutcomeCount = 9u;
 
 // An empty cell, and a cell nobody has bid for. Two sentinels and not one: the
 // occupancy grid stores agent indices and -1 for empty, while the bid grid is

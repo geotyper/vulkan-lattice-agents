@@ -1,7 +1,7 @@
 #ifndef VKEXP_STEP_PARAMETERS_GLSL
 #define VKEXP_STEP_PARAMETERS_GLSL
 
-// std430 mirror of vkexp::GpuStepParameters (144 bytes). Shared because all
+// std430 mirror of vkexp::GpuStepParameters (128 bytes). Shared because all
 // three passes of a step index the same per-step block; the C++ side pins the
 // size and the offsets with static_assert.
 //
@@ -46,10 +46,7 @@ struct StepParameters {
     uint worldMode;
     uint buildIntervalTicks;
     float buildThreshold;
-    float constructionCourseFill;
-    uint constructionHeightLead;
     uint allowSideSupportedBlocks;
-    uint constructionSupportRadius;
     uint resourceHeight;
     uint beaconSeed;
     FitnessWeights fitness;

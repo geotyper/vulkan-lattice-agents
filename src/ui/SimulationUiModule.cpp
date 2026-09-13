@@ -237,27 +237,6 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
             state_.settings.buildIntervalTicks = static_cast<std::uint32_t>(buildInterval);
         }
         ImGui::SliderFloat("Build threshold", &state_.settings.buildThreshold, 0.0F, 0.95F, "%.2f");
-        float courseFillPercent = state_.settings.constructionCourseFill * 100.0F;
-        if (ImGui::SliderFloat("Course fill", &courseFillPercent, 5.0F, 100.0F, "%.0f%%",
-                               ImGuiSliderFlags_AlwaysClamp)) {
-            state_.settings.constructionCourseFill = courseFillPercent * 0.01F;
-        }
-        ImGui::SetItemTooltip("How full a level must be, around a build site, before it counts "
-                              "as something to stand on.");
-        int supportRadius = static_cast<int>(state_.settings.constructionSupportRadius);
-        if (ImGui::SliderInt("Support radius", &supportRadius, 0, 16, "%d cells")) {
-            state_.settings.constructionSupportRadius = static_cast<std::uint32_t>(supportRadius);
-        }
-        ImGui::SetItemTooltip("How wide the fill question is asked. Zero asks only about the "
-                              "column itself; a radius that spans the floor asks about the whole "
-                              "world, which is the old global course frontier. In between, one "
-                              "corner of a world may run ahead of another.");
-        int heightLead = static_cast<int>(state_.settings.constructionHeightLead);
-        if (ImGui::SliderInt("Height above foundation", &heightLead, 1, 16, "%d levels")) {
-            state_.settings.constructionHeightLead = static_cast<std::uint32_t>(heightLead);
-        }
-        ImGui::SetItemTooltip("A block cannot be placed more than this many levels above the "
-                              "nearest level below it that is filled enough to stand on.");
         bool allowSideSupport = state_.settings.allowSideSupportedBlocks != 0U;
         if (ImGui::Checkbox("Side-supported bridges", &allowSideSupport)) {
             state_.settings.allowSideSupportedBlocks = allowSideSupport ? 1U : 0U;
@@ -276,10 +255,8 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                 "be used twice is worth more than one lucky scramble.");
         } else {
             ImGui::TextWrapped(
-                "Fitness is the sum of block levels minus boundary dwell. A block may stand up to "
-                "%u levels above the nearest level below it that is filled enough locally; every "
-                "genome in the world receives the same total.",
-                state_.settings.constructionHeightLead);
+                "Fitness is the sum of block levels minus boundary dwell. Every genome in the "
+                "world receives the same total.");
         }
         ImGui::TextDisabled(state_.settings.allowSideSupportedBlocks != 0U
                                 ? "Blocks may use a floor, lower block or cardinal side face."
@@ -737,10 +714,10 @@ void SimulationUiModule::drawBuildOutcomes() {
     const std::size_t visible = std::min<std::size_t>(state_.worlds.selectedWorld, worlds - 1);
 
     ImGui::SeparatorText("Why the builders stopped");
-    static constexpr std::array<const char*, 10> names{
-        "Cooling",    "Unwilling",      "No facing",  "Off the lattice", "Blocked",
-        "No support", "Above frontier", "In the way", "Placed",          "Lost the cell"};
-    std::array<std::uint64_t, 10> total{};
+    static constexpr std::array<const char*, 9> names{
+        "Cooling",    "Unwilling",  "No facing", "Off the lattice", "Blocked",
+        "No support", "In the way", "Placed",    "Lost the cell"};
+    std::array<std::uint64_t, 9> total{};
     std::uint64_t attempts = 0;
     for (std::size_t world = 0; world < worlds; ++world) {
         for (std::size_t reason = 0; reason < count; ++reason) {

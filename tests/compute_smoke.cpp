@@ -717,15 +717,6 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
     // A radius of one, a quarter fill and two levels of headroom: small enough
     // that the gate actually refuses placements in a 4x4x4 box rather than
     // waving everything through.
-    // A radius of one against a fill of 35% in a 4x4 box: the seeded corner
-    // below fills 4 of the 9 cells a radius of one asks about and 4 of the 16 a
-    // radius of two asks about, so the two radii disagree about whether that
-    // corner is something to stand on. With one level of headroom that
-    // disagreement is the difference between placing a block and being refused,
-    // which is what makes this probe able to see the rule at all.
-    settings.constructionSupportRadius = 1;
-    settings.constructionCourseFill = 0.35F;
-    settings.constructionHeightLead = 1;
 
     const vkexp::lattice::PopulationLayout layout{4, 4, 1};
     const vkexp::neuro::BrainShape brain = vkexp::resolvedBrain(settings);
@@ -767,9 +758,9 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
     std::vector<std::uint32_t> outcomes(
         static_cast<std::size_t>(layout.worldCount()) *
         vkexp::lattice::kernel::LatticeBuildOutcomeCount);
-    static constexpr std::array<const char*, 10> reasonNames{
-        "cooling",     "unwilling",      "no facing",  "off the lattice", "blocked",
-        "unsupported", "above frontier", "in the way", "placed",          "contested"};
+    static constexpr std::array<const char*, 9> reasonNames{
+        "cooling",     "unwilling", "no facing",  "off the lattice", "blocked",
+        "unsupported", "in the way", "placed",    "contested"};
 
     LatticeHarness harness{context, settings, layout, weights};
     for (std::uint32_t step = 0; step < 48; ++step) {
@@ -975,10 +966,7 @@ void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
     packed.worldMode = nextUint();
     packed.buildIntervalTicks = nextUint();
     packed.buildThreshold = nextFloat();
-    packed.constructionCourseFill = nextFloat();
-    packed.constructionHeightLead = nextUint();
     packed.allowSideSupportedBlocks = nextUint();
-    packed.constructionSupportRadius = nextUint();
     packed.resourceHeight = nextUint();
     packed.beaconSeed = nextUint();
     packed.fitness.trackingReward = nextFloat();
@@ -1010,10 +998,7 @@ void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
     expectUint("worldMode", packed.worldMode);
     expectUint("buildIntervalTicks", packed.buildIntervalTicks);
     expectFloat("buildThreshold", packed.buildThreshold);
-    expectFloat("constructionCourseFill", packed.constructionCourseFill);
-    expectUint("constructionHeightLead", packed.constructionHeightLead);
     expectUint("allowSideSupportedBlocks", packed.allowSideSupportedBlocks);
-    expectUint("constructionSupportRadius", packed.constructionSupportRadius);
     expectUint("resourceHeight", packed.resourceHeight);
     expectUint("beaconSeed", packed.beaconSeed);
     expectFloat("fitness.trackingReward", packed.fitness.trackingReward);

@@ -45,9 +45,6 @@ struct Options {
     vkexp::WorldMode worldMode{vkexp::WorldMode::Beacon};
     std::uint32_t buildIntervalTicks{12};
     float buildThreshold{0.55F};
-    float constructionCourseFill{0.25F};
-    std::uint32_t constructionHeightLead{5};
-    std::uint32_t constructionSupportRadius{2};
     std::uint32_t resourceHeight{4};
     bool allowSideSupportedBlocks{};
 
@@ -93,13 +90,8 @@ void printHelp(const char* executable) {
                  "                           score at a time\n"
                  "  --build-interval <n>     ticks between successful block placements (12)\n"
                  "  --build-threshold <x>    construction output required to place (0.55)\n"
-                 "  --course-fill <x>        fill a level needs, locally, to be stood on "
-                 "(0.25)\n"
                  "  --resource-height <n>    harvest: levels above the floor the resource\n"
                  "                           sits at (4). Nobody leaves the floor unaided\n"
-                 "  --support-radius <n>     cells around a site that question covers (2). A\n"
-                 "                           radius spanning the floor is the old global rule\n"
-                 "  --height-lead <n>        build levels allowed above foundation (5)\n"
                  "  --side-support           allow cardinal face-supported bridge blocks\n"
                  "  --boundary-penalty <x>   charged per agent-tick on the x/z edge (0.002)\n\n"
                  "Ablations:\n"
@@ -327,16 +319,8 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
                 parseNumber<std::uint32_t>(next(index, argument), argument);
         } else if (argument == "--build-threshold") {
             options.buildThreshold = parseNumber<float>(next(index, argument), argument);
-        } else if (argument == "--course-fill") {
-            options.constructionCourseFill = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--resource-height") {
             options.resourceHeight = parseNumber<std::uint32_t>(next(index, argument), argument);
-        } else if (argument == "--support-radius") {
-            options.constructionSupportRadius =
-                parseNumber<std::uint32_t>(next(index, argument), argument);
-        } else if (argument == "--height-lead") {
-            options.constructionHeightLead =
-                parseNumber<std::uint32_t>(next(index, argument), argument);
         } else if (argument == "--side-support") {
             options.allowSideSupportedBlocks = true;
         } else if (argument == "--boundary-penalty") {
@@ -422,11 +406,6 @@ int run(const Options& options) {
     state.settings.worldMode = options.worldMode;
     state.settings.buildIntervalTicks = options.buildIntervalTicks;
     state.settings.buildThreshold = std::clamp(options.buildThreshold, 0.0F, 1.0F);
-    state.settings.constructionCourseFill = std::clamp(options.constructionCourseFill, 0.0F, 1.0F);
-    state.settings.constructionHeightLead =
-        std::clamp(options.constructionHeightLead, 1U, vkexp::latticeMaximumExtent);
-    state.settings.constructionSupportRadius =
-        std::min(options.constructionSupportRadius, vkexp::latticeMaximumExtent);
     state.settings.resourceHeight =
         std::clamp(options.resourceHeight, 1U, std::max(state.settings.latticeHeight, 2U) - 1U);
     state.settings.allowSideSupportedBlocks = options.allowSideSupportedBlocks ? 1U : 0U;
@@ -507,7 +486,7 @@ int run(const Options& options) {
             *csv << "generation,lattice,seed,best,median,mean,arrival_ratio,"
                     "blocks,footprint,peak,mean_height,height_spread,compactness,overhangs,"
                     "roofed,cooling,unwilling,no_facing,off_lattice,blocked,unsupported,"
-                    "above_frontier,in_the_way,placed,contested\n";
+                    "in_the_way,placed,contested\n";
         }
     }
 
@@ -545,11 +524,11 @@ int run(const Options& options) {
                       << state.settings.buildIntervalTicks << " ticks, output > "
                       << state.settings.buildThreshold << ", boundary penalty "
                       << state.settings.fitness.boundaryPenalty << " per agent-tick\n"
-                      << "Frontier:   " << state.settings.constructionCourseFill * 100.0F
-                      << "% fill within " << state.settings.constructionSupportRadius
-                      << " cells, " << state.settings.constructionHeightLead
-                      << " levels of headroom, side support "
-                      << (state.settings.allowSideSupportedBlocks != 0U ? "on" : "off") << '\n';
+                      << "Support:    "
+                      << (state.settings.allowSideSupportedBlocks != 0U
+                              ? "floor, a block below, or a cardinal side face"
+                              : "floor or a block directly below")
+                      << '\n';
             if (state.settings.worldMode == vkexp::WorldMode::Harvest) {
                 std::cout << "Resource:   " << state.settings.resourceHeight
                           << " levels up, collected within " << state.settings.beaconContactRadius

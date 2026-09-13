@@ -323,20 +323,6 @@ struct SimulationStep {
     // construction experiment below.
     std::uint32_t buildIntervalTicks{12};
     float buildThreshold{0.55F};
-    // How full a level has to be, around a build site, before it counts as
-    // something to stand on. The area asked about is the square of
-    // constructionSupportRadius cells around the site, clipped at the walls.
-    float constructionCourseFill{0.25F};
-    // The highest legal target is this many levels above that foundation.
-    std::uint32_t constructionHeightLead{5};
-    // How wide the question is. Zero asks only about the column itself; a
-    // radius that spans the floor asks about the whole world and reproduces the
-    // old global course frontier, which is why that rule needs no switch of its
-    // own. In between, one corner of a world may run ahead of another -- which
-    // is the whole reason the frontier stopped being global: a rule that makes
-    // every part of the world wait for every other part can only produce a
-    // layer cake.
-    std::uint32_t constructionSupportRadius{2};
     // Harvest: how far above the floor the resource sits. Four rather than one,
     // because a resource an agent could walk to would make the building
     // optional, and the whole of this world is that it is not.
@@ -446,10 +432,7 @@ struct alignas(16) GpuStepParameters {
     std::uint32_t worldMode{};
     std::uint32_t buildIntervalTicks{};
     float buildThreshold{};
-    float constructionCourseFill{};
-    std::uint32_t constructionHeightLead{};
     std::uint32_t allowSideSupportedBlocks{};
-    std::uint32_t constructionSupportRadius{};
     std::uint32_t resourceHeight{};
     // Only the harvest world reads it, and only to place its resource. On the
     // device rather than mirrored onto the agent because a resource belongs to
@@ -459,15 +442,15 @@ struct alignas(16) GpuStepParameters {
     GpuFitnessWeights fitness;
 };
 
-static_assert(sizeof(GpuStepParameters) == 144);
+static_assert(sizeof(GpuStepParameters) == 128);
 static_assert(offsetof(GpuStepParameters, latticeWidth) == 28);
-// The one offset the GLSL mirror cannot derive for itself. Twenty-six scalars
-// come to 104 bytes and both languages round this block up to 112 -- but only
+// The one offset the GLSL mirror cannot derive for itself. Twenty-three scalars
+// come to 92 bytes and both languages round this block up to 96 -- but only
 // because the shader's copy is declared as vec4s, which std430 aligns to 16
 // just as `alignas(16)` does here. Eight floats there would align to 4, and the
-// two strides would then differ by three words: invisible at step index zero
-// and total nonsense at every index after it.
-static_assert(offsetof(GpuStepParameters, fitness) == 112);
+// two strides would then differ by a word: invisible at step index zero and
+// total nonsense at every index after it.
+static_assert(offsetof(GpuStepParameters, fitness) == 96);
 static_assert(offsetof(GpuStepParameters, neuronModel) == 56);
 
 // The network this run actually builds. The two ends are the lattice's own: how

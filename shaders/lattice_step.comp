@@ -93,56 +93,6 @@ void constructionFacing(float aimX, float aimZ, out int faceX, out int faceZ) {
     faceZ = latticeAimComponent(1u, aimX, aimZ, params.moveThreshold);
 }
 
-// How much foundation stands under one build site.
-//
-// This used to be a question about the whole world: a level lifted the frontier
-// only once `constructionCourseFill` of the world's entire floor area was
-// occupied at that height, counting consecutively from the ground. That makes
-// the frontier a global synchroniser -- no corner of the world may rise until
-// every other corner has been filled in -- and a rule like that can only
-// produce a layer cake. Nothing about it is a statement about whether a
-// particular block would be standing on anything.
-//
-// So the same question is now asked of a neighbourhood: of the cells within
-// `constructionSupportRadius` of this column at level y, clipped at the walls,
-// how many are filled? The highest level below the target that answers "enough"
-// is what the target is standing on, and the height lead is measured from
-// there. Levels are not required to be consecutive, because standing on a roof
-// is standing on something whatever is under the roof.
-//
-// A radius that spans the floor reproduces the old global rule, which is why
-// that rule needs no separate switch. The scan runs downward and returns at the
-// first level that qualifies, so the common case -- solid ground immediately
-// below -- costs one level's worth of sampling.
-//
-// Mirrors vkexp::lattice::constructionLocalFoundation.
-uint constructionLocalFoundation(uint worldBase, int x, int buildY, int z) {
-    const int radius = int(params.constructionSupportRadius);
-    const float fill = clamp(params.constructionCourseFill, 0.0, 1.0);
-    for (int y = buildY - 1; y >= 0; --y) {
-        uint sampled = 0u;
-        uint filled = 0u;
-        for (int dz = -radius; dz <= radius; ++dz) {
-            for (int dx = -radius; dx <= radius; ++dx) {
-                const int nx = x + dx;
-                const int nz = z + dz;
-                if (nx < 0 || nz < 0 || nx >= int(params.latticeWidth) ||
-                    nz >= int(params.latticeDepth)) {
-                    continue;
-                }
-                ++sampled;
-                const uint cell =
-                    latticeCellIndex(nx, y, nz, params.latticeWidth, params.latticeHeight);
-                filled += structures[worldBase + cell] != LatticeNoStructure ? 1u : 0u;
-            }
-        }
-        if (filled >= max(uint(ceil(float(sampled) * fill)), 1u)) {
-            return uint(y) + 1u;
-        }
-    }
-    return 0u;
-}
-
 // Mirrors vkexp::sampleAgentInputs. `worldBase` is where this agent's own
 // world's cells begin: a sensor that could address another world's cells is a
 // sensor that will, once a world index is off by one somewhere.
@@ -401,15 +351,10 @@ void main() {
                 }
                 const uint target = latticeCellIndex(buildX, buildY, buildZ, params.latticeWidth,
                                                      params.latticeHeight);
-                const uint foundation = constructionLocalFoundation(worldBase, buildX, buildY,
-                                                                    buildZ);
                 if (structures[worldBase + target] != LatticeNoStructure) {
                     outcome = LatticeBuildBlocked;
                 } else if (!supported) {
                     outcome = LatticeBuildUnsupported;
-                } else if (uint(buildY) >=
-                           foundation + max(params.constructionHeightLead, 1u)) {
-                    outcome = LatticeBuildAboveFrontier;
                 } else if (occupancy[worldBase + target] != LatticeNoOccupant) {
                     outcome = LatticeBuildInTheWay;
                 } else {
