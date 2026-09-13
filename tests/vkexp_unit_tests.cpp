@@ -1,4 +1,5 @@
 #include "vkexp/compute/ComputeResources.hpp"
+#include "vkexp/simulation/LatticeBindings.hpp"
 #include "vkexp/evolution/GeneticAlgorithm.hpp"
 #include "vkexp/evolution/GenomeArchive.hpp"
 #include "vkexp/lattice/LatticeKernel.hpp"
@@ -23,6 +24,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <iostream>
 #include <iterator>
 #include <numeric>
@@ -1452,6 +1454,144 @@ void testGeneticAlgorithm() {
 
 namespace lk = vkexp::lattice::kernel;
 
+// What a compiled shader says it binds, read out of its own SPIR-V.
+//
+// The binary is a word stream: a five-word header, then instructions whose
+// first word carries the length in the top half and the opcode in the bottom.
+// Only two decorations are wanted -- DescriptorSet and Binding -- so the walk
+// is short, and being able to ask a shader what it declares is worth more than
+// the twenty lines it costs.
+struct ShaderBindings {
+    std::size_t count{};
+    bool singleSet{true};
+};
+
+[[nodiscard]] ShaderBindings readShaderBindings(const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) {
+        throw std::runtime_error("Unable to open the compiled shader " + path.string());
+    }
+    const std::vector<char> bytes{std::istreambuf_iterator<char>(stream),
+                                  std::istreambuf_iterator<char>()};
+    if (bytes.size() % sizeof(std::uint32_t) != 0 || bytes.size() < 5 * sizeof(std::uint32_t)) {
+        throw std::runtime_error("The compiled shader " + path.string() + " is not a word stream");
+    }
+    std::vector<std::uint32_t> words(bytes.size() / sizeof(std::uint32_t));
+    std::memcpy(words.data(), bytes.data(), bytes.size());
+    constexpr std::uint32_t spirvMagic = 0x07230203U;
+    if (words.front() != spirvMagic) {
+        throw std::runtime_error("The compiled shader " + path.string() + " is not SPIR-V");
+    }
+
+    constexpr std::uint32_t opDecorate = 71;
+    constexpr std::uint32_t decorationDescriptorSet = 34;
+    constexpr std::uint32_t decorationBinding = 33;
+    std::set<std::uint32_t> bound;
+    ShaderBindings result{};
+    for (std::size_t index = 5; index < words.size();) {
+        const std::uint32_t length = words[index] >> 16U;
+        const std::uint32_t opcode = words[index] & 0xffffU;
+        if (length == 0 || index + length > words.size()) {
+            break;
+        }
+        if (opcode == opDecorate && length >= 4) {
+            if (words[index + 2] == decorationBinding) {
+                bound.insert(words[index + 1]);
+            } else if (words[index + 2] == decorationDescriptorSet && words[index + 3] != 0) {
+                result.singleSet = false;
+            }
+        }
+        index += length;
+    }
+    result.count = bound.size();
+    return result;
+}
+
+// Every pass, against the one place the count is written down.
+//
+// This is the test that would have caught a step shader growing two buffers
+// while a descriptor layout stayed at six: the shader is the source, the
+// constant is what the driver and the parity harness both build from, and a
+// disagreement between them is undefined behaviour rather than an error the
+// loader reports.
+void testShaderBindingContract() {
+    struct Case {
+        const char* shader;
+        std::uint32_t bindings;
+    };
+    const std::array cases{
+        Case{"lattice_step.comp.spv", vkexp::latticeStepBindings},
+        Case{"lattice_resolve.comp.spv", vkexp::latticeResolveBindings},
+        Case{"lattice_clear.comp.spv", vkexp::latticeClearBindings},
+        Case{"trail_capture.comp.spv", vkexp::latticeTrailCaptureBindings},
+        Case{"layout_echo.comp.spv", vkexp::latticeLayoutEchoBindings},
+    };
+    for (const Case& probe : cases) {
+        const ShaderBindings declared =
+            readShaderBindings(std::filesystem::path{VKEXP_SHADER_DIR} / probe.shader);
+        check(declared.count == probe.bindings,
+              std::string{probe.shader} + " declares " + std::to_string(probe.bindings) +
+                  " bound buffers, not " + std::to_string(declared.count));
+        // Every layout in the driver is one set. A shader that started using a
+        // second one would need a second layout, and counting bindings across
+        // both would stop meaning anything.
+        check(declared.singleSet, std::string{probe.shader} + " binds everything in set 0");
+    }
+}
+
+// How many agents a world can be given a cell of its own, and what happens at
+// exactly that number.
+//
+// The slider goes to the whole population, so this is reachable: ask for more
+// agents than the lattice has cells and the surplus keep their default corner,
+// standing inside each other. That breaks the invariant the arbitration rests
+// on -- a cell holds one agent -- before the first step runs.
+void testLatticeSpawnCapacity() {
+    vkexp::SimulationStep settings{};
+    settings.latticeWidth = 4;
+    settings.latticeHeight = 4;
+    settings.latticeDepth = 4;
+    check(vkexp::latticeSpawnCapacity(settings) == 63,
+          "A beacon world holds one agent fewer than it has cells, because of the beacon");
+    settings.worldMode = vkexp::WorldMode::Construction;
+    check(vkexp::latticeSpawnCapacity(settings) == 16,
+          "A construction world holds one course, because everybody starts on the floor");
+    settings.worldMode = vkexp::WorldMode::Beacon;
+
+    // At exactly the capacity every agent gets a cell of its own, and none of
+    // them gets the beacon.
+    const std::uint32_t capacity = vkexp::latticeSpawnCapacity(settings);
+    const vkexp::lattice::PopulationLayout layout{capacity, capacity, 1};
+    const std::vector<vkexp::AgentState> agents =
+        vkexp::lattice::makeInitialAgents(settings, layout);
+    check(agents.size() == capacity, "A full world spawns every agent it was given");
+
+    const vkexp::Int4 beacon = vkexp::lattice::beaconCell(settings, 0);
+    std::set<std::array<std::int32_t, 3>> cells;
+    for (const vkexp::AgentState& agent : agents) {
+        check(vkexp::lattice::kernel::latticeInBounds(agent.cell.x, agent.cell.y, agent.cell.z,
+                                                      settings.latticeWidth,
+                                                      settings.latticeHeight,
+                                                      settings.latticeDepth),
+              "Every spawned agent is inside the lattice");
+        check(!(agent.cell.x == beacon.x && agent.cell.y == beacon.y && agent.cell.z == beacon.z),
+              "Nobody spawns on the beacon");
+        cells.insert({agent.cell.x, agent.cell.y, agent.cell.z});
+    }
+    check(cells.size() == agents.size(), "A full world stands every agent in a cell of its own");
+
+    // And the occupancy built from them agrees: one owner per cell, as many
+    // owners as agents.
+    std::vector<std::int32_t> occupancy(
+        static_cast<std::size_t>(vkexp::latticeCellsPerWorld(settings)) * layout.worldCount());
+    vkexp::lattice::buildOccupancy(agents, settings, layout, occupancy);
+    const auto occupied = static_cast<std::size_t>(
+        std::count_if(occupancy.begin(), occupancy.end(), [](const std::int32_t owner) {
+            return owner != vkexp::lattice::kernel::LatticeNoOccupant;
+        }));
+    check(occupied == agents.size(), "The occupancy grid holds exactly one cell per agent");
+}
+
 void testLatticeAddressing() {
     constexpr std::uint32_t width = 7;
     constexpr std::uint32_t height = 5;
@@ -1832,6 +1972,8 @@ int main() {
     testComputeResourceValidation();
     testLogicalWorldPartition();
     testPingPongState();
+    testShaderBindingContract();
+    testLatticeSpawnCapacity();
     testLatticeAddressing();
     testLatticeNeighbourhood();
     testLatticeMoveRule();

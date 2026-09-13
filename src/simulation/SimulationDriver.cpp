@@ -1,6 +1,7 @@
 #include "vkexp/simulation/SimulationDriver.hpp"
 
 #include "vkexp/simulation/CpuLattice.hpp"
+#include "vkexp/simulation/LatticeBindings.hpp"
 #include "vkexp/simulation/StepParameters.hpp"
 
 #include <algorithm>
@@ -132,13 +133,12 @@ void SimulationDriver::createStepResources() {
         physicalDevice_, device_,
         {trailHistoryBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT});
 
-    updateWorldLayout();
-    refreshLattice();
+    settleLayout();
 
-    createStorageLayout(device_, 8, stepDescriptorSetLayout_);
-    createStorageLayout(device_, 6, resolveDescriptorSetLayout_);
-    createStorageLayout(device_, 2, clearDescriptorSetLayout_);
-    createStorageLayout(device_, 2, trailCaptureDescriptorSetLayout_);
+    createStorageLayout(device_, latticeStepBindings, stepDescriptorSetLayout_);
+    createStorageLayout(device_, latticeResolveBindings, resolveDescriptorSetLayout_);
+    createStorageLayout(device_, latticeClearBindings, clearDescriptorSetLayout_);
+    createStorageLayout(device_, latticeTrailCaptureBindings, trailCaptureDescriptorSetLayout_);
     descriptorAllocator_.create(device_, {10, {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 40}}});
 
     for (std::uint32_t readIndex = 0; readIndex < 2; ++readIndex) {
@@ -381,8 +381,7 @@ void SimulationDriver::restart() {
     state_.history.medianFitness.clear();
     state_.history.meanFitness.clear();
     state_.history.arrivalRatio.clear();
-    updateWorldLayout();
-    refreshLattice();
+    settleLayout();
     resetGeneration();
 }
 
@@ -677,13 +676,27 @@ void SimulationDriver::refreshLattice() {
     state_.lattice = {occupancy_.buffer(), occupancy_.size(), latticeCellsPerWorld(settings)};
 }
 
+void SimulationDriver::settleLayout() {
+    // Four passes is generous: the first shrink is the one that can move the
+    // group size, and the loop exists so that a lattice shrunk twice cannot
+    // leave more agents in a world than the box can stand them in. The bound is
+    // here so that a future rule which does not converge fails as a wrong number
+    // rather than as a hang.
+    for (int pass = 0; pass < 4; ++pass) {
+        const std::uint32_t before = state_.worlds.agentsPerWorld;
+        updateWorldLayout();
+        refreshLattice();
+        if (state_.worlds.agentsPerWorld == before) {
+            return;
+        }
+    }
+    updateWorldLayout();
+}
+
 void SimulationDriver::updateWorldLayout() {
     const auto genomeCount = static_cast<std::uint32_t>(evolution_.population().size());
-    const std::uint32_t floorCapacity = state_.settings.latticeWidth * state_.settings.latticeDepth;
-    const std::uint32_t requested =
-        state_.settings.worldMode == WorldMode::Construction
-            ? std::min(state_.worlds.requestedAgentsPerWorld, floorCapacity)
-            : state_.worlds.requestedAgentsPerWorld;
+    const std::uint32_t requested = std::min(state_.worlds.requestedAgentsPerWorld,
+                                             latticeSpawnCapacity(state_.settings));
     state_.worlds.agentsPerWorld = clampAgentsPerWorld(genomeCount, requested);
     state_.worlds.requestedAgentsPerWorld = state_.worlds.agentsPerWorld;
     state_.worlds.groupCount = worldGroupCount(genomeCount, state_.worlds.agentsPerWorld);

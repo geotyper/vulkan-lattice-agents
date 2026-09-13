@@ -18,12 +18,14 @@
 #include "vkexp/simulation/SimulationDriver.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -94,6 +96,35 @@ void stepAndCheck(vkexp::HeadlessComputeContext& context, vkexp::SimulationDrive
     const vkexp::GenerationSummary summary = driver.finishGeneration();
     require(std::isfinite(summary.bestFitness) && std::isfinite(summary.medianFitness),
             what + ": generation produced finite fitness");
+
+    // More agents than the box has cells to stand them in is not an allocation
+    // failure and not an out-of-bounds read: the surplus simply keep their
+    // default corner and stand inside each other, which breaks the one rule the
+    // arbitration rests on before the first step runs. The slider reaches the
+    // whole population, so the clamp is what keeps it unreachable.
+    require(state.worlds.agentsPerWorld <= vkexp::latticeSpawnCapacity(state.settings),
+            what + ": the group fits in the lattice it was given");
+
+    // And the grid says the same thing: one agent per cell, as many occupied
+    // cells as agents. A stacked spawn shows up here as a missing owner.
+    {
+        const std::span<const vkexp::AgentState> agents = driver.agents();
+        std::vector<std::int32_t> owners;
+        owners.reserve(agents.size());
+        for (std::size_t index = 0; index < agents.size(); ++index) {
+            const std::uint32_t world = vkexp::logicalWorldForAgent(
+                static_cast<std::uint32_t>(index), state.worlds.agentsPerWorld,
+                state.agents.trialsPerGenome);
+            owners.push_back(static_cast<std::int32_t>(
+                world * state.lattice.cellsPerWorld +
+                vkexp::lattice::kernel::latticeCellIndex(
+                    agents[index].cell.x, agents[index].cell.y, agents[index].cell.z,
+                    state.settings.latticeWidth, state.settings.latticeHeight)));
+        }
+        std::sort(owners.begin(), owners.end());
+        require(std::adjacent_find(owners.begin(), owners.end()) == owners.end(),
+                what + ": two agents are standing in one cell");
+    }
 
     // A grid sized for a different configuration would leave the shader reading
     // or writing outside the agents' own world; the cheapest thing that catches

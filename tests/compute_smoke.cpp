@@ -2,6 +2,7 @@
 #include "vkexp/neuro/BrainKernel.hpp"
 #include "vkexp/neuro/NeuralNetwork.hpp"
 #include "vkexp/lattice/LatticeKernel.hpp"
+#include "vkexp/simulation/LatticeBindings.hpp"
 #include "vkexp/lattice/LatticeWorld.hpp"
 #include "vkexp/simulation/CpuLattice.hpp"
 #include "vkexp/simulation/LatticeTypes.hpp"
@@ -10,6 +11,7 @@
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
+#include <bit>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -241,9 +243,9 @@ public:
         const std::array<vkexp::GpuStepParameters, parameterSlots> slots{packed, packed};
         parameters_.write(slots.data(), sizeof(slots));
 
-        createLayout(8, stepLayout_);
-        createLayout(6, resolveLayout_);
-        createLayout(2, clearLayout_);
+        createLayout(vkexp::latticeStepBindings, stepLayout_);
+        createLayout(vkexp::latticeResolveBindings, resolveLayout_);
+        createLayout(vkexp::latticeClearBindings, clearLayout_);
         descriptors_.create(context.device(), {6, {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 36}}});
 
         for (std::uint32_t readIndex = 0; readIndex < 2; ++readIndex) {
@@ -732,6 +734,233 @@ void runFullLatticeProbe(vkexp::HeadlessComputeContext& context) {
 // makes an agent run another genome's weights -- which produces a plausible run
 // and a wrong one. Two genomes whose weights differ only in the move bias make
 // the mistake visible as a direction.
+// Every field of the two std430 mirrors, read by the shader and handed back.
+//
+// This is the cheapest test in the file and it is here because the most
+// expensive bug so far was invisible to all the others. GpuStepParameters and
+// AgentState are declared twice -- once in C++ and once in GLSL -- and the two
+// languages align a struct by different rules, so a block that C++ pads to a
+// sixteen-byte boundary can sit four bytes earlier in the shader's copy. Slot
+// zero of an array then still very nearly works, which is why a parity case
+// that records one step at a time can watch such a mistake for weeks.
+//
+// So: fill both structures with values that are all different from each other,
+// put a decoy in slot zero, ask the shader for slot one, and compare raw bits.
+// A field that arrives shifted by one word is a named mismatch rather than a
+// rounding difference.
+void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
+    constexpr std::uint32_t slotCount = 2;
+    constexpr std::uint32_t agentCount = 2;
+
+    std::vector<const char*> names;
+    std::vector<std::uint32_t> expected;
+    const auto expectUint = [&](const char* name, const std::uint32_t value) {
+        names.push_back(name);
+        expected.push_back(value);
+    };
+    const auto expectFloat = [&](const char* name, const float value) {
+        names.push_back(name);
+        expected.push_back(std::bit_cast<std::uint32_t>(value));
+    };
+
+    // Distinct on purpose: two fields that happened to share a value would let
+    // a swap between them pass.
+    std::uint32_t counter = 101;
+    const auto nextUint = [&] { return counter++; };
+    float scalar = 1.5F;
+    const auto nextFloat = [&] {
+        const float value = scalar;
+        scalar += 1.0F;
+        return value;
+    };
+
+    vkexp::GpuStepParameters packed{};
+    packed.deltaTime = nextFloat();
+    packed.moveThreshold = nextFloat();
+    packed.agentCount = nextUint();
+    packed.brainLayout = nextUint();
+    packed.trialsPerGenome = nextUint();
+    packed.agentsPerWorld = nextUint();
+    packed.worldCount = nextUint();
+    packed.latticeWidth = nextUint();
+    packed.latticeHeight = nextUint();
+    packed.latticeDepth = nextUint();
+    packed.cellsPerWorld = nextUint();
+    packed.neighborhood = nextUint();
+    packed.maximumDistance = nextUint();
+    packed.beaconContactRadius = nextUint();
+    packed.neuronModel = nextUint();
+    packed.brainHiddenLayers = nextUint();
+    packed.brainGenomeStride = nextUint();
+    packed.worldMode = nextUint();
+    packed.buildIntervalTicks = nextUint();
+    packed.buildThreshold = nextFloat();
+    packed.constructionCourseFill = nextFloat();
+    packed.constructionHeightLead = nextUint();
+    packed.allowSideSupportedBlocks = nextUint();
+    packed.fitness.trackingReward = nextFloat();
+    packed.fitness.objectiveBonus = nextFloat();
+    packed.fitness.motorCostWeight = nextFloat();
+    packed.fitness.refusalPenalty = nextFloat();
+    packed.fitness.signalCostFactor = nextFloat();
+    packed.fitness.reserved0 = nextFloat();
+    packed.fitness.reserved1 = nextFloat();
+    packed.fitness.reserved2 = nextFloat();
+
+    expectFloat("deltaTime", packed.deltaTime);
+    expectFloat("moveThreshold", packed.moveThreshold);
+    expectUint("agentCount", packed.agentCount);
+    expectUint("brainLayout", packed.brainLayout);
+    expectUint("trialsPerGenome", packed.trialsPerGenome);
+    expectUint("agentsPerWorld", packed.agentsPerWorld);
+    expectUint("worldCount", packed.worldCount);
+    expectUint("latticeWidth", packed.latticeWidth);
+    expectUint("latticeHeight", packed.latticeHeight);
+    expectUint("latticeDepth", packed.latticeDepth);
+    expectUint("cellsPerWorld", packed.cellsPerWorld);
+    expectUint("neighborhood", packed.neighborhood);
+    expectUint("maximumDistance", packed.maximumDistance);
+    expectUint("beaconContactRadius", packed.beaconContactRadius);
+    expectUint("neuronModel", packed.neuronModel);
+    expectUint("brainHiddenLayers", packed.brainHiddenLayers);
+    expectUint("brainGenomeStride", packed.brainGenomeStride);
+    expectUint("worldMode", packed.worldMode);
+    expectUint("buildIntervalTicks", packed.buildIntervalTicks);
+    expectFloat("buildThreshold", packed.buildThreshold);
+    expectFloat("constructionCourseFill", packed.constructionCourseFill);
+    expectUint("constructionHeightLead", packed.constructionHeightLead);
+    expectUint("allowSideSupportedBlocks", packed.allowSideSupportedBlocks);
+    expectFloat("fitness.trackingReward", packed.fitness.trackingReward);
+    expectFloat("fitness.objectiveBonus", packed.fitness.objectiveBonus);
+    expectFloat("fitness.motorCostWeight", packed.fitness.motorCostWeight);
+    expectFloat("fitness.refusalPenalty", packed.fitness.refusalPenalty);
+    expectFloat("fitness.signalCostFactor", packed.fitness.signalCostFactor);
+    expectFloat("fitness.reserved0", packed.fitness.reserved0);
+    expectFloat("fitness.reserved1", packed.fitness.reserved1);
+    expectFloat("fitness.reserved2", packed.fitness.reserved2);
+
+    // Slot zero holds something else entirely, so a shader that reads the wrong
+    // slot fails every field rather than passing on a stride that only works
+    // at index zero.
+    std::array<vkexp::GpuStepParameters, slotCount> blocks{};
+    blocks[0].deltaTime = -7.25F;
+    blocks[0].agentCount = 0xDECAFU;
+    blocks[1] = packed;
+
+    std::array<vkexp::AgentState, agentCount> agents{};
+    vkexp::AgentState& agent = agents[1];
+    std::int32_t integer = 11;
+    const auto nextInt = [&] { return integer++; };
+    agent.cell = {nextInt(), nextInt(), nextInt(), nextInt()};
+    agent.intent = {nextInt(), nextInt(), nextInt(), nextInt()};
+    agent.beacon = {nextInt(), nextInt(), nextInt(), nextInt()};
+    agent.signal = {nextFloat(), nextFloat(), nextFloat(), nextFloat()};
+    agent.metrics = {nextFloat(), nextFloat(), nextFloat(), nextFloat()};
+    agent.memory = {nextFloat(), nextFloat(), nextFloat(), nextFloat()};
+    agent.hidden.front() = {nextFloat(), nextFloat(), nextFloat(), nextFloat()};
+    agent.hidden.back() = {nextFloat(), nextFloat(), nextFloat(), nextFloat()};
+
+    const auto expectInt4 = [&](const char* name, const vkexp::Int4& value) {
+        expectUint(name, static_cast<std::uint32_t>(value.x));
+        expectUint(name, static_cast<std::uint32_t>(value.y));
+        expectUint(name, static_cast<std::uint32_t>(value.z));
+        expectUint(name, static_cast<std::uint32_t>(value.w));
+    };
+    const auto expectFloat4 = [&](const char* name, const vkexp::Float4& value) {
+        expectFloat(name, value.x);
+        expectFloat(name, value.y);
+        expectFloat(name, value.z);
+        expectFloat(name, value.w);
+    };
+    expectInt4("agent.cell", agent.cell);
+    expectInt4("agent.intent", agent.intent);
+    expectInt4("agent.beacon", agent.beacon);
+    expectFloat4("agent.signal", agent.signal);
+    expectFloat4("agent.metrics", agent.metrics);
+    expectFloat4("agent.memory", agent.memory);
+    expectFloat4("agent.hidden.front", agent.hidden.front());
+    expectFloat4("agent.hidden.back", agent.hidden.back());
+
+    constexpr VkMemoryPropertyFlags hostMemory =
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    vkexp::BufferResource agentBuffer;
+    vkexp::BufferResource blockBuffer;
+    vkexp::BufferResource echoBuffer;
+    agentBuffer.create(context.physicalDevice(), context.device(),
+                       {sizeof(agents), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
+    blockBuffer.create(context.physicalDevice(), context.device(),
+                       {sizeof(blocks), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
+    echoBuffer.create(
+        context.physicalDevice(), context.device(),
+        {expected.size() * sizeof(std::uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
+    agentBuffer.write(agents.data(), sizeof(agents));
+    blockBuffer.write(blocks.data(), sizeof(blocks));
+
+    std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
+    for (std::uint32_t index = 0; index < bindings.size(); ++index) {
+        bindings[index].binding = index;
+        bindings[index].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[index].descriptorCount = 1;
+        bindings[index].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo layoutInfo{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    layoutInfo.bindingCount = static_cast<std::uint32_t>(bindings.size());
+    layoutInfo.pBindings = bindings.data();
+    vkexp::UniqueDescriptorSetLayout layout;
+    if (vkCreateDescriptorSetLayout(context.device(), &layoutInfo, nullptr,
+                                    layout.put(context.device())) != VK_SUCCESS) {
+        throw std::runtime_error("Unable to create the layout echo descriptor layout");
+    }
+    vkexp::DescriptorAllocator descriptors;
+    descriptors.create(context.device(), {1, {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}}});
+    const VkDescriptorSet set = descriptors.allocate(layout.get());
+    vkexp::DescriptorSetWriter{}
+        .writeBuffer(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, agentBuffer.buffer(), 0,
+                     agentBuffer.size())
+        .writeBuffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, blockBuffer.buffer(), 0,
+                     blockBuffer.size())
+        .writeBuffer(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, echoBuffer.buffer(), 0,
+                     echoBuffer.size())
+        .update(context.device(), set);
+
+    struct EchoSelector {
+        std::uint32_t stepIndex{};
+        std::uint32_t agentIndex{};
+    };
+    const vkexp::ComputePipeline pipeline =
+        vkexp::ComputePipelineBuilder{context.physicalDevice(), context.device()}
+            .shader(VKEXP_SHADER_DIR "/layout_echo.comp.spv")
+            .addDescriptorSetLayout(layout.get())
+            .addPushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, sizeof(EchoSelector))
+            .build();
+    const EchoSelector selector{slotCount - 1, agentCount - 1};
+    context.immediate().execute([&](const VkCommandBuffer commands) {
+        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline());
+        vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.layout(), 0, 1,
+                                &set, 0, nullptr);
+        vkCmdPushConstants(commands, pipeline.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(selector), &selector);
+        vkCmdDispatch(commands, 1, 1, 1);
+        vkexp::cmdBufferBarrier(commands, echoBuffer.buffer(),
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
+    });
+
+    std::vector<std::uint32_t> actual(expected.size());
+    echoBuffer.read(actual.data(), actual.size() * sizeof(std::uint32_t));
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        require(actual[index] == expected[index],
+                std::string{"Layout echo: "} + names[index] + " came back as a different word (" +
+                    std::to_string(actual[index]) + " for " + std::to_string(expected[index]) +
+                    ", value " + std::to_string(index) + " of " + std::to_string(expected.size()) +
+                    ")");
+    }
+    std::cout << "Layout echo: " << expected.size()
+              << " fields of the shared structs survived the round trip" << std::endl;
+}
+
 void runGenomeAddressingProbe(vkexp::HeadlessComputeContext& context) {
     const vkexp::SimulationStep settings =
         paritySettings(vkexp::Neighborhood::Faces, vkexp::NeuronModel::Reactive);
@@ -849,6 +1078,9 @@ int runAll() {
     runGameOfLife(context);
     runImageRoundTrip(context);
 
+    // First, because it is the cheapest and because every case after it is read
+    // through the structures it checks.
+    runLayoutEchoProbe(context);
     runContentionProbe(context);
     runGenomeAddressingProbe(context);
     runFullLatticeProbe(context);

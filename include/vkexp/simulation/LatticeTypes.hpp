@@ -349,6 +349,24 @@ struct SimulationStep {
                                              settings.latticeDepth);
 }
 
+// How many agents one world can actually be given a cell of its own.
+//
+// Placement is not free to use every cell. A beacon world never stands anybody
+// on the beacon -- an agent that starts on the objective has solved the world
+// before the first step -- so it is one cell short of its own size. A
+// construction world starts everybody on the floor, so it is one course rather
+// than a volume. Asking for more than this does not fail: the probe in
+// makeInitialAgents simply runs out of candidates and the surplus agents keep
+// their default corner, standing inside each other, which breaks the one
+// invariant the whole arbitration rests on. So the number is named here and
+// clamped once, where the settings are known.
+[[nodiscard]] constexpr std::uint32_t latticeSpawnCapacity(const SimulationStep& settings) {
+    if (settings.worldMode == WorldMode::Construction) {
+        return std::max(settings.latticeWidth * settings.latticeDepth, 1U);
+    }
+    return std::max(latticeCellsPerWorld(settings), 2U) - 1U;
+}
+
 [[nodiscard]] constexpr std::uint32_t latticeMaximumDistance(const SimulationStep& settings) {
     return lattice::kernel::latticeMaximumDistance(
         static_cast<std::uint32_t>(settings.neighborhood), settings.latticeWidth,

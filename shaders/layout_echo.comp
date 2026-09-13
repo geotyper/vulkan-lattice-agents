@@ -1,0 +1,105 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "neuro/brain_kernel.glsl"
+#include "simulation/agent_layout.glsl"
+#include "simulation/step_parameters.glsl"
+
+// Reads one step parameter block and one agent record and writes every field
+// back out, in an order the host restates beside it. Nothing here simulates
+// anything: this shader exists so that a std430 struct which has drifted apart
+// from its C++ original fails as a named field rather than as a run that
+// quietly gets better the fewer steps it batches.
+//
+// Two rules make it worth having. It reads the step block at an index the host
+// chooses, because slot zero is the one slot a wrong stride still very nearly
+// works at. And it echoes raw bits rather than values, so a field that arrives
+// shifted by one word is a mismatch instead of a rounding difference.
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Agents { Agent agents[]; };
+layout(std430, set = 0, binding = 1) readonly buffer StepParameterBlocks {
+    StepParameters stepParameters[];
+};
+layout(std430, set = 0, binding = 2) writeonly buffer Echo { uint echo[]; };
+
+layout(push_constant) uniform EchoSelector {
+    uint stepIndex;
+    uint agentIndex;
+} selector;
+
+void main() {
+    if (gl_GlobalInvocationID.x != 0u) {
+        return;
+    }
+    const StepParameters params = stepParameters[selector.stepIndex];
+    uint at = 0u;
+    echo[at++] = floatBitsToUint(params.deltaTime);
+    echo[at++] = floatBitsToUint(params.moveThreshold);
+    echo[at++] = params.agentCount;
+    echo[at++] = params.brainLayout;
+    echo[at++] = params.trialsPerGenome;
+    echo[at++] = params.agentsPerWorld;
+    echo[at++] = params.worldCount;
+    echo[at++] = params.latticeWidth;
+    echo[at++] = params.latticeHeight;
+    echo[at++] = params.latticeDepth;
+    echo[at++] = params.cellsPerWorld;
+    echo[at++] = params.neighborhood;
+    echo[at++] = params.maximumDistance;
+    echo[at++] = params.beaconContactRadius;
+    echo[at++] = params.neuronModel;
+    echo[at++] = params.brainHiddenLayers;
+    echo[at++] = params.brainGenomeStride;
+    echo[at++] = params.worldMode;
+    echo[at++] = params.buildIntervalTicks;
+    echo[at++] = floatBitsToUint(params.buildThreshold);
+    echo[at++] = floatBitsToUint(params.constructionCourseFill);
+    echo[at++] = params.constructionHeightLead;
+    echo[at++] = params.allowSideSupportedBlocks;
+    echo[at++] = floatBitsToUint(params.fitness.shaping.x);
+    echo[at++] = floatBitsToUint(params.fitness.shaping.y);
+    echo[at++] = floatBitsToUint(params.fitness.shaping.z);
+    echo[at++] = floatBitsToUint(params.fitness.shaping.w);
+    echo[at++] = floatBitsToUint(params.fitness.costs.x);
+    echo[at++] = floatBitsToUint(params.fitness.costs.y);
+    echo[at++] = floatBitsToUint(params.fitness.costs.z);
+    echo[at++] = floatBitsToUint(params.fitness.costs.w);
+
+    const Agent agent = agents[selector.agentIndex];
+    echo[at++] = uint(agent.cell.x);
+    echo[at++] = uint(agent.cell.y);
+    echo[at++] = uint(agent.cell.z);
+    echo[at++] = uint(agent.cell.w);
+    echo[at++] = uint(agent.intent.x);
+    echo[at++] = uint(agent.intent.y);
+    echo[at++] = uint(agent.intent.z);
+    echo[at++] = uint(agent.intent.w);
+    echo[at++] = uint(agent.beacon.x);
+    echo[at++] = uint(agent.beacon.y);
+    echo[at++] = uint(agent.beacon.z);
+    echo[at++] = uint(agent.beacon.w);
+    echo[at++] = floatBitsToUint(agent.signal.x);
+    echo[at++] = floatBitsToUint(agent.signal.y);
+    echo[at++] = floatBitsToUint(agent.signal.z);
+    echo[at++] = floatBitsToUint(agent.signal.w);
+    echo[at++] = floatBitsToUint(agent.metrics.x);
+    echo[at++] = floatBitsToUint(agent.metrics.y);
+    echo[at++] = floatBitsToUint(agent.metrics.z);
+    echo[at++] = floatBitsToUint(agent.metrics.w);
+    echo[at++] = floatBitsToUint(agent.memory.x);
+    echo[at++] = floatBitsToUint(agent.memory.y);
+    echo[at++] = floatBitsToUint(agent.memory.z);
+    echo[at++] = floatBitsToUint(agent.memory.w);
+    // The first and the last vector of the hidden block. The last one is what
+    // catches a block that is the right shape and the wrong length, which is
+    // what a changed neuron capacity would produce.
+    echo[at++] = floatBitsToUint(agent.hidden[0].x);
+    echo[at++] = floatBitsToUint(agent.hidden[0].y);
+    echo[at++] = floatBitsToUint(agent.hidden[0].z);
+    echo[at++] = floatBitsToUint(agent.hidden[0].w);
+    echo[at++] = floatBitsToUint(agent.hidden[AgentHiddenVectorCount - 1u].x);
+    echo[at++] = floatBitsToUint(agent.hidden[AgentHiddenVectorCount - 1u].y);
+    echo[at++] = floatBitsToUint(agent.hidden[AgentHiddenVectorCount - 1u].z);
+    echo[at++] = floatBitsToUint(agent.hidden[AgentHiddenVectorCount - 1u].w);
+}

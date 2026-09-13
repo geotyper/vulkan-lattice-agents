@@ -145,20 +145,20 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                           "height. Beacon keeps the navigation task.");
 
     int requestedAgentsPerWorld = static_cast<int>(state_.worlds.requestedAgentsPerWorld);
-    const std::uint32_t floorCapacity = state_.settings.latticeWidth * state_.settings.latticeDepth;
-    const int populationSize =
-        static_cast<int>(std::max(1U, state_.settings.worldMode == WorldMode::Construction
-                                          ? std::min(state_.agents.genomeCount, floorCapacity)
-                                          : state_.agents.genomeCount));
+    // The ceiling is whichever runs out first: genomes, or cells to stand them
+    // in. Offering more than the lattice can place would put the surplus agents
+    // inside each other at the origin rather than refuse anything.
+    const int populationSize = static_cast<int>(
+        std::max(1U, std::min(state_.agents.genomeCount, latticeSpawnCapacity(state_.settings))));
     requestedAgentsPerWorld = std::clamp(requestedAgentsPerWorld, 1, populationSize);
     if (ImGui::SliderInt("Agents / world", &requestedAgentsPerWorld, 1, populationSize)) {
         state_.worlds.requestedAgentsPerWorld = static_cast<std::uint32_t>(requestedAgentsPerWorld);
         state_.controls.resetRequested = true;
     }
     ImGui::SetItemTooltip("How many genomes share one logical lattice. One gives every agent its "
-                          "own world; the maximum puts the whole population together. Changing "
-                          "it restarts the run and may shrink the lattice to stay in its fixed "
-                          "GPU memory budget.");
+                          "own world; the maximum puts the whole population together, or as much "
+                          "of it as the lattice has cells to stand. Changing it restarts the run "
+                          "and may shrink the lattice to stay in its fixed GPU memory budget.");
     if (ImGui::SmallButton("1 agent")) {
         state_.worlds.requestedAgentsPerWorld = 1;
         state_.controls.resetRequested = true;
@@ -170,7 +170,8 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     }
     ImGui::SameLine();
     if (ImGui::SmallButton("All agents")) {
-        state_.worlds.requestedAgentsPerWorld = state_.agents.genomeCount;
+        state_.worlds.requestedAgentsPerWorld =
+            std::min(state_.agents.genomeCount, latticeSpawnCapacity(state_.settings));
         state_.controls.resetRequested = true;
     }
     ImGui::TextDisabled("%u groups x %u trials = %u worlds", state_.worlds.groupCount,

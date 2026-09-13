@@ -78,6 +78,12 @@ public:
     void restoreSnapshot(const RunSnapshot& snapshot);
 
     void updateWorldLayout();
+    // The two above settle against each other. How many agents share a world
+    // decides how many worlds there are, which decides how much grid the budget
+    // has to hold, which can shrink the lattice -- and a smaller lattice holds
+    // fewer agents. Both quantities only ever fall, and both have a floor, so
+    // repeating the pair until the group size stops moving terminates.
+    void settleLayout();
     // Re-reads the lattice extents from the settings, clamping them to what the
     // occupancy allocation can hold, and republishes the view. Called whenever a
     // slider moves the box.

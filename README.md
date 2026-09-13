@@ -689,11 +689,32 @@ neuron models runs a 120-step trajectory regression:
   compared with no tolerance at all. There is no such thing as a cell that is
   nearly right, and a tolerance on one would hide exactly the bug this test
   exists for.
+- **layout echo.** The cheapest case in the file, and the one the most
+  expensive bug so far needed. A shader reads one step parameter block and one
+  agent record and hands every field back as raw bits; the host compares them
+  by name. The block is read at index one, with a decoy at index zero, because
+  index zero is where a std430 struct whose stride disagrees with its C++
+  original still very nearly works -- which is how a four-byte shift in the
+  fitness block survived every other test here while making a batched run
+  report figures a single-stepped one never produced.
+- **binding contract.** `testShaderBindingContract` reads the compiled SPIR-V
+  and counts what each pass declares, against the one place those counts are
+  written down. It needs no device. A pass that grows a buffer while a
+  descriptor layout does not is undefined behaviour rather than a reported
+  error, and that is exactly what happened when the construction world added
+  two.
 - **coverage assertions.** A run in which nobody moved, or in which nobody was
   ever refused a cell, fails rather than passing vacuously.
 - **deep plan.** A second parity case runs `12,8,8` over a taller lattice, so a
   shader that walked the layer plan differently drifts where nothing else would
   catch it.
+- **one agent per cell.** Every reconfiguration is checked for two agents
+  standing in the same cell, and for a group larger than the lattice has cells
+  to stand it in. Neither is an allocation failure or an out-of-bounds read:
+  spawn simply runs out of candidates and the surplus agents keep their default
+  corner, which breaks the rule the whole arbitration rests on before the first
+  step runs. The group size gives way to the lattice, the way the lattice gives
+  way to the budget.
 - **reconfiguration.** `vklat_reconfiguration_smoke` walks the lattice extents
   from 128^3 down to 1^3, the group sizes in both directions, four brain plans
   and the full cross product of boxes, group sizes and neighbourhoods, running a

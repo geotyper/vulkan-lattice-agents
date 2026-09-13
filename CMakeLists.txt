@@ -43,6 +43,7 @@ set(SHADER_SOURCES
     lattice_step.comp
     lattice_resolve.comp
     trail_capture.comp
+    layout_echo.comp
     view_voxels.vert
     view_voxels.frag
     view_voxels_oit.frag
@@ -199,6 +200,13 @@ vkexp_enable_warnings(vulkan_lattice_agents)
 if(BUILD_TESTING)
     add_executable(vkexp_unit_tests tests/vkexp_unit_tests.cpp)
     target_link_libraries(vkexp_unit_tests PRIVATE vkexp_compute vklat_domain)
+    # The unit tests read the compiled SPIR-V to check that what each pass
+    # declares matches the descriptor layouts the driver builds. Reading a file
+    # needs no device, so this stays a test that runs on a machine without one.
+    add_dependencies(vkexp_unit_tests vkexp_shaders)
+    target_compile_definitions(vkexp_unit_tests PRIVATE
+        VKEXP_SHADER_DIR="${SHADER_BINARY_DIR}"
+    )
     vkexp_enable_warnings(vkexp_unit_tests)
 
     add_test(NAME vkexp_unit_tests COMMAND vkexp_unit_tests)
