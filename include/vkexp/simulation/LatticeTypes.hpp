@@ -315,12 +315,20 @@ struct SimulationStep {
     // construction experiment below.
     std::uint32_t buildIntervalTicks{12};
     float buildThreshold{0.55F};
-    // A course advances the shared foundation height after this fraction of
-    // its x/z area is occupied. Courses count consecutively from the floor, so
-    // sparse blocks high above an unfinished course cannot raise the frontier.
+    // How full a level has to be, around a build site, before it counts as
+    // something to stand on. The area asked about is the square of
+    // constructionSupportRadius cells around the site, clipped at the walls.
     float constructionCourseFill{0.25F};
-    // The highest legal target is this many courses above that foundation.
+    // The highest legal target is this many levels above that foundation.
     std::uint32_t constructionHeightLead{5};
+    // How wide the question is. Zero asks only about the column itself; a
+    // radius that spans the floor asks about the whole world and reproduces the
+    // old global course frontier, which is why that rule needs no switch of its
+    // own. In between, one corner of a world may run ahead of another -- which
+    // is the whole reason the frontier stopped being global: a rule that makes
+    // every part of the world wait for every other part can only produce a
+    // layer cake.
+    std::uint32_t constructionSupportRadius{2};
     // Opt-in cantilevers: a block may use a cardinal x/z face as support. Edge
     // and corner contact remain insufficient.
     std::uint32_t allowSideSupportedBlocks{};
@@ -429,17 +437,19 @@ struct alignas(16) GpuStepParameters {
     float constructionCourseFill{};
     std::uint32_t constructionHeightLead{};
     std::uint32_t allowSideSupportedBlocks{};
+    std::uint32_t constructionSupportRadius{};
     GpuFitnessWeights fitness;
 };
 
 static_assert(sizeof(GpuStepParameters) == 128);
 static_assert(offsetof(GpuStepParameters, latticeWidth) == 28);
-// The one offset the GLSL mirror cannot derive for itself. Twenty-three scalars
-// come to 92 bytes and `alignas(16)` pushes this block to 96; the shader only
-// lands on the same number because its copy of the block is declared as vec4s,
-// which std430 aligns to 16 as well. Eight floats there would align to 4, and
-// the two strides would differ by one word -- which is invisible at step index
-// zero and total nonsense at every index after it.
+// The one offset the GLSL mirror cannot derive for itself. Twenty-four scalars
+// come to exactly 96 bytes, so nothing is padded today -- but the shader only
+// agrees because its copy of this block is declared as vec4s, which std430
+// aligns to 16 just as `alignas(16)` does here. Eight floats there would align
+// to 4, and the moment the scalar count stops being a multiple of four the two
+// strides would differ by a word: invisible at step index zero and total
+// nonsense at every index after it.
 static_assert(offsetof(GpuStepParameters, fitness) == 96);
 static_assert(offsetof(GpuStepParameters, neuronModel) == 56);
 static_assert(offsetof(GpuStepParameters, fitness) == 96);

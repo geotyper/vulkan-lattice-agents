@@ -1795,6 +1795,72 @@ void testStructureShape() {
           "A row of four is its own bounding rectangle, not a quarter of the floor");
 }
 
+void testConstructionLocalFoundation() {
+    vkexp::SimulationStep settings{};
+    settings.worldMode = vkexp::WorldMode::Construction;
+    settings.latticeWidth = 8;
+    settings.latticeHeight = 8;
+    settings.latticeDepth = 8;
+    settings.constructionCourseFill = 0.5F;
+    const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
+    std::vector<std::int32_t> field(cells, 0);
+    const auto place = [&](const int x, const int y, const int z) {
+        field[vkexp::lattice::kernel::latticeCellIndex(x, y, z, settings.latticeWidth,
+                                                       settings.latticeHeight)] = 1;
+    };
+
+    settings.constructionSupportRadius = 1;
+    check(vkexp::constructionLocalFoundation(field, settings, 4, 3, 4) == 0,
+          "Nothing under a site is no foundation at all");
+    check(vkexp::constructionLocalFoundation(field, settings, 4, 0, 4) == 0,
+          "A site on the floor has nothing below it to scan");
+
+    // A solid 3x3 directly under the site: the whole window, so dense at any
+    // fill, and the foundation is the level above it.
+    for (int z = 3; z <= 5; ++z) {
+        for (int x = 3; x <= 5; ++x) {
+            place(x, 2, z);
+        }
+    }
+    check(vkexp::constructionLocalFoundation(field, settings, 4, 3, 4) == 3,
+          "A full window one level down is a foundation of that level plus one");
+    check(vkexp::constructionLocalFoundation(field, settings, 4, 6, 4) == 3,
+          "The scan finds the same platform from higher up: levels need not be consecutive");
+
+    // The radius is what decides. Standing two cells away, a radius of one
+    // cannot see the platform at all and a radius of three can.
+    check(vkexp::constructionLocalFoundation(field, settings, 7, 3, 7) == 0,
+          "A narrow window sees nothing two cells away from the platform");
+    settings.constructionSupportRadius = 3;
+    check(vkexp::constructionLocalFoundation(field, settings, 7, 3, 7) == 0,
+          "A wider window reaches the platform, but four cells of sixteen is under half");
+    settings.constructionCourseFill = 0.25F;
+    check(vkexp::constructionLocalFoundation(field, settings, 7, 3, 7) == 3,
+          "At a lower fill the same reach is enough, which is the trade the two sliders make");
+
+    // Clipping at the wall shrinks the question rather than failing it: a corner
+    // sees fewer cells and needs proportionally fewer of them.
+    settings.constructionSupportRadius = 1;
+    settings.constructionCourseFill = 1.0F;
+    std::fill(field.begin(), field.end(), 0);
+    place(0, 0, 0);
+    place(1, 0, 0);
+    place(0, 0, 1);
+    place(1, 0, 1);
+    check(vkexp::constructionLocalFoundation(field, settings, 0, 1, 0) == 1,
+          "A corner window is four cells, and four blocks fill it completely");
+    check(vkexp::constructionLocalFoundation(field, settings, 2, 1, 2) == 0,
+          "One cell short of full is not full, whatever the window size");
+
+    // A fill of zero still needs one block: an empty level is never something
+    // to stand on, however forgiving the setting.
+    settings.constructionCourseFill = 0.0F;
+    check(vkexp::constructionLocalFoundation(field, settings, 6, 2, 6) == 0,
+          "An empty window is never a foundation, even at zero fill");
+    check(vkexp::constructionLocalFoundation(field, settings, 2, 2, 2) == 1,
+          "At zero fill a single block within reach is enough");
+}
+
 void testLatticeAddressing() {
     constexpr std::uint32_t width = 7;
     constexpr std::uint32_t height = 5;
@@ -2180,6 +2246,7 @@ int main() {
     testTransparencyWeight();
     testLatticeSpawnCapacity();
     testStructureShape();
+    testConstructionLocalFoundation();
     testLatticeAddressing();
     testLatticeNeighbourhood();
     testLatticeMoveRule();

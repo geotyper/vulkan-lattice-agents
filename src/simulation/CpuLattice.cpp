@@ -75,6 +75,35 @@ namespace kern = lattice::kernel;
 
 } // namespace
 
+std::uint32_t constructionLocalFoundation(const std::span<const std::int32_t> worldStructures,
+                                          const SimulationStep& settings, const int x,
+                                          const int buildY, const int z) {
+    const auto radius = static_cast<int>(settings.constructionSupportRadius);
+    const float fill = std::clamp(settings.constructionCourseFill, 0.0F, 1.0F);
+    for (int y = buildY - 1; y >= 0; --y) {
+        std::uint32_t sampled = 0;
+        std::uint32_t filled = 0;
+        for (int dz = -radius; dz <= radius; ++dz) {
+            for (int dx = -radius; dx <= radius; ++dx) {
+                const int nx = x + dx;
+                const int nz = z + dz;
+                if (nx < 0 || nz < 0 || nx >= static_cast<int>(settings.latticeWidth) ||
+                    nz >= static_cast<int>(settings.latticeDepth)) {
+                    continue;
+                }
+                ++sampled;
+                filled += hasStructure(worldStructures, settings, nx, y, nz) ? 1U : 0U;
+            }
+        }
+        const auto required = std::max(
+            static_cast<std::uint32_t>(std::ceil(static_cast<float>(sampled) * fill)), 1U);
+        if (filled >= required) {
+            return static_cast<std::uint32_t>(y) + 1U;
+        }
+    }
+    return 0;
+}
+
 void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& settings) {
     const std::uint32_t cells = latticeCellsPerWorld(settings);
     if (cells == 0 || population.agents.empty()) {
@@ -95,39 +124,6 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
     std::vector<float> signals(population.agents.size());
     for (std::size_t index = 0; index < population.agents.size(); ++index) {
         signals[index] = population.agents[index].signal.x;
-    }
-
-    // A compact mirror of the GPU's per-course counter buffer. It is rebuilt
-    // from the reference structure field once per step, before any placement,
-    // so every agent decides against the same construction frontier.
-    const std::uint32_t worldCount =
-        static_cast<std::uint32_t>(population.occupancy.size() / cells);
-    std::vector<std::uint32_t> foundationHeights(worldCount, 0U);
-    if (settings.worldMode == WorldMode::Construction && !population.structures.empty()) {
-        std::vector<std::uint32_t> courseCounts(
-            static_cast<std::size_t>(worldCount) * settings.latticeHeight, 0U);
-        for (std::size_t absolute = 0; absolute < population.structures.size(); ++absolute) {
-            if (population.structures[absolute] == kern::LatticeNoStructure) {
-                continue;
-            }
-            const std::uint32_t world = static_cast<std::uint32_t>(absolute / cells);
-            const std::uint32_t local = static_cast<std::uint32_t>(absolute % cells);
-            const std::uint32_t y = (local / settings.latticeWidth) % settings.latticeHeight;
-            ++courseCounts[static_cast<std::size_t>(world) * settings.latticeHeight + y];
-        }
-        const std::uint32_t courseArea = settings.latticeWidth * settings.latticeDepth;
-        const std::uint32_t required =
-            std::max(static_cast<std::uint32_t>(
-                         std::ceil(static_cast<float>(courseArea) *
-                                   std::clamp(settings.constructionCourseFill, 0.0F, 1.0F))),
-                     1U);
-        for (std::uint32_t world = 0; world < worldCount; ++world) {
-            while (foundationHeights[world] < settings.latticeHeight &&
-                   courseCounts[static_cast<std::size_t>(world) * settings.latticeHeight +
-                                foundationHeights[world]] >= required) {
-                ++foundationHeights[world];
-            }
-        }
     }
 
     // --- decide ---------------------------------------------------------------
@@ -285,7 +281,9 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                         !hasStructure(worldStructures, settings, buildX, buildY, buildZ);
                     const bool belowFrontier =
                         static_cast<std::uint32_t>(buildY) <
-                        foundationHeights[world] + std::max(settings.constructionHeightLead, 1U);
+                        constructionLocalFoundation(worldStructures, settings, buildX, buildY,
+                                                    buildZ) +
+                            std::max(settings.constructionHeightLead, 1U);
                     if (empty && supported && belowFrontier &&
                         worldOccupancy[target] == kern::LatticeNoOccupant) {
                         agent.beacon.x = buildX;

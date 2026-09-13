@@ -49,6 +49,7 @@ struct StepParameters {
     float constructionCourseFill;
     uint constructionHeightLead;
     uint allowSideSupportedBlocks;
+    uint constructionSupportRadius;
     FitnessWeights fitness;
 };
 

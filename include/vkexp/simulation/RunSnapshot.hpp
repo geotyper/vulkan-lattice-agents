@@ -39,11 +39,13 @@ struct RunSnapshot {
     std::uint32_t seed{};
 };
 
-// Version 5 adds optional cardinal side support. The per-course counters
-// introduced with version 4 are derived from the stored structure field.
+// Version 6 replaces the global course frontier with a local one and stores its
+// radius. Version 5 added optional cardinal side support. The per-course
+// counters introduced with version 4 are derived from the stored structure
+// field.
 // It is not a continuation of the old 2D format: the agent record, settings and
 // world all changed at once, and that format has different magic.
-inline constexpr std::uint32_t runSnapshotVersion = 5;
+inline constexpr std::uint32_t runSnapshotVersion = 6;
 
 // Versioned and little-endian, like the genome archive, and just as strict: a
 // file from another brain topology or another agent layout is rejected rather

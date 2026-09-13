@@ -47,6 +47,7 @@ struct Options {
     float buildThreshold{0.55F};
     float constructionCourseFill{0.25F};
     std::uint32_t constructionHeightLead{5};
+    std::uint32_t constructionSupportRadius{2};
     bool allowSideSupportedBlocks{};
 
     vkexp::FitnessWeights fitness{};
@@ -91,7 +92,10 @@ void printHelp(const char* executable) {
                  "                           score at a time\n"
                  "  --build-interval <n>     ticks between successful block placements (12)\n"
                  "  --build-threshold <x>    construction output required to place (0.55)\n"
-                 "  --course-fill <x>        fraction needed to advance a course (0.25)\n"
+                 "  --course-fill <x>        fill a level needs, locally, to be stood on "
+                 "(0.25)\n"
+                 "  --support-radius <n>     cells around a site that question covers (2). A\n"
+                 "                           radius spanning the floor is the old global rule\n"
                  "  --height-lead <n>        build levels allowed above foundation (5)\n"
                  "  --side-support           allow cardinal face-supported bridge blocks\n"
                  "  --boundary-penalty <x>   charged per agent-tick on the x/z edge (0.002)\n\n"
@@ -312,6 +316,9 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.buildThreshold = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--course-fill") {
             options.constructionCourseFill = parseNumber<float>(next(index, argument), argument);
+        } else if (argument == "--support-radius") {
+            options.constructionSupportRadius =
+                parseNumber<std::uint32_t>(next(index, argument), argument);
         } else if (argument == "--height-lead") {
             options.constructionHeightLead =
                 parseNumber<std::uint32_t>(next(index, argument), argument);
@@ -403,6 +410,8 @@ int run(const Options& options) {
     state.settings.constructionCourseFill = std::clamp(options.constructionCourseFill, 0.0F, 1.0F);
     state.settings.constructionHeightLead =
         std::clamp(options.constructionHeightLead, 1U, vkexp::latticeMaximumExtent);
+    state.settings.constructionSupportRadius =
+        std::min(options.constructionSupportRadius, vkexp::latticeMaximumExtent);
     state.settings.allowSideSupportedBlocks = options.allowSideSupportedBlocks ? 1U : 0U;
     if (options.moveThreshold) {
         state.settings.moveThreshold = std::clamp(*options.moveThreshold, 0.0F, 1.0F);
@@ -520,7 +529,8 @@ int run(const Options& options) {
                       << state.settings.buildThreshold << ", boundary penalty "
                       << state.settings.fitness.boundaryPenalty << " per agent-tick\n"
                       << "Frontier:   " << state.settings.constructionCourseFill * 100.0F
-                      << "% per consecutive course, " << state.settings.constructionHeightLead
+                      << "% fill within " << state.settings.constructionSupportRadius
+                      << " cells, " << state.settings.constructionHeightLead
                       << " levels of headroom, side support "
                       << (state.settings.allowSideSupportedBlocks != 0U ? "on" : "off") << '\n';
         } else {
