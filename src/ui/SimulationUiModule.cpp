@@ -454,6 +454,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::Text("Best fitness:   %.4f", state_.statistics.bestFitness);
     ImGui::Text("Median fitness: %.4f", state_.statistics.medianFitness);
     ImGui::Text("Mean fitness:   %.4f", state_.statistics.meanFitness);
+    drawBestWorld();
     if (state_.settings.worldMode == WorldMode::Harvest) {
         ImGui::Text("Delivered a load: %.1f%% of agents", state_.statistics.arrivalRatio * 100.0F);
         drawStructureShapes();
@@ -664,8 +665,10 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
 }
 
 // What the last generation actually built, as opposed to what it scored. The
-// score is mass weighted by height and cannot tell a slab from a spire; these
-// can. Nothing here is fed back into fitness -- see StructureShape.hpp.
+// score cannot tell a slab from a spire; these can. The second column is the
+// champion's world, so the two columns answer "what am I looking at" and "what
+// did the winner do". Nothing here is fed back into fitness -- see
+// StructureShape.hpp.
 void SimulationUiModule::drawStructureShapes() {
     if (state_.statistics.worldShapes.empty()) {
         return;
@@ -675,19 +678,13 @@ void SimulationUiModule::drawStructureShapes() {
     const std::size_t best = std::min<std::size_t>(state_.statistics.bestWorld, worlds - 1);
 
     ImGui::SeparatorText("Shape of the last building");
-    if (ImGui::SmallButton("Look at the best world")) {
-        state_.worlds.selectedWorld = static_cast<std::uint32_t>(best);
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("world %zu", best + 1);
-
     if (!ImGui::BeginTable("structure shape", 3,
                            ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
         return;
     }
     ImGui::TableSetupColumn("");
     ImGui::TableSetupColumn("visible");
-    ImGui::TableSetupColumn("best");
+    ImGui::TableSetupColumn("champion");
     ImGui::TableHeadersRow();
     const auto row = [&](const char* label, const char* tooltip, const char* format,
                          const auto visibleValue, const auto bestValue) {
@@ -774,6 +771,26 @@ void SimulationUiModule::drawBuildOutcomes() {
     ImGui::EndTable();
     ImGui::TextDisabled("one reason per agent and tick, %llu in all",
                         static_cast<unsigned long long>(attempts));
+}
+
+// Where the champion of the last generation ran, in every world mode. Offered
+// rather than imposed, with a switch for a run being watched rather than read.
+void SimulationUiModule::drawBestWorld() {
+    if (state_.worlds.worldCount == 0) {
+        return;
+    }
+    const std::uint32_t best =
+        std::min(state_.statistics.bestWorld, state_.worlds.worldCount - 1);
+    ImGui::Text("Champion ran in world %u", best + 1);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Look at it")) {
+        state_.worlds.selectedWorld = best;
+    }
+    ImGui::Checkbox("Follow the champion", &state_.display.followBestWorld);
+    ImGui::SetItemTooltip("Move the visible world to the champion's at the end of every "
+                          "generation. Off while reading one world carefully; on while watching "
+                          "a run. The first world is not the champion's by default -- that it "
+                          "often is comes from the elite count and the group size both being 12.");
 }
 
 void SimulationUiModule::drawViewControls() {

@@ -36,6 +36,7 @@ private:
     void drawViewControls();
     void drawStructureShapes();
     void drawBuildOutcomes();
+    void drawBestWorld();
 
     SimulationState& state_;
     ImGuiModule& imgui_;

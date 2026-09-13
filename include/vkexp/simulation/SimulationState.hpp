@@ -178,6 +178,10 @@ struct LatticeCamera {
 // What the viewport draws. None of this reaches the simulation -- turning the
 // agents off changes the picture, not the run.
 struct SimulationDisplay {
+    // Move the visible world to the champion's at the end of every generation.
+    // Off by default: a view that jumps on its own is the wrong thing while
+    // reading one world carefully, and the right thing while watching a run.
+    bool followBestWorld{};
     bool agents{true};
     bool beacons{true};
     bool structures{true};

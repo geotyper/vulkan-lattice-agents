@@ -539,18 +539,6 @@ GenerationSummary SimulationDriver::finishGeneration() {
             }
             fitness[genome] /= static_cast<float>(config_.trialsPerGenome);
         }
-        // Which world the viewer is offered: the one that delivered most, and
-        // among worlds that delivered nothing the one that got nearest. Early on
-        // every world delivers nothing, and "world 1" would then be an answer
-        // about the population layout rather than about the run.
-        for (std::uint32_t world = 0; world < state_.worlds.worldCount; ++world) {
-            const std::uint32_t best = state_.statistics.bestWorld;
-            const bool better = deliveries[world] > deliveries[best] ||
-                                (deliveries[world] == deliveries[best] && reach[world] > reach[best]);
-            if (better) {
-                state_.statistics.bestWorld = world;
-            }
-        }
         arrived = static_cast<std::size_t>(
             std::count_if(agents_.begin(), agents_.end(),
                           [](const AgentState& agent) { return agent.metrics.w > 0.0F; }));
@@ -581,12 +569,6 @@ GenerationSummary SimulationDriver::finishGeneration() {
                                      state_.worlds.agentsPerWorld, config_.trialsPerGenome);
             perimeterTicks[world] += agents_[agent].metrics.w;
         }
-        for (std::uint32_t world = 0; world < state_.worlds.worldCount; ++world) {
-            if (weightedBlocks[world] > weightedBlocks[state_.statistics.bestWorld]) {
-                state_.statistics.bestWorld = world;
-            }
-        }
-
         for (std::size_t genome = 0; genome < fitness.size(); ++genome) {
             const std::uint32_t group =
                 static_cast<std::uint32_t>(genome) / state_.worlds.agentsPerWorld;
@@ -620,6 +602,41 @@ GenerationSummary SimulationDriver::finishGeneration() {
         objectiveRatio = static_cast<float>(arrived) /
                          static_cast<float>(std::max<std::size_t>(agents_.size(), 1));
     }
+    // Which world the viewer is offered, by one rule for every world mode:
+    // wherever the best-scoring genome of this generation lives. Every mode
+    // already produces that number, so there is nothing per-mode to get wrong
+    // and nothing to add when a fourth world arrives.
+    //
+    // A genome runs in one world per trial, and the trial shown is the one where
+    // it got furthest -- metrics.x, which is nearness to the beacon, height
+    // reached, or nearness to the resource depending on the world, and in all
+    // three is "how close did this come to the point of it".
+    //
+    // The layout alone would answer "world 1" nearly always, because elites are
+    // copied to the front of the population and the first group of genomes is
+    // the first world. That is only true while the elite count and the group
+    // size happen to be equal, which is a coincidence of two defaults rather
+    // than a fact about the run.
+    {
+        const auto champion = static_cast<std::uint32_t>(
+            std::distance(fitness.begin(), std::max_element(fitness.begin(), fitness.end())));
+        float furthest = -1.0F;
+        for (std::uint32_t trial = 0; trial < config_.trialsPerGenome; ++trial) {
+            const std::uint32_t agent = champion * config_.trialsPerGenome + trial;
+            if (agent >= agents_.size()) {
+                break;
+            }
+            if (agents_[agent].metrics.x > furthest) {
+                furthest = agents_[agent].metrics.x;
+                state_.statistics.bestWorld = logicalWorldForAgent(
+                    agent, state_.worlds.agentsPerWorld, config_.trialsPerGenome);
+            }
+        }
+        if (state_.display.followBestWorld) {
+            state_.worlds.selectedWorld = state_.statistics.bestWorld;
+        }
+    }
+
     // Selection may see a different number than the run reports. Sharing blends
     // each genome's score with its world's average, which is the point -- it
     // makes helping a neighbour pay -- but it also compresses the spread, so a
