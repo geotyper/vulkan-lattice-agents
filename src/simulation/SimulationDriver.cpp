@@ -539,6 +539,18 @@ GenerationSummary SimulationDriver::finishGeneration() {
             }
             fitness[genome] /= static_cast<float>(config_.trialsPerGenome);
         }
+        // Which world the viewer is offered: the one that delivered most, and
+        // among worlds that delivered nothing the one that got nearest. Early on
+        // every world delivers nothing, and "world 1" would then be an answer
+        // about the population layout rather than about the run.
+        for (std::uint32_t world = 0; world < state_.worlds.worldCount; ++world) {
+            const std::uint32_t best = state_.statistics.bestWorld;
+            const bool better = deliveries[world] > deliveries[best] ||
+                                (deliveries[world] == deliveries[best] && reach[world] > reach[best]);
+            if (better) {
+                state_.statistics.bestWorld = world;
+            }
+        }
         arrived = static_cast<std::size_t>(
             std::count_if(agents_.begin(), agents_.end(),
                           [](const AgentState& agent) { return agent.metrics.w > 0.0F; }));
