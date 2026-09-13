@@ -63,14 +63,20 @@ namespace kern = lattice::kernel;
     return landing;
 }
 
-[[nodiscard]] std::array<int, 2> constructionFacing(const AgentState& agent) {
+// Mirrors constructionFacing in lattice_step.comp: what the aim drives ask for,
+// and failing that the way the agent last moved.
+[[nodiscard]] std::array<int, 2> constructionFacing(const AgentState& agent,
+                                                    const SimulationStep& settings,
+                                                    const float aimX, const float aimZ) {
+    int headingX = 0;
+    int headingZ = 0;
     const auto heading = static_cast<std::uint32_t>(agent.cell.w);
-    if (heading >= kern::LatticeNeighborCount) {
-        return {0, 0};
+    if (heading < kern::LatticeNeighborCount) {
+        headingX = kern::latticeNeighborX(heading);
+        headingZ = kern::latticeNeighborZ(heading);
     }
-    const int x = kern::latticeNeighborX(heading);
-    const int z = kern::latticeNeighborZ(heading);
-    return x != 0 ? std::array<int, 2>{x, 0} : std::array<int, 2>{0, z};
+    return {kern::latticeAimComponent(0U, aimX, aimZ, settings.moveThreshold, headingX, headingZ),
+            kern::latticeAimComponent(1U, aimX, aimZ, settings.moveThreshold, headingX, headingZ)};
 }
 
 } // namespace
@@ -176,6 +182,8 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
         const float driveX = output[brain::BrainMoveOutput];
         const float driveY = output[brain::BrainMoveOutput + 1];
         const float driveZ = output[brain::BrainMoveOutput + 2];
+        const float aimDriveX = output[brain::BrainFaceOutput];
+        const float aimDriveZ = output[brain::BrainFaceOutput + 1];
         const int stepX = kern::latticeMoveComponent(neighborhood, 0U, driveX, driveY, driveZ,
                                                      settings.moveThreshold);
         const int stepY = kern::latticeMoveComponent(neighborhood, 1U, driveX, driveY, driveZ,
@@ -210,7 +218,7 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                         constructionLandingY(worldStructures, settings, wantedX, wantedY, wantedZ);
                 }
             } else if (stepY > 0) {
-                const auto [faceX, faceZ] = constructionFacing(agent);
+                const auto [faceX, faceZ] = constructionFacing(agent, settings, aimDriveX, aimDriveZ);
                 const bool hasFace = (faceX != 0 || faceZ != 0) &&
                                      (hasStructure(worldStructures, settings, agent.cell.x + faceX,
                                                    agent.cell.y, agent.cell.z + faceZ) ||
@@ -271,7 +279,7 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
             } else if (agent.signal.y <= settings.buildThreshold) {
                 outcome = kern::LatticeBuildUnwilling;
             } else {
-                const auto [faceX, faceZ] = constructionFacing(agent);
+                const auto [faceX, faceZ] = constructionFacing(agent, settings, aimDriveX, aimDriveZ);
                 const int buildX = agent.cell.x + faceX;
                 const int buildZ = agent.cell.z + faceZ;
                 if (faceX == 0 && faceZ == 0) {

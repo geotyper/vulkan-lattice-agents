@@ -349,6 +349,7 @@ BrainDescription describeBrain(const BrainShape shape, const std::string_view ne
     addOutput("move", bk::BrainMoveOutput, bk::BrainMoveOutputCount);
     addOutput("signal", bk::BrainSignalIntensityOutput, bk::BrainSignalOutputCount);
     addOutput("build", bk::BrainBuildOutput, bk::BrainBuildOutputCount);
+    addOutput("face", bk::BrainFaceOutput, bk::BrainFaceOutputCount);
     addOutput("memory_out", bk::BrainRecurrentOutputOffset, bk::BrainRecurrentCount);
 
     // The genome, block by block, in the order it is laid out. Offsets come from

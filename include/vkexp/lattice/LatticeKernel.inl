@@ -201,6 +201,36 @@ VKEXP_LATTICE_MATH_FN uint latticeDominantAxis(float driveX, float driveY, float
     return magnitudeY >= magnitudeZ ? 1u : 2u;
 }
 
+// Which cardinal face an agent builds against, one axis at a time. The two aim
+// drives are read the way a move drive is -- dead zone, dominant axis, sign --
+// so a policy that has learned to steer has already learned to aim.
+//
+// When neither drive clears the dead zone the agent keeps building against the
+// way it last moved, which is all it could ever do before there was an aim. So
+// a genome from before this output behaves exactly as it did, and "do not care"
+// stays reachable rather than becoming "do not build".
+//
+// Never diagonal: one of the two axes wins, and a block goes against a face.
+VKEXP_LATTICE_MATH_FN int latticeAimComponent(uint axis, float driveX, float driveZ,
+                                              float threshold, int headingX, int headingZ) {
+    const int stepX = latticeAxisStep(driveX, threshold);
+    const int stepZ = latticeAxisStep(driveZ, threshold);
+    if (stepX != 0 || stepZ != 0) {
+        // A vertical drive of zero can never be the loudest of the three here,
+        // because reaching this branch means one of the other two cleared the
+        // dead zone -- so the shared tie-break decides between x and z alone.
+        const uint dominant = latticeDominantAxis(driveX, 0.0f, driveZ);
+        if (axis == 0u) {
+            return dominant == 0u ? stepX : 0;
+        }
+        return dominant == 0u ? 0 : stepZ;
+    }
+    if (headingX != 0) {
+        return axis == 0u ? headingX : 0;
+    }
+    return axis == 0u ? 0 : headingZ;
+}
+
 // The move one axis contributes, given all three drives and the neighbourhood.
 // Written as one function of an axis index rather than three near-copies so the
 // face-only reduction cannot be applied to two axes and forgotten on the third.
@@ -253,14 +283,20 @@ VKEXP_LATTICE_FN bool latticeCellEnterable(int occupant) { return occupant == La
 
 // --- what the brain is told about a cell -------------------------------------
 
-// Three channels per neighbour: something is standing there, the lattice ends
-// there, and how loudly its occupant is signalling. The third is the whole of
-// agent-to-agent perception -- an agent reads its neighbour's broadcast, not its
-// neighbour's state -- which keeps what one agent can learn about another a
-// property of the world rather than of the record layout.
+// Four channels per neighbour: an agent is standing there, the lattice ends
+// there, a block stands there, and how loudly the occupant is signalling. The
+// last is the whole of agent-to-agent perception -- an agent reads its
+// neighbour's broadcast, not its neighbour's state -- which keeps what one
+// agent can learn about another a property of the world rather than of the
+// record layout.
+//
+// The edge and the block are separate channels because they are opposite
+// situations that used to read identically: one can never be built on and the
+// other already has been. See BrainKernel.inl for what conflating them cost.
 const uint LatticeNeighborOccupied = 0u;
-const uint LatticeNeighborBlocked = 1u;
-const uint LatticeNeighborSignal = 2u;
+const uint LatticeNeighborEdge = 1u;
+const uint LatticeNeighborStructure = 2u;
+const uint LatticeNeighborSignal = 3u;
 
 VKEXP_LATTICE_MATH_FN float latticeClamp01(float value) { return clamp(value, 0.0f, 1.0f); }
 

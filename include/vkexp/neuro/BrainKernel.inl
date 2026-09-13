@@ -25,10 +25,19 @@
 // asserts the two agree, which is the same arrangement the 2D build used for the
 // body radius it shared with the scenario kernel.
 const uint BrainNeighborCount = 26u;
-// Something is standing there, the lattice ends there, and how loudly its
-// occupant is signalling. The third channel is the whole of agent-to-agent
-// perception: an agent reads its neighbour's broadcast, never its state.
-const uint BrainNeighborChannels = 3u;
+// Something is standing there, the lattice ends there, a block stands there, and
+// how loudly its occupant is signalling. The last channel is the whole of
+// agent-to-agent perception: an agent reads its neighbour's broadcast, never its
+// state.
+//
+// The wall and the block used to share one channel, and an agent could not tell
+// them apart. That is a real difference: a wall is a cell that can never hold a
+// block and a block is a cell that already does, and the two call for opposite
+// responses -- turn away from one, climb or build beside the other. The
+// refusal counters show a quarter of all genuine build attempts aimed at a
+// block and two fifths aimed out of the world, which is what being unable to
+// tell them apart costs.
+const uint BrainNeighborChannels = 4u;
 // Unit vector to the beacon, and how near it is.
 const uint BrainBeaconInputCount = 4u;
 // Heading as a unit vector, and whether the last move was refused. The heading
@@ -46,8 +55,15 @@ const uint BrainRecurrentCount = 2u; // memory cells, fed back as inputs
 const uint BrainMoveOutputCount = 3u;
 const uint BrainSignalOutputCount = 1u;
 const uint BrainBuildOutputCount = 1u;
-const uint BrainActuatorOutputCount =
-    BrainMoveOutputCount + BrainSignalOutputCount + BrainBuildOutputCount;
+// Where to build, as two horizontal drives read exactly like the move drives.
+// Aim used to be a side effect of walking: the facing was whichever way the
+// agent last actually moved, so a refused move left it aimed where it was
+// stuck, and an agent that had never moved could not build at all. Nothing in
+// the network could change it without giving up the cell it was standing in.
+// Two outputs make aim a decision rather than a memory of locomotion.
+const uint BrainFaceOutputCount = 2u;
+const uint BrainActuatorOutputCount = BrainMoveOutputCount + BrainSignalOutputCount +
+                                      BrainBuildOutputCount + BrainFaceOutputCount;
 
 // Hidden neurons in total, across however many layers there are, and how many
 // layers there may be. Both are compile-time because both size arrays: the
@@ -85,6 +101,7 @@ const uint BrainInputCapacity = BrainRecurrentInputOffset + BrainRecurrentCount;
 const uint BrainMoveOutput = 0u; // three consecutive channels, x then y then z
 const uint BrainSignalIntensityOutput = BrainMoveOutputCount;
 const uint BrainBuildOutput = BrainSignalIntensityOutput + BrainSignalOutputCount;
+const uint BrainFaceOutput = BrainBuildOutput + BrainBuildOutputCount; // x then z
 const uint BrainRecurrentOutputOffset = BrainActuatorOutputCount;
 const uint BrainOutputCapacity = BrainActuatorOutputCount + BrainRecurrentCount;
 

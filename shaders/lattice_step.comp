@@ -79,22 +79,26 @@ int constructionLandingY(uint worldBase, int x, int y, int z) {
     return landing;
 }
 
-// A remembered diagonal heading still names one unambiguous face: x wins the
-// tie. Building therefore extends a cardinal column, never a diagonal support.
-void constructionFacing(Agent agent, out int faceX, out int faceZ) {
-    faceX = 0;
-    faceZ = 0;
+// Which face the agent is turned towards: what the aim drives ask for, and
+// failing that the way it last moved. A remembered diagonal heading still names
+// one unambiguous face -- x wins the tie -- so a block extends a cardinal
+// column and never a diagonal support.
+//
+// Used for climbing as well as building, deliberately: which wall to go up is
+// the same kind of choice as which wall to build against, and an agent that
+// could aim one but not the other would have to walk to pick its ladder.
+//
+// Mirrors vkexp::constructionFacing.
+void constructionFacing(Agent agent, float aimX, float aimZ, out int faceX, out int faceZ) {
+    int headingX = 0;
+    int headingZ = 0;
     const uint heading = uint(agent.cell.w);
-    if (heading >= BrainNeighborCount) {
-        return;
+    if (heading < BrainNeighborCount) {
+        headingX = latticeNeighborX(heading);
+        headingZ = latticeNeighborZ(heading);
     }
-    const int headingX = latticeNeighborX(heading);
-    const int headingZ = latticeNeighborZ(heading);
-    if (headingX != 0) {
-        faceX = headingX;
-    } else if (headingZ != 0) {
-        faceZ = headingZ;
-    }
+    faceX = latticeAimComponent(0u, aimX, aimZ, params.moveThreshold, headingX, headingZ);
+    faceZ = latticeAimComponent(1u, aimX, aimZ, params.moveThreshold, headingX, headingZ);
 }
 
 // How much foundation stands under one build site.
@@ -163,7 +167,8 @@ void senseLattice(Agent agent, uint worldBase, out float sensed[BrainInputCapaci
         const int z = agent.cell.z + latticeNeighborZ(neighbor);
 
         float occupied = 0.0;
-        float blocked = 0.0;
+        float edge = 0.0;
+        float structure = 0.0;
         float signal = 0.0;
         if (!latticeInBounds(x, y, z, params.latticeWidth, params.latticeHeight,
                              params.latticeDepth)) {
@@ -171,20 +176,21 @@ void senseLattice(Agent agent, uint worldBase, out float sensed[BrainInputCapaci
             // cell. There is no boundary geometry and no push-out: a lattice
             // ends, and the one place that has to be said is here and in the
             // move rule below.
-            blocked = 1.0;
+            edge = 1.0;
         } else {
             const uint cell = latticeCellIndex(x, y, z, params.latticeWidth, params.latticeHeight);
             const int occupant = occupancy[worldBase + cell];
             if (params.worldMode == LatticeWorldConstruction &&
                 structures[worldBase + cell] != LatticeNoStructure) {
-                blocked = 1.0;
+                structure = 1.0;
             } else if (occupant != LatticeNoOccupant) {
                 occupied = 1.0;
                 signal = clamp(inputAgents[uint(occupant)].signal.x, 0.0, 1.0);
             }
         }
         sensed[brainNeighborChannelIndex(neighbor, LatticeNeighborOccupied)] = occupied;
-        sensed[brainNeighborChannelIndex(neighbor, LatticeNeighborBlocked)] = blocked;
+        sensed[brainNeighborChannelIndex(neighbor, LatticeNeighborEdge)] = edge;
+        sensed[brainNeighborChannelIndex(neighbor, LatticeNeighborStructure)] = structure;
         sensed[brainNeighborChannelIndex(neighbor, LatticeNeighborSignal)] = signal;
     }
 
@@ -264,6 +270,8 @@ void main() {
     const float driveX = produced[BrainMoveOutput];
     const float driveY = produced[BrainMoveOutput + 1u];
     const float driveZ = produced[BrainMoveOutput + 2u];
+    const float aimDriveX = produced[BrainFaceOutput];
+    const float aimDriveZ = produced[BrainFaceOutput + 1u];
     const int stepX =
         latticeMoveComponent(params.neighborhood, 0u, driveX, driveY, driveZ, params.moveThreshold);
     const int stepY =
@@ -301,7 +309,7 @@ void main() {
         } else if (stepY > 0) {
             int faceX;
             int faceZ;
-            constructionFacing(agent, faceX, faceZ);
+            constructionFacing(agent, aimDriveX, aimDriveZ, faceX, faceZ);
             const bool hasFace = (faceX != 0 || faceZ != 0) &&
                                  (hasStructure(worldBase, agent.cell.x + faceX, agent.cell.y,
                                                agent.cell.z + faceZ) ||
@@ -358,7 +366,7 @@ void main() {
         } else {
             int faceX;
             int faceZ;
-            constructionFacing(agent, faceX, faceZ);
+            constructionFacing(agent, aimDriveX, aimDriveZ, faceX, faceZ);
             const int buildX = agent.cell.x + faceX;
             const int buildZ = agent.cell.z + faceZ;
             if (faceX == 0 && faceZ == 0) {
