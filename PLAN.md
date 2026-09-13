@@ -24,6 +24,12 @@
 3f. A fixed allocation with the configuration giving way, never a resize under
    live descriptors. The lattice is clamped to fit its buffers and the clamped
    value is written back, so the UI shows what is running.
+3g. A struct written in both languages is checked by a shader that reads it
+   back, not by a static assertion on one side. C++ and std430 align a struct by
+   different rules, so `sizeof` can agree with itself and disagree with the
+   shader; what a device actually read is the only evidence. The same goes for
+   how many buffers a pass binds: the count is named once, and the compiled
+   SPIR-V is what the test asks.
 4. Add one evolutionary pressure at a time and keep deterministic replay tests.
 5. Prefer measurable behavioral milestones over adding simulation features in
    parallel.
@@ -84,25 +90,43 @@ learnable and the shaping is readable.
 ### L2. Seeing it
 
 - [x] a 3D view of the selected lattice: instanced cubes for agents, the beacon
-      marked, an orbit camera and a slice control;
+      marked, the block field, and a movement trail per agent;
+- [x] a camera that turns, zooms, slides and can be switched between perspective
+      and orthographic, with a slab control for seeing inside a full box;
 - [x] a per-world picker that reaches trials as well as groups;
+- [ ] **see-through voxels that answer the opacity control.** The transparent
+      style resolves without sorting -- weighted blended, for the same reason
+      the lattice settles a contested cell with a minimum -- but moving the
+      slider currently changes nothing on screen, so either the pass is not
+      running or the weight is swallowing the alpha. Until this is understood
+      the slab is the only way to see inside a crowd;
 - [ ] inspect one agent: its neighbourhood vector, activations and drives;
 - [ ] generation timing.
 
 ### L3. What lives in a cell
 
-- [ ] static obstacles as a second occupancy value, sensed through the existing
-      `blocked` channel;
-- [ ] a per-cell deposit an agent can leave and read, replacing the arena's
-      trail field with no diffusion constant to tune;
+- [x] a second thing a cell can hold, sensed through the existing `blocked`
+      channel and standable, climbable and buildable-against: the construction
+      world's block field, persistent across a trial and stored in snapshots
+      because a tower is history rather than a position;
+- [ ] the same field placed by the world rather than by agents, so a run can be
+      given obstacles it did not build;
+- [ ] a per-cell deposit that decays, replacing the arena's trail field with no
+      diffusion constant to tune. The drawn trail is not this: it is a
+      breadcrumb history no agent reads;
 - [ ] a second agent kind, so a neighbourhood channel distinguishes kin;
 - [ ] procedural obstacle layouts with train/evaluation seed separation.
 
 ### L4. Tasks worth the lattice
 
-- [ ] a target the group must reach together rather than individually;
-- [ ] structures: a scored arrangement of occupied cells, which is what a
-      discrete world can state and a metric one cannot;
+- [x] structures: a scored arrangement of occupied cells, which is what a
+      discrete world can state and a metric one cannot. Height weighted by
+      course, scored per world rather than per agent, with a frontier that only
+      rises once a course is broad enough -- so a single thin column cannot
+      finance a taller one;
+- [x] a target the group must reach together rather than individually: every
+      genome in a construction world carries the same score, so a useful
+      foundation is worth as much to its builder as the block on top;
 - [ ] chains and formations, measured by neighbour occupancy rather than by
       distance;
 - [ ] a task whose solution needs the broadcast channel, so signal-off is a
@@ -208,6 +232,46 @@ the CPU path and the GPU path store it the same way and multi-step parity covers
 it without a separate harness. It is zero at the start of a generation, which is
 the whole of the reset semantics.
 
+## Structs written twice
+
+Three structures exist in two languages at once: the agent record, the per-step
+parameter block, and the fitness weights inside it. `static_assert` on `sizeof`
+and `offsetof` guards the C++ side, and for a long time that was taken for the
+whole guard. It is not, and the gap cost more than any other mistake in this
+project so far.
+
+C++ and std430 align a struct by different rules. `alignas(16)` on a block of
+eight floats aligns it to sixteen; std430 gives a struct the alignment of its
+widest member, which for eight floats is four. Put twenty-three scalars in
+front of such a block and one language starts it at 96 while the other starts
+it at 92 -- two strides, 128 against 124, and a C++ assertion that passes
+because it is only ever comparing C++ to itself.
+
+What makes that specific mistake so expensive is where it shows up. The step
+parameters live in a buffer indexed by the step, so slot zero is very nearly
+right and every slot after it is a struct read off the end of itself. One step
+per submission never leaves slot zero. So the bug hid behind a batch size,
+looked like a race, survived a full barrier between steps, and made every
+batched measurement -- which is every measurement the window has ever shown --
+a run against garbage extents.
+
+Two rules follow, and both are cheap:
+
+- a block shared with a shader is declared out of vectors, so both languages
+  align it the same way by construction rather than by counting the scalars in
+  front of it;
+- the check is a shader that reads the struct back. `layout_echo.comp` hands
+  every field of both records to the host as raw bits, at an index that is
+  deliberately not zero and with a decoy in slot zero, and the host compares by
+  name. It is the cheapest case in the suite.
+
+The same reasoning covers descriptor layouts. How many buffers a pass binds is
+named once, the driver and the parity harness both build from that name, and
+`testShaderBindingContract` reads the compiled SPIR-V and checks it. A pass
+that grows a buffer while a layout does not is undefined behaviour, not a
+reported error -- which is how the parity harness came to run the step shader
+with two descriptors unbound.
+
 ## Parity on a discrete world
 
 The move rule is a threshold on a float, so a one-ulp difference in a drive that
@@ -285,11 +349,24 @@ be inferred from where its builders happen to stand.
 
 ## Immediate next step
 
-Measure whether sparse collective height is sufficient. Construction now gives
-every world a persistent, sensed block field and every genome in that world the
-same tallest-block score. The first evidence to read is not mean fitness but the
-shape of replayed structures: isolated columns show that height alone is enough;
-terraces or cooperating climbs show that the movement constraints are selecting
-coordination. Only after that comparison should compactness, symmetry or material
-cost be added to fitness, since each would define a different aesthetic rather
-than merely display this one.
+**Measure again from scratch.** Every run recorded before the step parameter
+block was fixed batched more than one step per submission, and every step after
+the first in each batch read its settings from four bytes off the end of the
+previous block. Extents, cells per world and the world base were garbage, so
+those runs were not measuring the settings they reported. Nothing in
+`PROGRESS.md` from the lattice era survives as evidence, and the fitness curves
+in it should be read as "a run happened", not as "this configuration behaves
+like this". That is a cheap thing to redo and an expensive thing to forget.
+
+Then the question construction was built for: whether sparse collective height
+is sufficient. Every world now has a persistent, sensed block field and every
+genome in it carries the same score. The first evidence to read is not mean
+fitness but the shape of replayed structures -- isolated columns mean height
+alone is enough, terraces or cooperating climbs mean the movement constraints
+are selecting coordination. Only after that comparison should compactness,
+symmetry or material cost enter fitness, since each defines a different
+aesthetic rather than displaying this one.
+
+The see-through voxel style is the one open defect: the control exists, the
+pass exists, and the picture does not change. It blocks reading a crowded world
+from outside, which is exactly what a construction run needs.
