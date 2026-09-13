@@ -429,6 +429,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::Text("Mean fitness:   %.4f", state_.statistics.meanFitness);
     if (state_.settings.worldMode == WorldMode::Construction) {
         ImGui::Text("Mean weighted fill: %.2f%%", state_.statistics.arrivalRatio * 100.0F);
+        drawStructureShapes();
     } else {
         ImGui::Text("Reached the beacon: %.1f%%", state_.statistics.arrivalRatio * 100.0F);
     }
@@ -628,6 +629,66 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     }
     ImGui::End();
     profilerPanel_.draw(context.profiler);
+}
+
+// What the last generation actually built, as opposed to what it scored. The
+// score is mass weighted by height and cannot tell a slab from a spire; these
+// can. Nothing here is fed back into fitness -- see StructureShape.hpp.
+void SimulationUiModule::drawStructureShapes() {
+    if (state_.statistics.worldShapes.empty()) {
+        return;
+    }
+    const std::size_t worlds = state_.statistics.worldShapes.size();
+    const std::size_t visible = std::min<std::size_t>(state_.worlds.selectedWorld, worlds - 1);
+    const std::size_t best = std::min<std::size_t>(state_.statistics.bestWorld, worlds - 1);
+
+    ImGui::SeparatorText("Shape of the last building");
+    if (ImGui::SmallButton("Look at the best world")) {
+        state_.worlds.selectedWorld = static_cast<std::uint32_t>(best);
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("world %zu", best + 1);
+
+    if (!ImGui::BeginTable("structure shape", 3,
+                           ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+        return;
+    }
+    ImGui::TableSetupColumn("");
+    ImGui::TableSetupColumn("visible");
+    ImGui::TableSetupColumn("best");
+    ImGui::TableHeadersRow();
+    const auto row = [&](const char* label, const char* tooltip, const char* format,
+                         const auto visibleValue, const auto bestValue) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(label);
+        ImGui::SetItemTooltip("%s", tooltip);
+        ImGui::TableNextColumn();
+        ImGui::Text(format, visibleValue);
+        ImGui::TableNextColumn();
+        ImGui::Text(format, bestValue);
+    };
+    const StructureShape& here = state_.statistics.worldShapes[visible];
+    const StructureShape& top = state_.statistics.worldShapes[best];
+    row("Blocks", "Blocks placed in the world.", "%u", here.blocks, top.blocks);
+    row("Footprint", "Floor squares carrying at least one block.", "%u", here.footprint,
+        top.footprint);
+    row("Peak", "Height of the tallest column, in cells.", "%u", here.peak, top.peak);
+    row("Mean height", "Mean height over the columns that carry anything. A slab and a spire of "
+                       "equal mass differ here first.",
+        "%.2f", here.meanHeight, top.meanHeight);
+    row("Height spread", "Standard deviation of those heights. Zero means every column is the "
+                         "same height, which is what a flat course looks like.",
+        "%.2f", here.heightSpread, top.heightSpread);
+    row("Compactness", "Occupied squares as a fraction of their own bounding rectangle. One is a "
+                       "solid plan; lower is a ring, a cross or scattered piers.",
+        "%.2f", here.compactness, top.compactness);
+    row("Overhangs", "Blocks standing on empty space. Only reachable with side support enabled.",
+        "%u", here.overhangs, top.overhangs);
+    row("Roofed", "Empty cells with a block above them in the same column. A tower of solid "
+                  "courses has none.",
+        "%u", here.enclosed, top.enclosed);
+    ImGui::EndTable();
 }
 
 void SimulationUiModule::drawViewControls() {

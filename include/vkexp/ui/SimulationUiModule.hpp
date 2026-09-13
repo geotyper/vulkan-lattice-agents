@@ -34,6 +34,7 @@ private:
     // settings window so the render window itself can remain an unobstructed
     // image, with no selectors or menus taking space from the lattice.
     void drawViewControls();
+    void drawStructureShapes();
 
     SimulationState& state_;
     ImGuiModule& imgui_;

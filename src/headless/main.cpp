@@ -474,7 +474,13 @@ int run(const Options& options) {
             fail("Unable to open CSV output: " + options.csvPath);
         }
         if (!existed) {
-            *csv << "generation,lattice,seed,best,median,mean,arrival_ratio\n";
+            // The shape columns describe the best-scoring world only, and are
+            // empty in beacon mode. They are here because the score alone
+            // cannot tell a slab from a spire, and a CSV that cannot either is
+            // a CSV that has to be re-run to answer the question.
+            *csv << "generation,lattice,seed,best,median,mean,arrival_ratio,"
+                    "blocks,footprint,peak,mean_height,height_spread,compactness,overhangs,"
+                    "roofed\n";
         }
     }
 
@@ -557,7 +563,17 @@ int run(const Options& options) {
         if (csv) {
             *csv << generation << ',' << latticeText << ',' << options.seed << ','
                  << state.statistics.bestFitness << ',' << state.statistics.medianFitness << ','
-                 << state.statistics.meanFitness << ',' << state.statistics.arrivalRatio << '\n';
+                 << state.statistics.meanFitness << ',' << state.statistics.arrivalRatio;
+            const auto& shapes = state.statistics.worldShapes;
+            if (shapes.empty()) {
+                *csv << ",,,,,,,\n";
+            } else {
+                const vkexp::StructureShape& shape =
+                    shapes[std::min<std::size_t>(state.statistics.bestWorld, shapes.size() - 1)];
+                *csv << ',' << shape.blocks << ',' << shape.footprint << ',' << shape.peak << ','
+                     << shape.meanHeight << ',' << shape.heightSpread << ',' << shape.compactness
+                     << ',' << shape.overhangs << ',' << shape.enclosed << '\n';
+            }
         }
     }
     if (csv) {

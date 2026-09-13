@@ -3,10 +3,12 @@
 #include "vkexp/simulation/CpuLattice.hpp"
 #include "vkexp/simulation/LatticeBindings.hpp"
 #include "vkexp/simulation/StepParameters.hpp"
+#include "vkexp/simulation/StructureShape.hpp"
 
 #include <algorithm>
 #include <array>
 #include <numeric>
+#include <span>
 #include <stdexcept>
 #include <string>
 
@@ -510,6 +512,22 @@ GenerationSummary SimulationDriver::finishGeneration() {
                                      state_.worlds.agentsPerWorld, config_.trialsPerGenome);
             perimeterTicks[world] += agents_[agent].metrics.w;
         }
+        // What each world actually looks like. Nothing below reads it back into
+        // fitness -- it is reported so that two runs with the same score can be
+        // told apart, which the score alone cannot do.
+        state_.statistics.worldShapes.assign(state_.worlds.worldCount, StructureShape{});
+        state_.statistics.bestWorld = 0;
+        for (std::uint32_t world = 0; world < state_.worlds.worldCount; ++world) {
+            const std::size_t begin = static_cast<std::size_t>(world) * state_.lattice.cellsPerWorld;
+            state_.statistics.worldShapes[world] = measureStructureShape(
+                std::span<const std::int32_t>{structureStaging_}.subspan(
+                    begin, state_.lattice.cellsPerWorld),
+                state_.settings);
+            if (weightedBlocks[world] > weightedBlocks[state_.statistics.bestWorld]) {
+                state_.statistics.bestWorld = world;
+            }
+        }
+
         for (std::size_t genome = 0; genome < fitness.size(); ++genome) {
             const std::uint32_t group =
                 static_cast<std::uint32_t>(genome) / state_.worlds.agentsPerWorld;
@@ -529,6 +547,8 @@ GenerationSummary SimulationDriver::finishGeneration() {
             totalWeighted / (static_cast<float>(std::max<std::size_t>(weightedBlocks.size(), 1)) *
                              std::max(maximumPerWorld, 1.0F));
     } else {
+        state_.statistics.worldShapes.clear();
+        state_.statistics.bestWorld = 0;
         for (std::size_t genome = 0; genome < fitness.size(); ++genome) {
             for (std::size_t trial = 0; trial < config_.trialsPerGenome; ++trial) {
                 const AgentState& agent = agents_[genome * config_.trialsPerGenome + trial];
