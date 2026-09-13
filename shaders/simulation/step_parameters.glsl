@@ -46,10 +46,9 @@ struct StepParameters {
     uint worldMode;
     uint buildIntervalTicks;
     float buildThreshold;
-    float constructionCourseFill;
-    uint constructionHeightLead;
     uint allowSideSupportedBlocks;
-    uint constructionSupportRadius;
+    uint resourceHeight;
+    uint beaconSeed;
     FitnessWeights fitness;
 };
 

@@ -45,6 +45,12 @@ struct PopulationLayout {
 // it should.
 [[nodiscard]] Int4 beaconCell(const SimulationStep& settings, std::uint32_t world);
 
+// Where the harvest world's resource stands. The device works this out for
+// itself from the same shared kernel functions rather than being told, so this
+// exists for the host alone -- to draw it, and to say in a test where it should
+// be.
+[[nodiscard]] Int4 resourceCell(const SimulationStep& settings, std::uint32_t world);
+
 // Every agent of a fresh generation, in buffer order, with its beacon mirrored
 // on and its metrics cleared. Placement is the same hash, probed forward until a
 // free cell -- so two agents never start in one cell, and the whole arrangement

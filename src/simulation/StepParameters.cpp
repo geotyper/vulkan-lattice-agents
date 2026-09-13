@@ -27,10 +27,9 @@ GpuStepParameters packStepParameters(const SimulationStep& settings,
             static_cast<std::uint32_t>(settings.worldMode),
             settings.buildIntervalTicks,
             settings.buildThreshold,
-            settings.constructionCourseFill,
-            settings.constructionHeightLead,
             settings.allowSideSupportedBlocks,
-            settings.constructionSupportRadius,
+            settings.resourceHeight,
+            settings.beaconSeed,
             packFitnessWeights(settings.fitness)};
 }
 

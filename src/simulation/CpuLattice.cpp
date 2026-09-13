@@ -72,35 +72,6 @@ namespace kern = lattice::kernel;
 
 } // namespace
 
-std::uint32_t constructionLocalFoundation(const std::span<const std::int32_t> worldStructures,
-                                          const SimulationStep& settings, const int x,
-                                          const int buildY, const int z) {
-    const auto radius = static_cast<int>(settings.constructionSupportRadius);
-    const float fill = std::clamp(settings.constructionCourseFill, 0.0F, 1.0F);
-    for (int y = buildY - 1; y >= 0; --y) {
-        std::uint32_t sampled = 0;
-        std::uint32_t filled = 0;
-        for (int dz = -radius; dz <= radius; ++dz) {
-            for (int dx = -radius; dx <= radius; ++dx) {
-                const int nx = x + dx;
-                const int nz = z + dz;
-                if (nx < 0 || nz < 0 || nx >= static_cast<int>(settings.latticeWidth) ||
-                    nz >= static_cast<int>(settings.latticeDepth)) {
-                    continue;
-                }
-                ++sampled;
-                filled += hasStructure(worldStructures, settings, nx, y, nz) ? 1U : 0U;
-            }
-        }
-        const auto required = std::max(
-            static_cast<std::uint32_t>(std::ceil(static_cast<float>(sampled) * fill)), 1U);
-        if (filled >= required) {
-            return static_cast<std::uint32_t>(y) + 1U;
-        }
-    }
-    return 0;
-}
-
 void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& settings) {
     const std::uint32_t cells = latticeCellsPerWorld(settings);
     if (cells == 0 || population.agents.empty()) {
@@ -183,7 +154,7 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                                                      settings.moveThreshold);
 
         agent.intent = Int4{agent.cell.x, agent.cell.y, agent.cell.z, 0};
-        if (settings.worldMode == WorldMode::Construction) {
+        if (worldBuilds(settings.worldMode)) {
             int wantedX = agent.cell.x;
             int wantedY = agent.cell.y;
             int wantedZ = agent.cell.z;
@@ -264,7 +235,9 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
             // construction parity probe compares the counters as well as the
             // blocks, so a reason recorded differently is a failure and not a
             // difference of opinion.
-            std::uint32_t outcome = kern::LatticeBuildClaimed;
+            // LatticeBuildOutcomeCount means "not decided here": the agent
+            // placed a bid and the resolve loop will say whether it won.
+            std::uint32_t outcome = kern::LatticeBuildOutcomeCount;
             if (agent.signal.z > 0.0F) {
                 outcome = kern::LatticeBuildCooling;
             } else if (agent.signal.y <= settings.buildThreshold) {
@@ -290,15 +263,10 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                     }
                     const std::uint32_t target = kern::latticeCellIndex(
                         buildX, buildY, buildZ, settings.latticeWidth, settings.latticeHeight);
-                    const std::uint32_t foundation = constructionLocalFoundation(
-                        worldStructures, settings, buildX, buildY, buildZ);
                     if (hasStructure(worldStructures, settings, buildX, buildY, buildZ)) {
                         outcome = kern::LatticeBuildBlocked;
                     } else if (!supported) {
                         outcome = kern::LatticeBuildUnsupported;
-                    } else if (static_cast<std::uint32_t>(buildY) >=
-                               foundation + std::max(settings.constructionHeightLead, 1U)) {
-                        outcome = kern::LatticeBuildAboveFrontier;
                     } else if (worldOccupancy[target] != kern::LatticeNoOccupant) {
                         outcome = kern::LatticeBuildInTheWay;
                     } else {
@@ -312,7 +280,7 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                     }
                 }
             }
-            if (!population.buildOutcomes.empty()) {
+            if (!population.buildOutcomes.empty() && outcome < kern::LatticeBuildOutcomeCount) {
                 ++population.buildOutcomes[static_cast<std::size_t>(world) *
                                                kern::LatticeBuildOutcomeCount +
                                            outcome];
@@ -373,7 +341,7 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                 const int movedX = agent.intent.x - agent.cell.x;
                 const int movedY = agent.intent.y - agent.cell.y;
                 const int movedZ = agent.intent.z - agent.cell.z;
-                if (settings.worldMode != WorldMode::Construction || movedX != 0 || movedZ != 0) {
+                if (!worldBuilds(settings.worldMode) || movedX != 0 || movedZ != 0) {
                     agent.cell.w = static_cast<std::int32_t>(
                         kern::latticeNeighborIndex(movedX, movedY, movedZ));
                 }
@@ -382,7 +350,7 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                 agent.cell.z = agent.intent.z;
                 moved = true;
             } else {
-                refused = settings.worldMode != WorldMode::Construction ||
+                refused = !worldBuilds(settings.worldMode) ||
                           population.claims[worldBase + wanted] >= 0;
             }
         }
@@ -393,11 +361,12 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
         // say: an agent that never asked to move was never refused.
         agent.memory.z = moved ? 0.0F : agent.memory.z + 1.0F;
 
-        if (settings.worldMode == WorldMode::Construction && agent.beacon.x >= 0 &&
+        if (worldBuilds(settings.worldMode) && agent.beacon.x >= 0 &&
             !worldStructures.empty()) {
             const std::uint32_t target =
                 kern::latticeCellIndex(agent.beacon.x, agent.beacon.y, agent.beacon.z,
                                        settings.latticeWidth, settings.latticeHeight);
+            bool placed = false;
             if (population.claims[worldBase + target] ==
                     kern::latticeBuildClaim(index,
                                             static_cast<std::uint32_t>(population.agents.size())) &&
@@ -406,12 +375,42 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                 agent.signal.z = static_cast<float>(settings.buildIntervalTicks);
                 agent.signal.w = 1.0F;
                 agent.metrics.y += 1.0F;
+                placed = true;
+            }
+            if (!population.buildOutcomes.empty()) {
+                ++population.buildOutcomes[static_cast<std::size_t>(world) *
+                                               kern::LatticeBuildOutcomeCount +
+                                           (placed ? kern::LatticeBuildPlaced
+                                                   : kern::LatticeBuildContested)];
             }
         }
 
         agent.metrics.z +=
             (moved ? 1.0F : 0.0F) + settings.fitness.signalCostFactor * agent.signal.x;
-        if (settings.worldMode == WorldMode::Construction) {
+        if (settings.worldMode == WorldMode::Harvest) {
+            // Mirrors the harvest block of lattice_resolve.comp: pick up at the
+            // resource, score on the floor.
+            const std::uint32_t hash =
+                kern::latticeResourceHash(world, settings.beaconSeed);
+            const int resourceX = kern::latticeResourceX(hash, settings.latticeWidth);
+            const int resourceY =
+                kern::latticeResourceY(settings.resourceHeight, settings.latticeHeight);
+            const int resourceZ =
+                kern::latticeResourceZ(hash, settings.latticeWidth, settings.latticeDepth);
+            const std::uint32_t distance = kern::latticeStepDistance(
+                static_cast<std::uint32_t>(settings.neighborhood), resourceX - agent.cell.x,
+                resourceY - agent.cell.y, resourceZ - agent.cell.z);
+            agent.metrics.x = std::max(agent.metrics.x,
+                                       kern::latticeNearness(distance, maximumDistance));
+            if (agent.memory.w <= 0.0F) {
+                if (kern::latticeBeaconReached(distance, settings.beaconContactRadius)) {
+                    agent.memory.w = 1.0F;
+                }
+            } else if (agent.cell.y == 0) {
+                agent.memory.w = 0.0F;
+                agent.metrics.w += 1.0F;
+            }
+        } else if (settings.worldMode == WorldMode::Construction) {
             const bool onHorizontalPerimeter =
                 agent.cell.x == 0 || agent.cell.z == 0 ||
                 agent.cell.x == static_cast<std::int32_t>(settings.latticeWidth) - 1 ||

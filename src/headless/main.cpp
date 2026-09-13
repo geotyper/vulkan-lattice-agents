@@ -45,9 +45,7 @@ struct Options {
     vkexp::WorldMode worldMode{vkexp::WorldMode::Beacon};
     std::uint32_t buildIntervalTicks{12};
     float buildThreshold{0.55F};
-    float constructionCourseFill{0.25F};
-    std::uint32_t constructionHeightLead{5};
-    std::uint32_t constructionSupportRadius{2};
+    std::uint32_t resourceHeight{4};
     bool allowSideSupportedBlocks{};
 
     vkexp::FitnessWeights fitness{};
@@ -77,7 +75,7 @@ void printHelp(const char* executable) {
                  "  --seed <n>               genetic algorithm seed (default 12648430)\n"
                  "  --steps-per-batch <n>    steps recorded per submission (default 128)\n\n"
                  "The lattice:\n"
-                 "  --world <name>          beacon|construction (default beacon)\n"
+                 "  --world <name>          beacon|construction|harvest (default beacon)\n"
                  "  --lattice <WxHxD>        cells per world (default 32x32x16). Each world\n"
                  "                           costs W*H*D*4 bytes twice over, and there is one\n"
                  "                           world per group per trial, so a large box and a\n"
@@ -92,11 +90,8 @@ void printHelp(const char* executable) {
                  "                           score at a time\n"
                  "  --build-interval <n>     ticks between successful block placements (12)\n"
                  "  --build-threshold <x>    construction output required to place (0.55)\n"
-                 "  --course-fill <x>        fill a level needs, locally, to be stood on "
-                 "(0.25)\n"
-                 "  --support-radius <n>     cells around a site that question covers (2). A\n"
-                 "                           radius spanning the floor is the old global rule\n"
-                 "  --height-lead <n>        build levels allowed above foundation (5)\n"
+                 "  --resource-height <n>    harvest: levels above the floor the resource\n"
+                 "                           sits at (4). Nobody leaves the floor unaided\n"
                  "  --side-support           allow cardinal face-supported bridge blocks\n"
                  "  --boundary-penalty <x>   charged per agent-tick on the x/z edge (0.002)\n\n"
                  "Ablations:\n"
@@ -219,7 +214,17 @@ void parseLatticeExtents(const std::string_view text, Options& options) {
     if (name == "construction" || name == "build") {
         return vkexp::WorldMode::Construction;
     }
-    fail("Unknown world '" + std::string{name} + "'; expected beacon or construction");
+    if (name == "harvest") {
+        return vkexp::WorldMode::Harvest;
+    }
+    fail("Unknown world '" + std::string{name} + "'; expected beacon, construction or harvest");
+}
+
+[[nodiscard]] const char* worldModeName(const vkexp::WorldMode mode) {
+    if (mode == vkexp::WorldMode::Construction) {
+        return "construction";
+    }
+    return mode == vkexp::WorldMode::Harvest ? "harvest" : "beacon";
 }
 
 [[nodiscard]] const char* neighborhoodName(const vkexp::Neighborhood neighborhood) {
@@ -314,14 +319,8 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
                 parseNumber<std::uint32_t>(next(index, argument), argument);
         } else if (argument == "--build-threshold") {
             options.buildThreshold = parseNumber<float>(next(index, argument), argument);
-        } else if (argument == "--course-fill") {
-            options.constructionCourseFill = parseNumber<float>(next(index, argument), argument);
-        } else if (argument == "--support-radius") {
-            options.constructionSupportRadius =
-                parseNumber<std::uint32_t>(next(index, argument), argument);
-        } else if (argument == "--height-lead") {
-            options.constructionHeightLead =
-                parseNumber<std::uint32_t>(next(index, argument), argument);
+        } else if (argument == "--resource-height") {
+            options.resourceHeight = parseNumber<std::uint32_t>(next(index, argument), argument);
         } else if (argument == "--side-support") {
             options.allowSideSupportedBlocks = true;
         } else if (argument == "--boundary-penalty") {
@@ -407,11 +406,8 @@ int run(const Options& options) {
     state.settings.worldMode = options.worldMode;
     state.settings.buildIntervalTicks = options.buildIntervalTicks;
     state.settings.buildThreshold = std::clamp(options.buildThreshold, 0.0F, 1.0F);
-    state.settings.constructionCourseFill = std::clamp(options.constructionCourseFill, 0.0F, 1.0F);
-    state.settings.constructionHeightLead =
-        std::clamp(options.constructionHeightLead, 1U, vkexp::latticeMaximumExtent);
-    state.settings.constructionSupportRadius =
-        std::min(options.constructionSupportRadius, vkexp::latticeMaximumExtent);
+    state.settings.resourceHeight =
+        std::clamp(options.resourceHeight, 1U, std::max(state.settings.latticeHeight, 2U) - 1U);
     state.settings.allowSideSupportedBlocks = options.allowSideSupportedBlocks ? 1U : 0U;
     if (options.moveThreshold) {
         state.settings.moveThreshold = std::clamp(*options.moveThreshold, 0.0F, 1.0F);
@@ -490,7 +486,7 @@ int run(const Options& options) {
             *csv << "generation,lattice,seed,best,median,mean,arrival_ratio,"
                     "blocks,footprint,peak,mean_height,height_spread,compactness,overhangs,"
                     "roofed,cooling,unwilling,no_facing,off_lattice,blocked,unsupported,"
-                    "above_frontier,in_the_way,claimed\n";
+                    "in_the_way,placed,contested\n";
         }
     }
 
@@ -518,22 +514,26 @@ int run(const Options& options) {
                   << driver.config().trialsPerGenome << " trials = " << state.agents.agentCount
                   << " agents in " << state.worlds.worldCount << " lattices\n"
                   << "World:      "
-                  << (state.settings.worldMode == vkexp::WorldMode::Construction ? "construction"
-                                                                                 : "beacon")
+                  << worldModeName(state.settings.worldMode)
                   << '\n'
                   << "Movement:   threshold " << std::fixed << std::setprecision(2)
                   << state.settings.moveThreshold;
-        if (state.settings.worldMode == vkexp::WorldMode::Construction) {
+        if (vkexp::worldBuilds(state.settings.worldMode)) {
             std::cout << '\n'
                       << "Construction: one supported block every "
                       << state.settings.buildIntervalTicks << " ticks, output > "
                       << state.settings.buildThreshold << ", boundary penalty "
                       << state.settings.fitness.boundaryPenalty << " per agent-tick\n"
-                      << "Frontier:   " << state.settings.constructionCourseFill * 100.0F
-                      << "% fill within " << state.settings.constructionSupportRadius
-                      << " cells, " << state.settings.constructionHeightLead
-                      << " levels of headroom, side support "
-                      << (state.settings.allowSideSupportedBlocks != 0U ? "on" : "off") << '\n';
+                      << "Support:    "
+                      << (state.settings.allowSideSupportedBlocks != 0U
+                              ? "floor, a block below, or a cardinal side face"
+                              : "floor or a block directly below")
+                      << '\n';
+            if (state.settings.worldMode == vkexp::WorldMode::Harvest) {
+                std::cout << "Resource:   " << state.settings.resourceHeight
+                          << " levels up, collected within " << state.settings.beaconContactRadius
+                          << " cell(s) and scored back on the floor\n";
+            }
         } else {
             std::cout << ", beacon reached within " << std::defaultfloat << std::setprecision(6)
                       << state.settings.beaconContactRadius << " cell(s)\n";

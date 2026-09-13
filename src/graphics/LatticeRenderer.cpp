@@ -497,7 +497,10 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
     // with, from the seed the running generation is using, so the drawn beacon
     // cannot drift from the simulated one. Reading it off an agent record would
     // have meant a readback for a number that is already computable.
-    const Int4 beacon = lattice::beaconCell(settings, state_.worlds.selectedWorld);
+    // The one cell in the box the trial is about, whichever world this is.
+    const Int4 beacon = settings.worldMode == WorldMode::Harvest
+                            ? lattice::resourceCell(settings, state_.worlds.selectedWorld)
+                            : lattice::beaconCell(settings, state_.worlds.selectedWorld);
 
     const auto width = static_cast<float>(settings.latticeWidth);
     const auto height = static_cast<float>(settings.latticeHeight);
@@ -610,7 +613,7 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
     const bool transparent = display.voxelStyle == VoxelStyle::Transparent;
     const bool drawAgents = display.agents && visibleAgents > 0 && state_.agents.agentCount > 0;
     const bool drawStructures = display.structures &&
-                                settings.worldMode == WorldMode::Construction &&
+                                worldBuilds(settings.worldMode) &&
                                 state_.structures.buffer != VK_NULL_HANDLE;
     const std::uint32_t trailSamples =
         std::min({state_.trails.recordedTicks, display.trailLength, state_.trails.capacity});
@@ -630,10 +633,11 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
         vkCmdDraw(commands, boxEdgeVertexCount, 1, 0, 0);
     }
     vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, voxelPipeline_.get());
-    if (display.beacons && settings.worldMode == WorldMode::Beacon) {
+    if (display.beacons && settings.worldMode != WorldMode::Construction) {
         // Always opaque, and a little larger than a cell. It is the one thing in
         // the box whose position is the question rather than the answer, so it
-        // should not be the thing that disappears when transparency is on.
+        // should not be the thing that disappears when transparency is on. In
+        // the harvest world it is the resource, which is the same claim.
         const float agentScale = parameters.camera[3];
         parameters.camera[3] = std::min(1.0F, agentScale + 0.18F);
         pushWord(modeBeacon);

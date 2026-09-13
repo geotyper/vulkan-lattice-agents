@@ -12,17 +12,12 @@ namespace kern = ::vkexp::lattice::kernel;
 // One round of a bijective integer mix. Not a generator: the point is that
 // placement is a pure function of what it is asked about, so the beacon of world
 // 91 can be computed without having computed the beacon of world 90.
-[[nodiscard]] std::uint32_t mix(std::uint32_t value) {
-    value ^= value >> 16U;
-    value *= 0x7FEB352DU;
-    value ^= value >> 15U;
-    value *= 0x846CA68BU;
-    value ^= value >> 16U;
-    return value;
-}
+// The shared one, so the resource the shader places and the beacon the host
+// places cannot drift onto different hashes.
+[[nodiscard]] std::uint32_t mix(const std::uint32_t value) { return kern::latticeMix(value); }
 
 [[nodiscard]] std::uint32_t mix(const std::uint32_t first, const std::uint32_t second) {
-    return mix(first ^ (mix(second) + 0x9E3779B9U + (first << 6U) + (first >> 2U)));
+    return kern::latticeMix(first, second);
 }
 
 [[nodiscard]] Int4 cellFromHash(const SimulationStep& settings, const std::uint32_t hash) {
@@ -63,6 +58,14 @@ Int4 beaconCell(const SimulationStep& settings, const std::uint32_t world) {
     return cell;
 }
 
+Int4 resourceCell(const SimulationStep& settings, const std::uint32_t world) {
+    const std::uint32_t hash = kern::latticeResourceHash(world, settings.beaconSeed);
+    return Int4{kern::latticeResourceX(hash, settings.latticeWidth),
+                kern::latticeResourceY(settings.resourceHeight, settings.latticeHeight),
+                kern::latticeResourceZ(hash, settings.latticeWidth, settings.latticeDepth),
+                static_cast<std::int32_t>(world)};
+}
+
 std::vector<AgentState> makeInitialAgents(const SimulationStep& settings,
                                           const PopulationLayout& layout) {
     const std::uint32_t cells = latticeCellsPerWorld(settings);
@@ -83,7 +86,7 @@ std::vector<AgentState> makeInitialAgents(const SimulationStep& settings,
         const std::uint32_t world = logicalWorldForAgent(index, groupSize, layout.trialsPerGenome);
         const std::uint32_t slot = genome % groupSize;
         Int4 beacon = beaconCell(settings, world);
-        if (settings.worldMode == WorldMode::Construction) {
+        if (worldBuilds(settings.worldMode)) {
             // xyz becomes the per-step build intent in construction mode. Only
             // w is permanent: it keeps naming the logical world.
             beacon = Int4{-1, -1, -1, static_cast<std::int32_t>(world)};
@@ -104,7 +107,7 @@ std::vector<AgentState> makeInitialAgents(const SimulationStep& settings,
         // loop has no bound when a world is nearly full, and a world that is
         // nearly full is exactly the configuration worth being able to run.
         const std::uint32_t start = mix(settings.beaconSeed ^ 0x5CA1EDU, world * 1021U + slot);
-        const bool construction = settings.worldMode == WorldMode::Construction;
+        const bool construction = worldBuilds(settings.worldMode);
         const std::uint32_t candidateCount =
             construction ? settings.latticeWidth * settings.latticeDepth : cells;
         const std::uint32_t base = construction

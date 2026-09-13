@@ -1133,10 +1133,12 @@ void testPopulationReload() {
 
 void testStepParameterPacking() {
     // The GPU step parameters outgrew the 128 bytes Vulkan guarantees for push
-    // constants, which is why they travel in a storage buffer.
-    check(sizeof(vkexp::GpuStepParameters) <= 128,
-          "Step parameters fit a cache line pair, which is what indexing them per "
-          "step is worth doing for");
+    // constants, which is why they travel in a storage buffer. What matters now
+    // is only that the block stays a whole number of 16-byte vectors: that is
+    // the alignment both languages round it to, and a stride the two disagree
+    // about is invisible at step zero and nonsense at every step after it.
+    check(sizeof(vkexp::GpuStepParameters) % 16 == 0,
+          "The step parameter block is a whole number of 16-byte vectors");
 
     vkexp::SimulationStep settings{};
     settings.latticeWidth = 20;
@@ -1796,72 +1798,6 @@ void testStructureShape() {
           "A row of four is its own bounding rectangle, not a quarter of the floor");
 }
 
-void testConstructionLocalFoundation() {
-    vkexp::SimulationStep settings{};
-    settings.worldMode = vkexp::WorldMode::Construction;
-    settings.latticeWidth = 8;
-    settings.latticeHeight = 8;
-    settings.latticeDepth = 8;
-    settings.constructionCourseFill = 0.5F;
-    const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
-    std::vector<std::int32_t> field(cells, 0);
-    const auto place = [&](const int x, const int y, const int z) {
-        field[vkexp::lattice::kernel::latticeCellIndex(x, y, z, settings.latticeWidth,
-                                                       settings.latticeHeight)] = 1;
-    };
-
-    settings.constructionSupportRadius = 1;
-    check(vkexp::constructionLocalFoundation(field, settings, 4, 3, 4) == 0,
-          "Nothing under a site is no foundation at all");
-    check(vkexp::constructionLocalFoundation(field, settings, 4, 0, 4) == 0,
-          "A site on the floor has nothing below it to scan");
-
-    // A solid 3x3 directly under the site: the whole window, so dense at any
-    // fill, and the foundation is the level above it.
-    for (int z = 3; z <= 5; ++z) {
-        for (int x = 3; x <= 5; ++x) {
-            place(x, 2, z);
-        }
-    }
-    check(vkexp::constructionLocalFoundation(field, settings, 4, 3, 4) == 3,
-          "A full window one level down is a foundation of that level plus one");
-    check(vkexp::constructionLocalFoundation(field, settings, 4, 6, 4) == 3,
-          "The scan finds the same platform from higher up: levels need not be consecutive");
-
-    // The radius is what decides. Standing two cells away, a radius of one
-    // cannot see the platform at all and a radius of three can.
-    check(vkexp::constructionLocalFoundation(field, settings, 7, 3, 7) == 0,
-          "A narrow window sees nothing two cells away from the platform");
-    settings.constructionSupportRadius = 3;
-    check(vkexp::constructionLocalFoundation(field, settings, 7, 3, 7) == 0,
-          "A wider window reaches the platform, but four cells of sixteen is under half");
-    settings.constructionCourseFill = 0.25F;
-    check(vkexp::constructionLocalFoundation(field, settings, 7, 3, 7) == 3,
-          "At a lower fill the same reach is enough, which is the trade the two sliders make");
-
-    // Clipping at the wall shrinks the question rather than failing it: a corner
-    // sees fewer cells and needs proportionally fewer of them.
-    settings.constructionSupportRadius = 1;
-    settings.constructionCourseFill = 1.0F;
-    std::fill(field.begin(), field.end(), 0);
-    place(0, 0, 0);
-    place(1, 0, 0);
-    place(0, 0, 1);
-    place(1, 0, 1);
-    check(vkexp::constructionLocalFoundation(field, settings, 0, 1, 0) == 1,
-          "A corner window is four cells, and four blocks fill it completely");
-    check(vkexp::constructionLocalFoundation(field, settings, 2, 1, 2) == 0,
-          "One cell short of full is not full, whatever the window size");
-
-    // A fill of zero still needs one block: an empty level is never something
-    // to stand on, however forgiving the setting.
-    settings.constructionCourseFill = 0.0F;
-    check(vkexp::constructionLocalFoundation(field, settings, 6, 2, 6) == 0,
-          "An empty window is never a foundation, even at zero fill");
-    check(vkexp::constructionLocalFoundation(field, settings, 2, 2, 2) == 1,
-          "At zero fill a single block within reach is enough");
-}
-
 void testLatticeAim() {
     namespace lk = vkexp::lattice::kernel;
     constexpr float threshold = 0.25F;
@@ -1905,6 +1841,65 @@ void testLatticeStillness() {
           "And saturates at one after the full span");
     check(lk::latticeStillness(lk::LatticeStillnessSpan * 10.0F) == 1.0F,
           "Standing still far longer than that is still one, not more");
+}
+
+void testHarvestResource() {
+    vkexp::SimulationStep settings{};
+    settings.worldMode = vkexp::WorldMode::Harvest;
+    settings.latticeWidth = 12;
+    settings.latticeHeight = 10;
+    settings.latticeDepth = 9;
+    settings.resourceHeight = 4;
+    settings.beaconSeed = 0x5EEDU;
+
+    // Inside the box, at the height it was asked for, and the same answer every
+    // time it is asked: the device works this out for itself from the same
+    // functions, so a placement that drifted would put the shader's resource
+    // somewhere the host never draws.
+    std::set<std::array<std::int32_t, 3>> placements;
+    for (std::uint32_t world = 0; world < 64; ++world) {
+        const vkexp::Int4 cell = vkexp::lattice::resourceCell(settings, world);
+        check(vkexp::lattice::kernel::latticeInBounds(cell.x, cell.y, cell.z, settings.latticeWidth,
+                                                      settings.latticeHeight,
+                                                      settings.latticeDepth),
+              "Every world's resource is inside the lattice");
+        check(cell.y == 4, "and at the height the setting asked for");
+        check(cell.w == static_cast<std::int32_t>(world), "and knows which world it belongs to");
+        check(vkexp::lattice::resourceCell(settings, world).x == cell.x,
+              "Placement is a function of the world index, not a generator");
+        placements.insert({cell.x, cell.y, cell.z});
+    }
+    check(placements.size() > 16,
+          "Sixty-four worlds do not all put the resource in the same column");
+
+    // A resource asked for above the ceiling is clamped rather than wrapped.
+    // Wrapping would put it near the floor and make the world quietly easy,
+    // which is the opposite of saying the setting was wrong.
+    settings.resourceHeight = 99;
+    check(vkexp::lattice::resourceCell(settings, 0).y ==
+              static_cast<std::int32_t>(settings.latticeHeight) - 1,
+          "A resource above the ceiling sits on the ceiling, not back near the floor");
+
+    // It never shares a cell with the beacon of the same seed and world: the two
+    // are hashed against different constants precisely so that a run switched
+    // from one world to the other is a different problem and not the same one.
+    settings.resourceHeight = 4;
+    std::size_t collisions = 0;
+    for (std::uint32_t world = 0; world < 64; ++world) {
+        const vkexp::Int4 resource = vkexp::lattice::resourceCell(settings, world);
+        const vkexp::Int4 beacon = vkexp::lattice::beaconCell(settings, world);
+        collisions += resource.x == beacon.x && resource.z == beacon.z ? 1 : 0;
+    }
+    check(collisions < 16, "The resource and the beacon are not the same placement");
+
+    // Harvest builds, so it spawns on the floor and keeps the construction
+    // spawn capacity rather than the beacon one.
+    check(vkexp::worldBuilds(vkexp::WorldMode::Harvest) &&
+              vkexp::worldBuilds(vkexp::WorldMode::Construction) &&
+              !vkexp::worldBuilds(vkexp::WorldMode::Beacon),
+          "Harvest is a building world and beacon is not");
+    check(vkexp::latticeSpawnCapacity(settings) == settings.latticeWidth * settings.latticeDepth,
+          "A harvest world stands its group on the floor, like a construction world");
 }
 
 void testLatticeAddressing() {
@@ -2292,9 +2287,9 @@ int main() {
     testTransparencyWeight();
     testLatticeSpawnCapacity();
     testStructureShape();
-    testConstructionLocalFoundation();
     testLatticeAim();
     testLatticeStillness();
+    testHarvestResource();
     testLatticeAddressing();
     testLatticeNeighbourhood();
     testLatticeMoveRule();

@@ -134,7 +134,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
 
     ImGui::SeparatorText("The lattice");
     int worldMode = static_cast<int>(state_.settings.worldMode);
-    constexpr const char* worldModes[] = {"Beacon", "Construction"};
+    constexpr const char* worldModes[] = {"Beacon", "Construction", "Harvest"};
     static_assert(std::size(worldModes) == worldModeCount);
     if (ImGui::Combo("World", &worldMode, worldModes, static_cast<int>(worldModeCount))) {
         state_.settings.worldMode = static_cast<WorldMode>(worldMode);
@@ -221,33 +221,22 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                           "of the decision to stand still: at zero an agent moves every step "
                           "whatever it thinks, and near one it has to commit.");
 
-    if (state_.settings.worldMode == WorldMode::Construction) {
+    if (worldBuilds(state_.settings.worldMode)) {
+        if (state_.settings.worldMode == WorldMode::Harvest) {
+            int resourceHeight = static_cast<int>(state_.settings.resourceHeight);
+            if (ImGui::SliderInt("Resource height", &resourceHeight, 1,
+                                 static_cast<int>(state_.settings.latticeHeight) - 1, "%d levels")) {
+                state_.settings.resourceHeight = static_cast<std::uint32_t>(resourceHeight);
+            }
+            ImGui::SetItemTooltip("How far above the floor the resource sits. Nobody leaves the "
+                                  "floor without a structure to climb, so this is how much has to "
+                                  "be built before anything is collected at all.");
+        }
         int buildInterval = static_cast<int>(state_.settings.buildIntervalTicks);
         if (ImGui::SliderInt("Build interval", &buildInterval, 1, 120, "%d ticks")) {
             state_.settings.buildIntervalTicks = static_cast<std::uint32_t>(buildInterval);
         }
         ImGui::SliderFloat("Build threshold", &state_.settings.buildThreshold, 0.0F, 0.95F, "%.2f");
-        float courseFillPercent = state_.settings.constructionCourseFill * 100.0F;
-        if (ImGui::SliderFloat("Course fill", &courseFillPercent, 5.0F, 100.0F, "%.0f%%",
-                               ImGuiSliderFlags_AlwaysClamp)) {
-            state_.settings.constructionCourseFill = courseFillPercent * 0.01F;
-        }
-        ImGui::SetItemTooltip("How full a level must be, around a build site, before it counts "
-                              "as something to stand on.");
-        int supportRadius = static_cast<int>(state_.settings.constructionSupportRadius);
-        if (ImGui::SliderInt("Support radius", &supportRadius, 0, 16, "%d cells")) {
-            state_.settings.constructionSupportRadius = static_cast<std::uint32_t>(supportRadius);
-        }
-        ImGui::SetItemTooltip("How wide the fill question is asked. Zero asks only about the "
-                              "column itself; a radius that spans the floor asks about the whole "
-                              "world, which is the old global course frontier. In between, one "
-                              "corner of a world may run ahead of another.");
-        int heightLead = static_cast<int>(state_.settings.constructionHeightLead);
-        if (ImGui::SliderInt("Height above foundation", &heightLead, 1, 16, "%d levels")) {
-            state_.settings.constructionHeightLead = static_cast<std::uint32_t>(heightLead);
-        }
-        ImGui::SetItemTooltip("A block cannot be placed more than this many levels above the "
-                              "nearest level below it that is filled enough to stand on.");
         bool allowSideSupport = state_.settings.allowSideSupportedBlocks != 0U;
         if (ImGui::Checkbox("Side-supported bridges", &allowSideSupport)) {
             state_.settings.allowSideSupportedBlocks = allowSideSupport ? 1U : 0U;
@@ -258,10 +247,17 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                            0.05F, "%.4f");
         ImGui::SetItemTooltip("Group charge per agent and tick spent on the x/z perimeter. The "
                               "height ceiling is not penalised.");
-        ImGui::TextWrapped("Fitness is the sum of block levels minus boundary dwell. A block may "
-                           "stand up to %u levels above the nearest level below it that is filled "
-                           "enough locally; every genome in the world receives the same total.",
-                           state_.settings.constructionHeightLead);
+        if (state_.settings.worldMode == WorldMode::Harvest) {
+            ImGui::TextWrapped(
+                "Fitness is loads delivered, plus how near anyone got to the resource. Blocks "
+                "score nothing: a block is time spent, and spending it well is the problem. A "
+                "load is picked up at the resource and scored on the floor, so a route that can "
+                "be used twice is worth more than one lucky scramble.");
+        } else {
+            ImGui::TextWrapped(
+                "Fitness is the sum of block levels minus boundary dwell. Every genome in the "
+                "world receives the same total.");
+        }
         ImGui::TextDisabled(state_.settings.allowSideSupportedBlocks != 0U
                                 ? "Blocks may use a floor, lower block or cardinal side face."
                                 : "Blocks need floor or a block directly below; walls climb.");
@@ -435,7 +431,12 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::Text("Best fitness:   %.4f", state_.statistics.bestFitness);
     ImGui::Text("Median fitness: %.4f", state_.statistics.medianFitness);
     ImGui::Text("Mean fitness:   %.4f", state_.statistics.meanFitness);
-    if (state_.settings.worldMode == WorldMode::Construction) {
+    drawBestWorld();
+    if (state_.settings.worldMode == WorldMode::Harvest) {
+        ImGui::Text("Delivered a load: %.1f%% of agents", state_.statistics.arrivalRatio * 100.0F);
+        drawStructureShapes();
+        drawBuildOutcomes();
+    } else if (state_.settings.worldMode == WorldMode::Construction) {
         ImGui::Text("Mean weighted fill: %.2f%%", state_.statistics.arrivalRatio * 100.0F);
         drawStructureShapes();
         drawBuildOutcomes();
@@ -453,9 +454,14 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     plotHistory("Best", state_.history.bestFitness);
     plotHistory("Median", state_.history.medianFitness);
     plotHistory("Mean", state_.history.meanFitness);
-    plotHistory(state_.settings.worldMode == WorldMode::Construction ? "Weighted block fill"
-                                                                     : "Reached the beacon",
-                state_.history.arrivalRatio, 0.0F, 1.0F);
+    // Floored at zero and scaled to the data above it. A fixed 0..1 axis is
+    // what a fraction deserves in principle and unreadable in practice: a run
+    // filling three per cent of its lattice draws as a flat line on the bottom
+    // edge whatever it is doing, and the headline number above says the level
+    // anyway.
+    plotHistory(state_.settings.worldMode == WorldMode::Beacon ? "Reached the beacon"
+                                                               : "Weighted block fill",
+                state_.history.arrivalRatio, 0.0F);
     ImGui::SeparatorText("Evolution parameters");
     ImGui::Text("Population: %zu", state_.evolution.populationSize);
     ImGui::Text("Elites: %zu   Tournament: %zu", state_.evolution.eliteCount,
@@ -641,8 +647,10 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
 }
 
 // What the last generation actually built, as opposed to what it scored. The
-// score is mass weighted by height and cannot tell a slab from a spire; these
-// can. Nothing here is fed back into fitness -- see StructureShape.hpp.
+// score cannot tell a slab from a spire; these can. The second column is the
+// champion's world, so the two columns answer "what am I looking at" and "what
+// did the winner do". Nothing here is fed back into fitness -- see
+// StructureShape.hpp.
 void SimulationUiModule::drawStructureShapes() {
     if (state_.statistics.worldShapes.empty()) {
         return;
@@ -652,19 +660,13 @@ void SimulationUiModule::drawStructureShapes() {
     const std::size_t best = std::min<std::size_t>(state_.statistics.bestWorld, worlds - 1);
 
     ImGui::SeparatorText("Shape of the last building");
-    if (ImGui::SmallButton("Look at the best world")) {
-        state_.worlds.selectedWorld = static_cast<std::uint32_t>(best);
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("world %zu", best + 1);
-
     if (!ImGui::BeginTable("structure shape", 3,
                            ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
         return;
     }
     ImGui::TableSetupColumn("");
     ImGui::TableSetupColumn("visible");
-    ImGui::TableSetupColumn("best");
+    ImGui::TableSetupColumn("champion");
     ImGui::TableHeadersRow();
     const auto row = [&](const char* label, const char* tooltip, const char* format,
                          const auto visibleValue, const auto bestValue) {
@@ -713,8 +715,8 @@ void SimulationUiModule::drawBuildOutcomes() {
 
     ImGui::SeparatorText("Why the builders stopped");
     static constexpr std::array<const char*, 9> names{
-        "Cooling",  "Unwilling",      "No facing", "Off the lattice", "Blocked",
-        "No support", "Above frontier", "In the way", "Claimed"};
+        "Cooling",    "Unwilling",  "No facing", "Off the lattice", "Blocked",
+        "No support", "In the way", "Placed",    "Lost the cell"};
     std::array<std::uint64_t, 9> total{};
     std::uint64_t attempts = 0;
     for (std::size_t world = 0; world < worlds; ++world) {
@@ -751,6 +753,26 @@ void SimulationUiModule::drawBuildOutcomes() {
     ImGui::EndTable();
     ImGui::TextDisabled("one reason per agent and tick, %llu in all",
                         static_cast<unsigned long long>(attempts));
+}
+
+// Where the champion of the last generation ran, in every world mode. Offered
+// rather than imposed, with a switch for a run being watched rather than read.
+void SimulationUiModule::drawBestWorld() {
+    if (state_.worlds.worldCount == 0) {
+        return;
+    }
+    const std::uint32_t best =
+        std::min(state_.statistics.bestWorld, state_.worlds.worldCount - 1);
+    ImGui::Text("Champion ran in world %u", best + 1);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Look at it")) {
+        state_.worlds.selectedWorld = best;
+    }
+    ImGui::Checkbox("Follow the champion", &state_.display.followBestWorld);
+    ImGui::SetItemTooltip("Move the visible world to the champion's at the end of every "
+                          "generation. Off while reading one world carefully; on while watching "
+                          "a run. The first world is not the champion's by default -- that it "
+                          "often is comes from the elite count and the group size both being 12.");
 }
 
 void SimulationUiModule::drawViewControls() {

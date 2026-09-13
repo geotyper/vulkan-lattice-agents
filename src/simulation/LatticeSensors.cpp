@@ -44,7 +44,7 @@ neuro::Inputs sampleAgentInputs(const AgentState& agent, const std::span<const f
                 kern::latticeCellIndex(x, y, z, settings.latticeWidth, settings.latticeHeight);
             const std::int32_t occupant =
                 index < occupancy.size() ? occupancy[index] : kern::LatticeNoOccupant;
-            if (settings.worldMode == WorldMode::Construction && index < structures.size() &&
+            if (worldBuilds(settings.worldMode) && index < structures.size() &&
                 structures[index] != kern::LatticeNoStructure) {
                 structure = 1.0F;
             } else if (occupant != kern::LatticeNoOccupant &&
@@ -85,9 +85,21 @@ neuro::Inputs sampleAgentInputs(const AgentState& agent, const std::span<const f
         }
         inputs[brain::brainBeaconInputIndex(3)] = supported ? 1.0F : 0.0F;
     } else {
-        const int deltaX = agent.beacon.x - agent.cell.x;
-        const int deltaY = agent.beacon.y - agent.cell.y;
-        const int deltaZ = agent.beacon.z - agent.cell.z;
+        // Beacon and harvest point at the same kind of thing -- a cell somewhere
+        // else that the trial is about -- so they are sensed by the same four
+        // numbers. Where the cell is differs: a beacon is mirrored onto the
+        // agent, and a resource is derived from the world it stands in.
+        Int4 objective = agent.beacon;
+        if (settings.worldMode == WorldMode::Harvest) {
+            const std::uint32_t hash = kern::latticeResourceHash(
+                static_cast<std::uint32_t>(agent.beacon.w), settings.beaconSeed);
+            objective.x = kern::latticeResourceX(hash, settings.latticeWidth);
+            objective.y = kern::latticeResourceY(settings.resourceHeight, settings.latticeHeight);
+            objective.z = kern::latticeResourceZ(hash, settings.latticeWidth, settings.latticeDepth);
+        }
+        const int deltaX = objective.x - agent.cell.x;
+        const int deltaY = objective.y - agent.cell.y;
+        const int deltaZ = objective.z - agent.cell.z;
         const float length = kern::latticeVectorLength(deltaX, deltaY, deltaZ);
         const std::uint32_t distance = kern::latticeStepDistance(
             static_cast<std::uint32_t>(settings.neighborhood), deltaX, deltaY, deltaZ);
@@ -96,6 +108,10 @@ neuro::Inputs sampleAgentInputs(const AgentState& agent, const std::span<const f
         inputs[brain::brainBeaconInputIndex(2)] = kern::latticeDirectionComponent(deltaZ, length);
         inputs[brain::brainBeaconInputIndex(3)] =
             kern::latticeNearness(distance, latticeMaximumDistance(settings));
+        if (settings.worldMode == WorldMode::Harvest) {
+            inputs[brain::brainBeaconInputIndex(4)] = agent.signal.z <= 0.0F ? 1.0F : 0.0F;
+            inputs[brain::brainBeaconInputIndex(5)] = std::clamp(agent.memory.w, 0.0F, 1.0F);
+        }
     }
 
     // The heading, as the unit step it last took. An agent that has not moved
