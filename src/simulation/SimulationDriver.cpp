@@ -125,10 +125,14 @@ void SimulationDriver::createStepResources() {
     claims_.create(physicalDevice_, device_, {budget, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT});
     structures_.create(physicalDevice_, device_,
                        {budget, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
-    const VkDeviceSize levelCountBytes =
-        static_cast<VkDeviceSize>(agentCount) * latticeMaximumExtent * sizeof(std::uint32_t);
-    structureLevelCounts_.create(physicalDevice_, device_,
-                                 {levelCountBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
+    // One row per agent is far more rows than there are worlds, and sizing it
+    // by the population is what lets the world layout be renegotiated without
+    // reallocating this buffer beside it.
+    const VkDeviceSize buildOutcomeBytes = static_cast<VkDeviceSize>(agentCount) *
+                                           lattice::kernel::LatticeBuildOutcomeCount *
+                                           sizeof(std::uint32_t);
+    buildOutcomes_.create(physicalDevice_, device_,
+                          {buildOutcomeBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
     const VkDeviceSize trailHistoryBytes =
         static_cast<VkDeviceSize>(agentCount) * trailHistoryCapacity * sizeof(Int4);
     trailHistory_.create(
@@ -162,8 +166,8 @@ void SimulationDriver::createStepResources() {
                          stepParameterBuffer_.size())
             .writeBuffer(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, structures_.buffer(), 0,
                          structures_.size())
-            .writeBuffer(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, structureLevelCounts_.buffer(), 0,
-                         structureLevelCounts_.size())
+            .writeBuffer(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buildOutcomes_.buffer(), 0,
+                         buildOutcomes_.size())
             .update(device_, stepDescriptorSets_[readIndex]);
 
         // Reads and writes the record the step pass has just produced: this pass
@@ -179,8 +183,6 @@ void SimulationDriver::createStepResources() {
                          stepParameterBuffer_.size())
             .writeBuffer(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, structures_.buffer(), 0,
                          structures_.size())
-            .writeBuffer(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, structureLevelCounts_.buffer(), 0,
-                         structureLevelCounts_.size())
             .update(device_, resolveDescriptorSets_[readIndex]);
 
         // `writeBuffer` is the resolved buffer for this read index. The agent
@@ -290,7 +292,7 @@ void SimulationDriver::destroyResources() {
     resolveDescriptorSets_ = {};
     stepDescriptorSets_ = {};
     trailHistory_.reset();
-    structureLevelCounts_.reset();
+    buildOutcomes_.reset();
     structures_.reset();
     claims_.reset();
     occupancy_.reset();
@@ -326,24 +328,13 @@ void SimulationDriver::uploadPopulation(const bool preserveStructures) {
         structures_.write(structureStaging_.data(),
                           structureStaging_.size() * sizeof(std::int32_t));
     }
-    structureLevelCountStaging_.assign(
-        static_cast<std::size_t>(state_.worlds.worldCount) * state_.settings.latticeHeight, 0U);
-    for (std::size_t absolute = 0; absolute < structureStaging_.size(); ++absolute) {
-        if (structureStaging_[absolute] == lattice::kernel::LatticeNoStructure) {
-            continue;
-        }
-        const std::uint32_t world =
-            static_cast<std::uint32_t>(absolute / state_.lattice.cellsPerWorld);
-        const std::uint32_t local =
-            static_cast<std::uint32_t>(absolute % state_.lattice.cellsPerWorld);
-        const std::uint32_t y =
-            (local / state_.settings.latticeWidth) % state_.settings.latticeHeight;
-        ++structureLevelCountStaging_[static_cast<std::size_t>(world) *
-                                          state_.settings.latticeHeight +
-                                      y];
-    }
-    structureLevelCounts_.write(structureLevelCountStaging_.data(),
-                                structureLevelCountStaging_.size() * sizeof(std::uint32_t));
+    // A fresh count for a fresh generation: what the previous population was
+    // refused for says nothing about this one.
+    buildOutcomeStaging_.assign(static_cast<std::size_t>(state_.worlds.worldCount) *
+                                    lattice::kernel::LatticeBuildOutcomeCount,
+                                0U);
+    buildOutcomes_.write(buildOutcomeStaging_.data(),
+                         buildOutcomeStaging_.size() * sizeof(std::uint32_t));
     hostUploadPending_ = true;
     // Histories are derived pictures, not snapshot state. A fresh generation or
     // a restored population starts with no breadcrumbs and fills them from its
@@ -512,6 +503,13 @@ GenerationSummary SimulationDriver::finishGeneration() {
                                      state_.worlds.agentsPerWorld, config_.trialsPerGenome);
             perimeterTicks[world] += agents_[agent].metrics.w;
         }
+        buildOutcomeStaging_.assign(static_cast<std::size_t>(state_.worlds.worldCount) *
+                                        lattice::kernel::LatticeBuildOutcomeCount,
+                                    0U);
+        buildOutcomes_.read(buildOutcomeStaging_.data(),
+                            buildOutcomeStaging_.size() * sizeof(std::uint32_t));
+        state_.statistics.buildOutcomes = buildOutcomeStaging_;
+
         // What each world actually looks like. Nothing below reads it back into
         // fitness -- it is reported so that two runs with the same score can be
         // told apart, which the score alone cannot do.
@@ -548,6 +546,7 @@ GenerationSummary SimulationDriver::finishGeneration() {
                              std::max(maximumPerWorld, 1.0F));
     } else {
         state_.statistics.worldShapes.clear();
+        state_.statistics.buildOutcomes.clear();
         state_.statistics.bestWorld = 0;
         for (std::size_t genome = 0; genome < fitness.size(); ++genome) {
             for (std::size_t trial = 0; trial < config_.trialsPerGenome; ++trial) {
@@ -785,7 +784,7 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
                          VK_ACCESS_2_HOST_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                          VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
                              VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-        cmdBufferBarrier(commands, structureLevelCounts_.buffer(), VK_PIPELINE_STAGE_2_HOST_BIT,
+        cmdBufferBarrier(commands, buildOutcomes_.buffer(), VK_PIPELINE_STAGE_2_HOST_BIT,
                          VK_ACCESS_2_HOST_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                          VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
                              VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
@@ -810,13 +809,14 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
                                                  claims_.size(),
                                                  stepParameterBuffer_.size(),
                                                  structures_.size(),
-                                                 structureLevelCounts_.size()};
+                                                 buildOutcomes_.size()};
     const DispatchSize stepGroups = checkedDispatchSize(
         physicalDevice_,
         {{state_.agents.agentCount, 1, 1}, {64, 1, 1}, sizeof(std::uint32_t), stepRanges});
-    const std::array<VkDeviceSize, 6> resolveRanges{
-        agentBuffers_.write().size(), occupancy_.size(),  claims_.size(),
-        stepParameterBuffer_.size(),  structures_.size(), structureLevelCounts_.size()};
+    const std::array<VkDeviceSize, 5> resolveRanges{agentBuffers_.write().size(),
+                                                    occupancy_.size(), claims_.size(),
+                                                    stepParameterBuffer_.size(),
+                                                    structures_.size()};
     const DispatchSize resolveGroups = checkedDispatchSize(
         physicalDevice_,
         {{state_.agents.agentCount, 1, 1}, {64, 1, 1}, sizeof(std::uint32_t), resolveRanges});
@@ -869,7 +869,6 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
         cmdComputeWriteToComputeRead(commands, agentBuffers_.write().buffer());
         cmdComputeWriteToComputeRead(commands, occupancy_.buffer());
         cmdComputeWriteToComputeRead(commands, structures_.buffer());
-        cmdComputeWriteToComputeRead(commands, structureLevelCounts_.buffer());
 
         agentBuffers_.swap();
         state_.agents.currentIndex = agentBuffers_.readIndex();

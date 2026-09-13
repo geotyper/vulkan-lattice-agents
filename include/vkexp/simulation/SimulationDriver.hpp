@@ -136,9 +136,11 @@ private:
     BufferResource occupancy_;
     BufferResource claims_;
     BufferResource structures_;
-    // One counter per world and y course. Derived from structures on host
-    // upload, then incremented atomically with each successful GPU placement.
-    BufferResource structureLevelCounts_;
+    // One counter per world and per reason a build attempt can end, cleared at
+    // the top of a generation and read back at the end of it. Nothing in the
+    // simulation reads it: it exists because the block count says only "few"
+    // and never says what refused.
+    BufferResource buildOutcomes_;
     // Display-only breadcrumb rings. Captured after resolve so a marker is the
     // cell the agent actually won, never the cell it merely requested.
     BufferResource trailHistory_;
@@ -158,7 +160,7 @@ private:
     std::vector<AgentState> agents_;
     std::vector<std::int32_t> occupancyStaging_;
     std::vector<std::int32_t> structureStaging_;
-    std::vector<std::uint32_t> structureLevelCountStaging_;
+    std::vector<std::uint32_t> buildOutcomeStaging_;
     std::vector<GpuStepParameters> stepParameterStaging_;
     bool hostUploadPending_{};
     bool trailClearPending_{};

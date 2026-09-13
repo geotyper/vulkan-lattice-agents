@@ -489,7 +489,8 @@ int run(const Options& options) {
             // a CSV that has to be re-run to answer the question.
             *csv << "generation,lattice,seed,best,median,mean,arrival_ratio,"
                     "blocks,footprint,peak,mean_height,height_spread,compactness,overhangs,"
-                    "roofed\n";
+                    "roofed,cooling,unwilling,no_facing,off_lattice,blocked,unsupported,"
+                    "above_frontier,in_the_way,claimed\n";
         }
     }
 
@@ -576,14 +577,30 @@ int run(const Options& options) {
                  << state.statistics.meanFitness << ',' << state.statistics.arrivalRatio;
             const auto& shapes = state.statistics.worldShapes;
             if (shapes.empty()) {
-                *csv << ",,,,,,,\n";
+                *csv << ",,,,,,,";
             } else {
                 const vkexp::StructureShape& shape =
                     shapes[std::min<std::size_t>(state.statistics.bestWorld, shapes.size() - 1)];
                 *csv << ',' << shape.blocks << ',' << shape.footprint << ',' << shape.peak << ','
                      << shape.meanHeight << ',' << shape.heightSpread << ',' << shape.compactness
-                     << ',' << shape.overhangs << ',' << shape.enclosed << '\n';
+                     << ',' << shape.overhangs << ',' << shape.enclosed;
             }
+            // Summed over worlds, unlike the shape beside it: a refusal is a
+            // statement about the rules, and the rules are the same everywhere.
+            const auto reasons =
+                static_cast<std::size_t>(vkexp::lattice::kernel::LatticeBuildOutcomeCount);
+            for (std::size_t reason = 0; reason < reasons; ++reason) {
+                std::uint64_t total = 0;
+                for (std::size_t at = reason; at < state.statistics.buildOutcomes.size();
+                     at += reasons) {
+                    total += state.statistics.buildOutcomes[at];
+                }
+                *csv << ',';
+                if (!state.statistics.buildOutcomes.empty()) {
+                    *csv << total;
+                }
+            }
+            *csv << '\n';
         }
     }
     if (csv) {

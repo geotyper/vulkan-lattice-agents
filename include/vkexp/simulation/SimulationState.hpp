@@ -84,6 +84,10 @@ struct SimulationStatistics {
     // empty until the first generation finishes.
     std::vector<StructureShape> worldShapes;
     std::uint32_t bestWorld{};
+    // Construction mode: worldCount * LatticeBuildOutcomeCount counts of why
+    // each build attempt ended, over the generation that just finished. Says
+    // what the block count cannot: not how few blocks, but what refused them.
+    std::vector<std::uint32_t> buildOutcomes;
 };
 
 struct EvolutionHistory {

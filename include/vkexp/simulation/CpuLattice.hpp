@@ -31,6 +31,10 @@ struct LatticePopulation {
     std::uint32_t trialsPerGenome{1};
     // Construction blocks, zero for empty. Empty in beacon-only references.
     std::span<std::int32_t> structures;
+    // worldCount * LatticeBuildOutcomeCount, accumulated rather than cleared.
+    // Optional: leave it empty and the step records nothing, which is what every
+    // caller that is not diagnosing the builders wants.
+    std::span<std::uint32_t> buildOutcomes;
 };
 
 // One step of a whole population: sense, decide and bid; then resolve and move.

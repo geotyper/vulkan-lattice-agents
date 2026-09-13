@@ -43,6 +43,26 @@ const uint LatticeWorldCount = 2u;
 
 const int LatticeNoStructure = 0;
 
+// Why a build attempt did or did not become a block, counted per world over a
+// generation. Exactly one of these is recorded per agent per step in the
+// construction world, so the nine of them sum to agents times steps and the
+// shape of that sum says what is actually stopping the builders -- which the
+// block count alone cannot, since it only ever says "few".
+//
+// The order is the order the decide pass tests them in, and it matters: an
+// attempt that fails two tests is filed under the first. Reading the list top
+// to bottom is reading the sequence an agent has to get through.
+const uint LatticeBuildCooling = 0u;    // still inside the build interval
+const uint LatticeBuildUnwilling = 1u;  // the build output was under threshold
+const uint LatticeBuildNoFacing = 2u;   // no cardinal heading to build against
+const uint LatticeBuildOffLattice = 3u; // the face points out of the world
+const uint LatticeBuildBlocked = 4u;    // a block already stands there
+const uint LatticeBuildUnsupported = 5u; // nothing under it, and no side support
+const uint LatticeBuildAboveFrontier = 6u; // too far above the local foundation
+const uint LatticeBuildInTheWay = 7u;   // an agent is standing in the cell
+const uint LatticeBuildClaimed = 8u;    // bid placed; contention may still lose it
+const uint LatticeBuildOutcomeCount = 9u;
+
 // An empty cell, and a cell nobody has bid for. Two sentinels and not one: the
 // occupancy grid stores agent indices and -1 for empty, while the bid grid is
 // resolved by a minimum, so its empty value has to be larger than every agent

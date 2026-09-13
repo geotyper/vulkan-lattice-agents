@@ -219,10 +219,11 @@ public:
                        {gridBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
         structures_.create(context.physicalDevice(), context.device(),
                            {gridBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
-        const VkDeviceSize levelBytes = static_cast<VkDeviceSize>(layout.worldCount()) *
-                                        vkexp::latticeMaximumExtent * sizeof(std::uint32_t);
-        structureLevelCounts_.create(context.physicalDevice(), context.device(),
-                                     {levelBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
+        const VkDeviceSize outcomeBytes =
+            static_cast<VkDeviceSize>(layout.worldCount()) *
+            vkexp::lattice::kernel::LatticeBuildOutcomeCount * sizeof(std::uint32_t);
+        buildOutcomes_.create(context.physicalDevice(), context.device(),
+                              {outcomeBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
         // Two slots, and every dispatch below reads the second one. A driver
         // batches many steps into one submission and indexes this buffer by the
         // step, so slot zero is the only slot a harness that records one step
@@ -267,8 +268,8 @@ public:
                              parameters_.size())
                 .writeBuffer(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, structures_.buffer(), 0,
                              structures_.size())
-                .writeBuffer(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             structureLevelCounts_.buffer(), 0, structureLevelCounts_.size())
+                .writeBuffer(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buildOutcomes_.buffer(), 0,
+                             buildOutcomes_.size())
                 .update(context.device(), stepSets_[readIndex]);
 
             resolveSets_[readIndex] = descriptors_.allocate(resolveLayout_.get());
@@ -282,8 +283,6 @@ public:
                              parameters_.size())
                 .writeBuffer(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, structures_.buffer(), 0,
                              structures_.size())
-                .writeBuffer(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             structureLevelCounts_.buffer(), 0, structureLevelCounts_.size())
                 .update(context.device(), resolveSets_[readIndex]);
         }
         clearSet_ = descriptors_.allocate(clearLayout_.get());
@@ -319,9 +318,11 @@ public:
         occupancy_.write(occupancy.data(), occupancy.size_bytes());
         const std::vector<std::int32_t> empty(cellCount_, vkexp::lattice::kernel::LatticeNoStructure);
         structures_.write(empty.data(), empty.size() * sizeof(std::int32_t));
-        const std::vector<std::uint32_t> levels(
-            static_cast<std::size_t>(layout_.worldCount()) * vkexp::latticeMaximumExtent, 0U);
-        structureLevelCounts_.write(levels.data(), levels.size() * sizeof(std::uint32_t));
+        const std::vector<std::uint32_t> outcomes(
+            static_cast<std::size_t>(layout_.worldCount()) *
+                vkexp::lattice::kernel::LatticeBuildOutcomeCount,
+            0U);
+        buildOutcomes_.write(outcomes.data(), outcomes.size() * sizeof(std::uint32_t));
     }
 
     void step() {
@@ -396,6 +397,13 @@ public:
         return result;
     }
 
+    [[nodiscard]] std::vector<std::uint32_t> readBuildOutcomes() {
+        std::vector<std::uint32_t> result(static_cast<std::size_t>(layout_.worldCount()) *
+                                          vkexp::lattice::kernel::LatticeBuildOutcomeCount);
+        buildOutcomes_.read(result.data(), result.size() * sizeof(std::uint32_t));
+        return result;
+    }
+
 private:
     void createLayout(const std::uint32_t bindingCount, vkexp::UniqueDescriptorSetLayout& layout) {
         std::vector<VkDescriptorSetLayoutBinding> bindings(bindingCount);
@@ -428,7 +436,7 @@ private:
     // rather than an unused slot, and the parity case that follows would be
     // measuring whatever the last test left in memory.
     vkexp::BufferResource structures_;
-    vkexp::BufferResource structureLevelCounts_;
+    vkexp::BufferResource buildOutcomes_;
     vkexp::BufferResource parameters_;
     vkexp::UniqueDescriptorSetLayout stepLayout_;
     vkexp::UniqueDescriptorSetLayout resolveLayout_;
@@ -737,14 +745,25 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context) {
     std::vector<std::int32_t> occupancy(claims.size());
     vkexp::lattice::buildOccupancy(expected, settings, layout, occupancy);
 
+    // upload() clears the outcome counters, so both sides are compared one step
+    // at a time rather than as a running total -- which is the stronger check:
+    // two attributions that differ and then differ back would cancel in a sum.
+    std::vector<std::uint32_t> outcomes(
+        static_cast<std::size_t>(layout.worldCount()) *
+        vkexp::lattice::kernel::LatticeBuildOutcomeCount);
+    static constexpr std::array<const char*, 9> reasonNames{
+        "cooling",   "unwilling",      "no facing",  "off the lattice", "blocked",
+        "unsupported", "above frontier", "in the way", "claimed"};
+
     LatticeHarness harness{context, settings, layout, weights};
     for (std::uint32_t step = 0; step < 48; ++step) {
         harness.upload(expected, occupancy);
         harness.uploadStructures(structures);
         harness.step();
+        std::fill(outcomes.begin(), outcomes.end(), 0U);
         vkexp::stepLatticeCpu({expected, occupancy, claims, weights,
                                static_cast<std::uint32_t>(brain.weightCount()),
-                               layout.groupSize(), layout.trialsPerGenome, structures},
+                               layout.groupSize(), layout.trialsPerGenome, structures, outcomes},
                               settings);
         const std::vector<vkexp::AgentState> actual = harness.readAgents();
         const std::string where = "Construction step " + std::to_string(step);
@@ -759,6 +778,25 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context) {
                         std::to_string(structures[cell]) + " on the host and " +
                         std::to_string(device[cell]) + " on the device");
         }
+        // The reasons, not only the results. Two implementations can refuse the
+        // same attempt for different reasons and agree on every block, and then
+        // the counters that are supposed to explain the builders explain the
+        // wrong thing.
+        const std::vector<std::uint32_t> deviceOutcomes = harness.readBuildOutcomes();
+        for (std::size_t at = 0; at < outcomes.size(); ++at) {
+            require(outcomes[at] == deviceOutcomes[at],
+                    where + ": " + reasonNames[at % reasonNames.size()] + " counted " +
+                        std::to_string(outcomes[at]) + " on the host and " +
+                        std::to_string(deviceOutcomes[at]) + " on the device");
+        }
+        std::uint32_t attempts = 0;
+        for (const std::uint32_t reason : outcomes) {
+            attempts += reason;
+        }
+        require(attempts == expected.size(),
+                where + ": " + std::to_string(attempts) + " outcomes recorded for " +
+                    std::to_string(expected.size()) +
+                    " agents -- every agent gets exactly one reason per step");
     }
 
     const auto placed = std::count_if(structures.begin(), structures.end(), [](const std::int32_t v) {

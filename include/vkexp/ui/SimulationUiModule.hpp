@@ -35,6 +35,7 @@ private:
     // image, with no selectors or menus taking space from the lattice.
     void drawViewControls();
     void drawStructureShapes();
+    void drawBuildOutcomes();
 
     SimulationState& state_;
     ImGuiModule& imgui_;

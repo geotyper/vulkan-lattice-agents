@@ -36,9 +36,6 @@ layout(std430, set = 0, binding = 3) readonly buffer StepParameterBlocks {
 layout(std430, set = 0, binding = 4) buffer Structures {
     int structures[];
 };
-layout(std430, set = 0, binding = 5) buffer StructureLevelCounts {
-    uint structureLevelCounts[];
-};
 
 layout(push_constant) uniform StepSelector {
     uint stepIndex;
@@ -94,9 +91,6 @@ void main() {
         if (claims[worldBase + target] == latticeBuildClaim(id, params.agentCount) &&
             structures[worldBase + target] == LatticeNoStructure) {
             structures[worldBase + target] = int(id) + 1;
-            atomicAdd(structureLevelCounts[uint(agent.beacon.w) * params.latticeHeight +
-                                           uint(agent.beacon.y)],
-                      1u);
             agent.signal.z = float(params.buildIntervalTicks);
             agent.signal.w = 1.0;
             agent.metrics.y += 1.0;

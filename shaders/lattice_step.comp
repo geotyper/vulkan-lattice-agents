@@ -28,9 +28,10 @@ layout(std430, set = 0, binding = 5) readonly buffer StepParameterBlocks {
     StepParameters stepParameters[];
 };
 layout(std430, set = 0, binding = 6) readonly buffer Structures { int structures[]; };
-layout(std430, set = 0, binding = 7) readonly buffer StructureLevelCounts {
-    uint structureLevelCounts[];
-};
+// One counter per world per reason a build attempt can end. Written and never
+// read by any pass: it is diagnosis, not state, and nothing the simulation does
+// depends on it.
+layout(std430, set = 0, binding = 7) buffer BuildOutcomes { uint buildOutcomes[]; };
 
 layout(push_constant) uniform StepSelector { uint stepIndex; }
 selector;
@@ -345,14 +346,27 @@ void main() {
         }
 
         agent.beacon.xyz = ivec3(-1);
-        if (agent.signal.z <= 0.0 && agent.signal.y > params.buildThreshold) {
+        // One outcome per agent per step, filed under the first test the attempt
+        // fails. The chain below is written as a sequence of early exits rather
+        // than one condition precisely so that there is somewhere to record it;
+        // mirrored by the same chain in vkexp::stepLatticeCpu.
+        uint outcome = LatticeBuildClaimed;
+        if (agent.signal.z > 0.0) {
+            outcome = LatticeBuildCooling;
+        } else if (agent.signal.y <= params.buildThreshold) {
+            outcome = LatticeBuildUnwilling;
+        } else {
             int faceX;
             int faceZ;
             constructionFacing(agent, faceX, faceZ);
             const int buildX = agent.cell.x + faceX;
             const int buildZ = agent.cell.z + faceZ;
-            if ((faceX != 0 || faceZ != 0) && buildX >= 0 && buildZ >= 0 &&
-                buildX < int(params.latticeWidth) && buildZ < int(params.latticeDepth)) {
+            if (faceX == 0 && faceZ == 0) {
+                outcome = LatticeBuildNoFacing;
+            } else if (buildX < 0 || buildZ < 0 || buildX >= int(params.latticeWidth) ||
+                       buildZ >= int(params.latticeDepth)) {
+                outcome = LatticeBuildOffLattice;
+            } else {
                 // Normal placement is at the agent's height. With side support
                 // enabled, an unsupported target falls back one level to the
                 // front of its feet: this is how an agent standing on a column
@@ -365,18 +379,25 @@ void main() {
                 }
                 const uint target = latticeCellIndex(buildX, buildY, buildZ, params.latticeWidth,
                                                      params.latticeHeight);
-                const bool empty = structures[worldBase + target] == LatticeNoStructure;
                 const uint foundation = constructionLocalFoundation(worldBase, buildX, buildY,
                                                                     buildZ);
-                const bool belowFrontier =
-                    uint(buildY) < foundation + max(params.constructionHeightLead, 1u);
-                if (empty && supported && belowFrontier &&
-                    occupancy[worldBase + target] == LatticeNoOccupant) {
+                if (structures[worldBase + target] != LatticeNoStructure) {
+                    outcome = LatticeBuildBlocked;
+                } else if (!supported) {
+                    outcome = LatticeBuildUnsupported;
+                } else if (uint(buildY) >=
+                           foundation + max(params.constructionHeightLead, 1u)) {
+                    outcome = LatticeBuildAboveFrontier;
+                } else if (occupancy[worldBase + target] != LatticeNoOccupant) {
+                    outcome = LatticeBuildInTheWay;
+                } else {
                     agent.beacon.xyz = ivec3(buildX, buildY, buildZ);
-                    atomicMin(claims[worldBase + target], latticeBuildClaim(id, params.agentCount));
+                    atomicMin(claims[worldBase + target],
+                              latticeBuildClaim(id, params.agentCount));
                 }
             }
         }
+        atomicAdd(buildOutcomes[world * LatticeBuildOutcomeCount + outcome], 1u);
     } else if (stepX != 0 || stepY != 0 || stepZ != 0) {
         const int wantedX = agent.cell.x + stepX;
         const int wantedY = agent.cell.y + stepY;

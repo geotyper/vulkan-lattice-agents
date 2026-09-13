@@ -438,6 +438,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     if (state_.settings.worldMode == WorldMode::Construction) {
         ImGui::Text("Mean weighted fill: %.2f%%", state_.statistics.arrivalRatio * 100.0F);
         drawStructureShapes();
+        drawBuildOutcomes();
     } else {
         ImGui::Text("Reached the beacon: %.1f%%", state_.statistics.arrivalRatio * 100.0F);
     }
@@ -697,6 +698,59 @@ void SimulationUiModule::drawStructureShapes() {
                   "courses has none.",
         "%u", here.enclosed, top.enclosed);
     ImGui::EndTable();
+}
+
+// Why the build attempts ended. Exactly one reason is recorded per agent per
+// step, so these sum to agents times steps and read as a funnel: everything
+// that did not become a block was stopped somewhere, and this says where.
+void SimulationUiModule::drawBuildOutcomes() {
+    const auto count = static_cast<std::size_t>(vkexp::lattice::kernel::LatticeBuildOutcomeCount);
+    if (state_.statistics.buildOutcomes.size() < count) {
+        return;
+    }
+    const std::size_t worlds = state_.statistics.buildOutcomes.size() / count;
+    const std::size_t visible = std::min<std::size_t>(state_.worlds.selectedWorld, worlds - 1);
+
+    ImGui::SeparatorText("Why the builders stopped");
+    static constexpr std::array<const char*, 9> names{
+        "Cooling",  "Unwilling",      "No facing", "Off the lattice", "Blocked",
+        "No support", "Above frontier", "In the way", "Claimed"};
+    std::array<std::uint64_t, 9> total{};
+    std::uint64_t attempts = 0;
+    for (std::size_t world = 0; world < worlds; ++world) {
+        for (std::size_t reason = 0; reason < count; ++reason) {
+            total[reason] += state_.statistics.buildOutcomes[world * count + reason];
+        }
+    }
+    for (const std::uint64_t reason : total) {
+        attempts += reason;
+    }
+    if (attempts == 0) {
+        ImGui::TextDisabled("no build attempts recorded");
+        return;
+    }
+
+    if (!ImGui::BeginTable("build outcomes", 3,
+                           ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+        return;
+    }
+    ImGui::TableSetupColumn("");
+    ImGui::TableSetupColumn("visible");
+    ImGui::TableSetupColumn("all worlds");
+    ImGui::TableHeadersRow();
+    for (std::size_t reason = 0; reason < count; ++reason) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(names[reason]);
+        ImGui::TableNextColumn();
+        ImGui::Text("%u", state_.statistics.buildOutcomes[visible * count + reason]);
+        ImGui::TableNextColumn();
+        ImGui::Text("%llu  %.1f%%", static_cast<unsigned long long>(total[reason]),
+                    100.0 * static_cast<double>(total[reason]) / static_cast<double>(attempts));
+    }
+    ImGui::EndTable();
+    ImGui::TextDisabled("one reason per agent and tick, %llu in all",
+                        static_cast<unsigned long long>(attempts));
 }
 
 void SimulationUiModule::drawViewControls() {
