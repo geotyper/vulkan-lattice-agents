@@ -134,10 +134,11 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
 
     ImGui::SeparatorText("The lattice");
     int worldMode = static_cast<int>(state_.settings.worldMode);
-    constexpr const char* worldModes[] = {"Beacon", "Construction", "Harvest"};
+    constexpr const char* worldModes[] = {"Beacon", "Construction", "Harvest", "Chasm"};
     static_assert(std::size(worldModes) == worldModeCount);
     if (ImGui::Combo("World", &worldMode, worldModes, static_cast<int>(worldModeCount))) {
         state_.settings.worldMode = static_cast<WorldMode>(worldMode);
+        applyWorldDefaults(state_.settings);
         state_.controls.resetRequested = true;
     }
     ImGui::SetItemTooltip("Construction starts every agent on the floor, enables supported blocks, "
@@ -222,32 +223,52 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                           "whatever it thinks, and near one it has to commit.");
 
     if (worldBuilds(state_.settings.worldMode)) {
-        if (state_.settings.worldMode == WorldMode::Harvest) {
-            int resourceHeight = static_cast<int>(state_.settings.resourceHeight);
-            if (ImGui::SliderInt("Resource height", &resourceHeight, 1,
-                                 static_cast<int>(state_.settings.latticeHeight) - 1, "%d levels")) {
-                state_.settings.resourceHeight = static_cast<std::uint32_t>(resourceHeight);
+        if (worldHarvests(state_.settings.worldMode)) {
+            const int ceiling = std::max(static_cast<int>(state_.settings.latticeHeight), 2) - 1;
+            std::array<int, 2> band{static_cast<int>(state_.settings.resourceHeightLow),
+                                    static_cast<int>(state_.settings.resourceHeightHigh)};
+            if (ImGui::SliderInt2("Resource band", band.data(), 1, ceiling, "%d levels")) {
+                state_.settings.resourceHeightLow =
+                    static_cast<std::uint32_t>(std::clamp(band[0], 1, ceiling));
+                state_.settings.resourceHeightHigh = static_cast<std::uint32_t>(
+                    std::clamp(band[1], static_cast<int>(state_.settings.resourceHeightLow),
+                               ceiling));
             }
-            ImGui::SetItemTooltip("How far above the floor the resource sits. Nobody leaves the "
-                                  "floor without a structure to climb, so this is how much has to "
-                                  "be built before anything is collected at all.");
+            ImGui::SetItemTooltip("The band of heights the resource hangs in, drawn per world. A "
+                                  "band and not a height: a fixed height is a number a genome can "
+                                  "learn to count to rather than a place it has to find.");
+        }
+        if (state_.settings.worldMode == WorldMode::Chasm) {
+            int ground = static_cast<int>(latticeGroundDepth(state_.settings));
+            if (ImGui::SliderInt("Ground rows", &ground, 1,
+                                 static_cast<int>(state_.settings.latticeDepth) - 1, "%d of %d")) {
+                state_.settings.chasmGroundDepth = static_cast<std::uint32_t>(ground);
+            }
+            ImGui::SetItemTooltip("How much of the floor is solid. Everything beyond is open air "
+                                  "all the way down, and the resource hangs over it -- so the only "
+                                  "route is one the group builds out from the edge.");
+            ImGui::TextDisabled("Side support is forced on: without a cantilever the far half "
+                                "cannot be reached at all.");
         }
         int buildInterval = static_cast<int>(state_.settings.buildIntervalTicks);
         if (ImGui::SliderInt("Build interval", &buildInterval, 1, 120, "%d ticks")) {
             state_.settings.buildIntervalTicks = static_cast<std::uint32_t>(buildInterval);
         }
         ImGui::SliderFloat("Build threshold", &state_.settings.buildThreshold, 0.0F, 0.95F, "%.2f");
-        bool allowSideSupport = state_.settings.allowSideSupportedBlocks != 0U;
+        bool allowSideSupport = state_.settings.allowSideSupportedBlocks != 0U ||
+                                state_.settings.worldMode == WorldMode::Chasm;
+        ImGui::BeginDisabled(state_.settings.worldMode == WorldMode::Chasm);
         if (ImGui::Checkbox("Side-supported bridges", &allowSideSupport)) {
             state_.settings.allowSideSupportedBlocks = allowSideSupport ? 1U : 0U;
         }
         ImGui::SetItemTooltip("Allow a block to hang from a cardinal x/z face. Diagonal edge or "
                               "corner contact never supports it.");
+        ImGui::EndDisabled();
         ImGui::SliderFloat("Boundary penalty", &state_.settings.fitness.boundaryPenalty, 0.0F,
                            0.05F, "%.4f");
         ImGui::SetItemTooltip("Group charge per agent and tick spent on the x/z perimeter. The "
                               "height ceiling is not penalised.");
-        if (state_.settings.worldMode == WorldMode::Harvest) {
+        if (worldHarvests(state_.settings.worldMode)) {
             ImGui::TextWrapped(
                 "Fitness is loads delivered, plus how near anyone got to the resource. Blocks "
                 "score nothing: a block is time spent, and spending it well is the problem. A "
@@ -432,7 +453,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::Text("Median fitness: %.4f", state_.statistics.medianFitness);
     ImGui::Text("Mean fitness:   %.4f", state_.statistics.meanFitness);
     drawBestWorld();
-    if (state_.settings.worldMode == WorldMode::Harvest) {
+    if (worldHarvests(state_.settings.worldMode)) {
         ImGui::Text("Delivered a load: %.1f%% of agents", state_.statistics.arrivalRatio * 100.0F);
         drawStructureShapes();
         drawBuildOutcomes();

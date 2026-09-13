@@ -34,25 +34,63 @@ const uint LatticeNeighborhoodFaces = 0u;
 const uint LatticeNeighborhoodMoore = 1u;
 const uint LatticeNeighborhoodCount = 2u;
 
-// Three tasks share the lattice machinery. The navigation baseline follows a
+// Four tasks share the lattice machinery. The navigation baseline follows a
 // beacon; construction replaces it with a persistent field of supported blocks
 // and constrains agents to surfaces and climbable faces; harvest keeps every one
 // of construction's rules and moves the reward off the building and onto
-// something only a building can reach.
+// something only a building can reach; the chasm takes away half the ground and
+// hangs the resource over the missing half, so the only route to it is one the
+// group builds out of nothing.
 const uint LatticeWorldBeacon = 0u;
 const uint LatticeWorldConstruction = 1u;
 const uint LatticeWorldHarvest = 2u;
-const uint LatticeWorldCount = 3u;
+const uint LatticeWorldChasm = 3u;
+const uint LatticeWorldCount = 4u;
 
 // Whether a world has a block field and the movement rules that go with it.
 // Written once because it is asked in seven places across two languages, and a
 // world mode that means "you may build" must not be a list somebody extends in
 // six of them.
 VKEXP_LATTICE_FN bool latticeWorldBuilds(uint worldMode) {
-    return worldMode == LatticeWorldConstruction || worldMode == LatticeWorldHarvest;
+    return worldMode == LatticeWorldConstruction || worldMode == LatticeWorldHarvest ||
+           worldMode == LatticeWorldChasm;
+}
+
+// Whether the reward is a load fetched from a resource and carried back down.
+// The chasm differs from harvest in where the ground is and where the resource
+// hangs, and in nothing else, so everything about picking up and delivering is
+// asked through this rather than duplicated.
+VKEXP_LATTICE_FN bool latticeWorldHarvests(uint worldMode) {
+    return worldMode == LatticeWorldHarvest || worldMode == LatticeWorldChasm;
 }
 
 const int LatticeNoStructure = 0;
+
+// The ground, stored as blocks rather than assumed. It used to be assumed: both
+// support rules answered "yes" for anything at height zero, so the floor was
+// solid everywhere and a hole in it was inexpressible. Worse, it would have been
+// invisible -- an empty cell at height zero and a cell over a drop read
+// identically to a sensor, which is the same mistake as a wall and a block
+// sharing a channel.
+//
+// So the floor is a course of bedrock in the block field, and a chasm is where
+// that course is missing. No new rule, no new buffer, no new sensor: the drop is
+// visible because bedrock is visible, and support means what it says.
+//
+// Negative because a placed block stores its builder's index plus one, so
+// everything positive is already spoken for and fitness, the shape descriptors
+// and the renderer can all tell terrain from work by its sign.
+const int LatticeBedrock = -1;
+
+VKEXP_LATTICE_FN bool latticeIsBedrock(int cell) { return cell < LatticeNoStructure; }
+
+// Where the ground stops. Solid for z below this and open beyond it, which makes
+// the near half a place to stand and the far half a place that has to be built
+// over. A depth equal to the lattice's is a world with no chasm at all, which is
+// how the other building worlds ask for their floor.
+VKEXP_LATTICE_FN bool latticeGroundColumn(int z, uint groundDepth) {
+    return z >= 0 && uint(z) < groundDepth;
+}
 
 // --- placement ---------------------------------------------------------------
 
@@ -89,16 +127,31 @@ VKEXP_LATTICE_FN int latticeResourceX(uint hash, uint width) {
     return int(hash % width);
 }
 
-VKEXP_LATTICE_FN int latticeResourceZ(uint hash, uint width, uint depth) {
-    return int((hash / width) % depth);
+// Over the open half when there is one, and anywhere on the floor plan when
+// there is not. A resource standing over ground the group can walk to is a
+// resource it can reach by climbing; the point of the chasm is that it cannot.
+VKEXP_LATTICE_FN int latticeResourceZ(uint hash, uint width, uint depth, uint groundDepth) {
+    const uint open = groundDepth < depth ? depth - groundDepth : depth;
+    const uint first = groundDepth < depth ? groundDepth : 0u;
+    return int(first + (hash / width) % open);
 }
 
-// Clamped to the box rather than wrapped: a resource asked for above the ceiling
-// is a setting to correct, and wrapping it to somewhere near the floor would
-// hide that by making the world quietly easy.
-VKEXP_LATTICE_FN int latticeResourceY(uint resourceHeight, uint height) {
-    const uint ceiling = height > 0u ? height - 1u : 0u;
-    return int(resourceHeight < ceiling ? resourceHeight : ceiling);
+// Somewhere in a band rather than at one height, hashed like the column. A fixed
+// height is a number a genome can learn to count to: eight blocks and turn. A
+// band makes the sensed direction the only thing that says when to stop, which
+// is the difference between a policy and a memorised program.
+//
+// Clamped to the box rather than wrapped: a band asked for above the ceiling is
+// a setting to correct, and wrapping it near the floor would hide that by making
+// the world quietly easy.
+VKEXP_LATTICE_FN int latticeResourceY(uint hash, uint lowest, uint highest, uint height) {
+    const uint ceiling = height > 1u ? height - 1u : 1u;
+    const uint low = lowest < ceiling ? lowest : ceiling;
+    const uint high = highest < ceiling ? highest : ceiling;
+    const uint span = high > low ? high - low + 1u : 1u;
+    // A third mixing constant: the column already used the hash directly, and a
+    // height drawn from the same bits would march with it across the worlds.
+    return int(low + latticeMix(hash ^ 0x4E1A07u) % span);
 }
 
 // Why a build attempt did or did not become a block, counted per world over a

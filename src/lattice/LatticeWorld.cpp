@@ -41,8 +41,11 @@ namespace kern = ::vkexp::lattice::kernel;
                 static_cast<std::int32_t>(index / plane), 0};
 }
 
+// Standing on the ground rather than in it: the bedrock course occupies height
+// zero, so a building world's group starts one level up, and only over columns
+// that have ground under them.
 [[nodiscard]] Int4 floorCellFromIndex(const SimulationStep& settings, const std::uint32_t index) {
-    return Int4{static_cast<std::int32_t>(index % settings.latticeWidth), 0,
+    return Int4{static_cast<std::int32_t>(index % settings.latticeWidth), 1,
                 static_cast<std::int32_t>(index / settings.latticeWidth), 0};
 }
 
@@ -61,9 +64,40 @@ Int4 beaconCell(const SimulationStep& settings, const std::uint32_t world) {
 Int4 resourceCell(const SimulationStep& settings, const std::uint32_t world) {
     const std::uint32_t hash = kern::latticeResourceHash(world, settings.beaconSeed);
     return Int4{kern::latticeResourceX(hash, settings.latticeWidth),
-                kern::latticeResourceY(settings.resourceHeight, settings.latticeHeight),
-                kern::latticeResourceZ(hash, settings.latticeWidth, settings.latticeDepth),
+                kern::latticeResourceY(hash, settings.resourceHeightLow,
+                                       settings.resourceHeightHigh, settings.latticeHeight),
+                kern::latticeResourceZ(hash, settings.latticeWidth, settings.latticeDepth,
+                                       latticeGroundDepth(settings)),
                 static_cast<std::int32_t>(world)};
+}
+
+std::vector<std::int32_t> makeTerrain(const SimulationStep& settings,
+                                      const std::uint32_t worldCount) {
+    const std::uint32_t cells = latticeCellsPerWorld(settings);
+    std::vector<std::int32_t> field(static_cast<std::size_t>(cells) * worldCount,
+                                    kern::LatticeNoStructure);
+    if (!worldBuilds(settings.worldMode)) {
+        return field;
+    }
+    // A course of bedrock where there is ground, and nothing where there is a
+    // chasm. Every building world gets one, because support no longer assumes a
+    // floor: what an agent stands on is always a block, and terrain is only the
+    // blocks that were there before anybody built.
+    const std::uint32_t ground = latticeGroundDepth(settings);
+    for (std::uint32_t world = 0; world < worldCount; ++world) {
+        const std::size_t base = static_cast<std::size_t>(world) * cells;
+        for (std::uint32_t z = 0; z < settings.latticeDepth; ++z) {
+            if (!kern::latticeGroundColumn(static_cast<int>(z), ground)) {
+                continue;
+            }
+            for (std::uint32_t x = 0; x < settings.latticeWidth; ++x) {
+                field[base + kern::latticeCellIndex(static_cast<int>(x), 0, static_cast<int>(z),
+                                                    settings.latticeWidth,
+                                                    settings.latticeHeight)] = kern::LatticeBedrock;
+            }
+        }
+    }
+    return field;
 }
 
 std::vector<AgentState> makeInitialAgents(const SimulationStep& settings,
@@ -109,7 +143,7 @@ std::vector<AgentState> makeInitialAgents(const SimulationStep& settings,
         const std::uint32_t start = mix(settings.beaconSeed ^ 0x5CA1EDU, world * 1021U + slot);
         const bool construction = worldBuilds(settings.worldMode);
         const std::uint32_t candidateCount =
-            construction ? settings.latticeWidth * settings.latticeDepth : cells;
+            construction ? settings.latticeWidth * latticeGroundDepth(settings) : cells;
         const std::uint32_t base = construction
                                        ? start % candidateCount
                                        : cellIndex(settings, cellFromHash(settings, start));

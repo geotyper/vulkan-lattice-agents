@@ -39,6 +39,8 @@ struct RunSnapshot {
     std::uint32_t seed{};
 };
 
+// Version 9 adds the chasm world: a bedrock floor stored in the block field, a
+// resource hung in a band over the missing half, and how much floor there is.
 // Version 8 drops the construction frontier, which refused nothing the support
 // rule had not already refused. Version 7 adds the harvest world and where its
 // resource sits. Version 5 added optional cardinal side support. The per-course
@@ -46,7 +48,7 @@ struct RunSnapshot {
 // field.
 // It is not a continuation of the old 2D format: the agent record, settings and
 // world all changed at once, and that format has different magic.
-inline constexpr std::uint32_t runSnapshotVersion = 8;
+inline constexpr std::uint32_t runSnapshotVersion = 9;
 
 // Versioned and little-endian, like the genome archive, and just as strict: a
 // file from another brain topology or another agent layout is rejected rather

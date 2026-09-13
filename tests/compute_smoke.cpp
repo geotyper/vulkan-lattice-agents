@@ -706,7 +706,8 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
     // 4x4x4 box. Both are deliberate: a probe where nobody ever picks up a load
     // compares the harvest rules without running them, and where the resource
     // lands is a hash this fixture does not get to choose.
-    settings.resourceHeight = 1;
+    settings.resourceHeightLow = 1;
+    settings.resourceHeightHigh = 1;
     settings.beaconContactRadius = 4;
     // Build often and on almost any signal: what is being compared is placement,
     // and a probe where nobody happens to build compares nothing. The final
@@ -725,26 +726,27 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
     std::vector<vkexp::AgentState> expected = vkexp::lattice::makeInitialAgents(settings, layout);
     const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
     std::vector<std::int32_t> claims(static_cast<std::size_t>(cells) * layout.worldCount());
-    std::vector<std::int32_t> structures(claims.size(),
-                                         vkexp::lattice::kernel::LatticeNoStructure);
+    std::vector<std::int32_t> structures;
 
-    // Start on a small platform rather than on the bare floor. Spawning on the
-    // floor puts every build attempt at height zero, where the scan below the
-    // site has nothing to look at and the gate is a foregone conclusion -- which
-    // is how this probe would compare construction at length without ever
-    // reaching the rule it was written for. A corner platform makes the floor
-    // locally full and globally sparse, which is exactly the distinction the
-    // radius draws.
+    // The terrain this world would really start from: a bedrock course under
+    // every column with ground, and nothing under the rest. Building worlds no
+    // longer assume a floor, so a fixture that skipped this would stand its
+    // agents on nothing and compare two different kinds of falling.
+    structures = vkexp::lattice::makeTerrain(settings, layout.worldCount());
+    // A block on the ground for the group to start beside, so that the very
+    // first step already has something to climb, stand on and build against --
+    // otherwise the probe spends its whole length comparing agents that have not
+    // yet found anything to do.
     constexpr int platform = 2;
     for (int z = 0; z < platform; ++z) {
         for (int x = 0; x < platform; ++x) {
-            structures[vkexp::lattice::kernel::latticeCellIndex(x, 0, z, settings.latticeWidth,
+            structures[vkexp::lattice::kernel::latticeCellIndex(x, 1, z, settings.latticeWidth,
                                                                 settings.latticeHeight)] = 1;
         }
     }
     for (std::size_t index = 0; index < expected.size(); ++index) {
         vkexp::AgentState& agent = expected[index];
-        agent.cell.x = static_cast<std::int32_t>(index) % platform;
+        agent.cell.x = static_cast<std::int32_t>(index) % platform + platform;
         agent.cell.z = static_cast<std::int32_t>(index) / platform;
         agent.cell.y = 1;
         agent.intent = {agent.cell.x, agent.cell.y, agent.cell.z, 0};
@@ -967,7 +969,9 @@ void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
     packed.buildIntervalTicks = nextUint();
     packed.buildThreshold = nextFloat();
     packed.allowSideSupportedBlocks = nextUint();
-    packed.resourceHeight = nextUint();
+    packed.resourceHeightLow = nextUint();
+    packed.resourceHeightHigh = nextUint();
+    packed.groundDepth = nextUint();
     packed.beaconSeed = nextUint();
     packed.fitness.trackingReward = nextFloat();
     packed.fitness.objectiveBonus = nextFloat();
@@ -999,7 +1003,9 @@ void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
     expectUint("buildIntervalTicks", packed.buildIntervalTicks);
     expectFloat("buildThreshold", packed.buildThreshold);
     expectUint("allowSideSupportedBlocks", packed.allowSideSupportedBlocks);
-    expectUint("resourceHeight", packed.resourceHeight);
+    expectUint("resourceHeightLow", packed.resourceHeightLow);
+    expectUint("resourceHeightHigh", packed.resourceHeightHigh);
+    expectUint("groundDepth", packed.groundDepth);
     expectUint("beaconSeed", packed.beaconSeed);
     expectFloat("fitness.trackingReward", packed.fitness.trackingReward);
     expectFloat("fitness.objectiveBonus", packed.fitness.objectiveBonus);

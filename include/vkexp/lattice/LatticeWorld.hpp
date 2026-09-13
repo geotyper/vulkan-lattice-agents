@@ -51,6 +51,12 @@ struct PopulationLayout {
 // be.
 [[nodiscard]] Int4 resourceCell(const SimulationStep& settings, std::uint32_t world);
 
+// The block field a run starts from: a course of bedrock under every column that
+// has ground, and nothing at all in a beacon world. Terrain is stored as blocks
+// because support stopped assuming a floor -- see LatticeBedrock.
+[[nodiscard]] std::vector<std::int32_t> makeTerrain(const SimulationStep& settings,
+                                                    std::uint32_t worldCount);
+
 // Every agent of a fresh generation, in buffer order, with its beacon mirrored
 // on and its metrics cleared. Placement is the same hash, probed forward until a
 // free cell -- so two agents never start in one cell, and the whole arrangement

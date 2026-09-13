@@ -1,5 +1,7 @@
 #include "vkexp/simulation/CpuLattice.hpp"
 
+#include "vkexp/lattice/LatticeWorld.hpp"
+
 #include "vkexp/lattice/LatticeKernel.hpp"
 #include "vkexp/simulation/LatticeSensors.hpp"
 
@@ -43,7 +45,7 @@ namespace kern = lattice::kernel;
 [[nodiscard]] bool constructionBlockSupported(const std::span<const std::int32_t> structures,
                                               const SimulationStep& settings, const int x,
                                               const int y, const int z) {
-    if (y <= 0 || hasStructure(structures, settings, x, y - 1, z)) {
+    if (hasStructure(structures, settings, x, y - 1, z)) {
         return true;
     }
     return settings.allowSideSupportedBlocks != 0U &&
@@ -387,26 +389,21 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
 
         agent.metrics.z +=
             (moved ? 1.0F : 0.0F) + settings.fitness.signalCostFactor * agent.signal.x;
-        if (settings.worldMode == WorldMode::Harvest) {
+        if (worldHarvests(settings.worldMode)) {
             // Mirrors the harvest block of lattice_resolve.comp: pick up at the
             // resource, score on the floor.
-            const std::uint32_t hash =
-                kern::latticeResourceHash(world, settings.beaconSeed);
-            const int resourceX = kern::latticeResourceX(hash, settings.latticeWidth);
-            const int resourceY =
-                kern::latticeResourceY(settings.resourceHeight, settings.latticeHeight);
-            const int resourceZ =
-                kern::latticeResourceZ(hash, settings.latticeWidth, settings.latticeDepth);
+            const Int4 resource = lattice::resourceCell(settings, world);
             const std::uint32_t distance = kern::latticeStepDistance(
-                static_cast<std::uint32_t>(settings.neighborhood), resourceX - agent.cell.x,
-                resourceY - agent.cell.y, resourceZ - agent.cell.z);
+                static_cast<std::uint32_t>(settings.neighborhood), resource.x - agent.cell.x,
+                resource.y - agent.cell.y, resource.z - agent.cell.z);
             agent.metrics.x = std::max(agent.metrics.x,
                                        kern::latticeNearness(distance, maximumDistance));
             if (agent.memory.w <= 0.0F) {
                 if (kern::latticeBeaconReached(distance, settings.beaconContactRadius)) {
                     agent.memory.w = 1.0F;
                 }
-            } else if (agent.cell.y == 0) {
+            } else if (kern::latticeGroundColumn(agent.cell.z, latticeGroundDepth(settings)) &&
+                       agent.cell.y <= 1) {
                 agent.memory.w = 0.0F;
                 agent.metrics.w += 1.0F;
             }

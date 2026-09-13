@@ -1,5 +1,7 @@
 #include "vkexp/simulation/LatticeSensors.hpp"
 
+#include "vkexp/lattice/LatticeWorld.hpp"
+
 #include "vkexp/lattice/LatticeKernel.hpp"
 #include "vkexp/neuro/BrainKernel.hpp"
 
@@ -90,12 +92,9 @@ neuro::Inputs sampleAgentInputs(const AgentState& agent, const std::span<const f
         // numbers. Where the cell is differs: a beacon is mirrored onto the
         // agent, and a resource is derived from the world it stands in.
         Int4 objective = agent.beacon;
-        if (settings.worldMode == WorldMode::Harvest) {
-            const std::uint32_t hash = kern::latticeResourceHash(
-                static_cast<std::uint32_t>(agent.beacon.w), settings.beaconSeed);
-            objective.x = kern::latticeResourceX(hash, settings.latticeWidth);
-            objective.y = kern::latticeResourceY(settings.resourceHeight, settings.latticeHeight);
-            objective.z = kern::latticeResourceZ(hash, settings.latticeWidth, settings.latticeDepth);
+        if (worldHarvests(settings.worldMode)) {
+            objective = lattice::resourceCell(settings,
+                                              static_cast<std::uint32_t>(agent.beacon.w));
         }
         const int deltaX = objective.x - agent.cell.x;
         const int deltaY = objective.y - agent.cell.y;
@@ -108,7 +107,7 @@ neuro::Inputs sampleAgentInputs(const AgentState& agent, const std::span<const f
         inputs[brain::brainBeaconInputIndex(2)] = kern::latticeDirectionComponent(deltaZ, length);
         inputs[brain::brainBeaconInputIndex(3)] =
             kern::latticeNearness(distance, latticeMaximumDistance(settings));
-        if (settings.worldMode == WorldMode::Harvest) {
+        if (worldHarvests(settings.worldMode)) {
             inputs[brain::brainBeaconInputIndex(4)] = agent.signal.z <= 0.0F ? 1.0F : 0.0F;
             inputs[brain::brainBeaconInputIndex(5)] = std::clamp(agent.memory.w, 0.0F, 1.0F);
         }

@@ -55,7 +55,9 @@ void main() {
     echo[at++] = params.buildIntervalTicks;
     echo[at++] = floatBitsToUint(params.buildThreshold);
     echo[at++] = params.allowSideSupportedBlocks;
-    echo[at++] = params.resourceHeight;
+    echo[at++] = params.resourceHeightLow;
+    echo[at++] = params.resourceHeightHigh;
+    echo[at++] = params.groundDepth;
     echo[at++] = params.beaconSeed;
     echo[at++] = floatBitsToUint(params.fitness.shaping.x);
     echo[at++] = floatBitsToUint(params.fitness.shaping.y);

@@ -1849,7 +1849,8 @@ void testHarvestResource() {
     settings.latticeWidth = 12;
     settings.latticeHeight = 10;
     settings.latticeDepth = 9;
-    settings.resourceHeight = 4;
+    settings.resourceHeightLow = 4;
+    settings.resourceHeightHigh = 4;
     settings.beaconSeed = 0x5EEDU;
 
     // Inside the box, at the height it was asked for, and the same answer every
@@ -1875,7 +1876,8 @@ void testHarvestResource() {
     // A resource asked for above the ceiling is clamped rather than wrapped.
     // Wrapping would put it near the floor and make the world quietly easy,
     // which is the opposite of saying the setting was wrong.
-    settings.resourceHeight = 99;
+    settings.resourceHeightLow = 99;
+    settings.resourceHeightHigh = 99;
     check(vkexp::lattice::resourceCell(settings, 0).y ==
               static_cast<std::int32_t>(settings.latticeHeight) - 1,
           "A resource above the ceiling sits on the ceiling, not back near the floor");
@@ -1883,7 +1885,8 @@ void testHarvestResource() {
     // It never shares a cell with the beacon of the same seed and world: the two
     // are hashed against different constants precisely so that a run switched
     // from one world to the other is a different problem and not the same one.
-    settings.resourceHeight = 4;
+    settings.resourceHeightLow = 4;
+    settings.resourceHeightHigh = 4;
     std::size_t collisions = 0;
     for (std::uint32_t world = 0; world < 64; ++world) {
         const vkexp::Int4 resource = vkexp::lattice::resourceCell(settings, world);

@@ -498,7 +498,7 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
     // cannot drift from the simulated one. Reading it off an agent record would
     // have meant a readback for a number that is already computable.
     // The one cell in the box the trial is about, whichever world this is.
-    const Int4 beacon = settings.worldMode == WorldMode::Harvest
+    const Int4 beacon = worldHarvests(settings.worldMode)
                             ? lattice::resourceCell(settings, state_.worlds.selectedWorld)
                             : lattice::beaconCell(settings, state_.worlds.selectedWorld);
 

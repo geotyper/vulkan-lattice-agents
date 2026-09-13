@@ -92,13 +92,20 @@ void main() {
         const uint height = uint(view.lattice.y);
         cell = ivec3(int(local % width), int((local / width) % height),
                      int(local / (width * height)));
-        const float elevation = float(cell.y + 1) / float(max(view.lattice.y, 1));
-        const float maker = fract(float(builder) * 0.61803398875);
-        const vec3 clay = vec3(0.46, 0.16, 0.07);
-        const vec3 sun = vec3(1.00, 0.66, 0.20);
-        vec3 block = mix(clay, sun, pow(elevation, 0.55));
-        block *= 0.90 + 0.16 * maker;
-        colour = vec4(block, 1.0);
+        if (builder < 0) {
+            // Terrain, not work. Grey and flat so that what the group built
+            // reads against the ground it was built on rather than merging
+            // with it -- and so that a chasm is a hole you can see.
+            colour = vec4(0.30, 0.31, 0.33, 1.0);
+        } else {
+            const float elevation = float(cell.y + 1) / float(max(view.lattice.y, 1));
+            const float maker = fract(float(builder) * 0.61803398875);
+            const vec3 clay = vec3(0.46, 0.16, 0.07);
+            const vec3 sun = vec3(1.00, 0.66, 0.20);
+            vec3 block = mix(clay, sun, pow(elevation, 0.55));
+            block *= 0.90 + 0.16 * maker;
+            colour = vec4(block, 1.0);
+        }
     } else {
         const uint agentIndex =
             uint(view.beacon.w) + uint(gl_InstanceIndex) * latticeViewAgentStride();
