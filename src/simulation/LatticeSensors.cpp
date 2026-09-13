@@ -114,6 +114,7 @@ neuro::Inputs sampleAgentInputs(const AgentState& agent, const std::span<const f
             kern::latticeDirectionComponent(headingZ, headingLength);
     }
     inputs[brain::BrainSelfOffset + 3] = agent.intent.w != 0 ? 1.0F : 0.0F;
+    inputs[brain::BrainSelfOffset + 4] = kern::latticeStillness(agent.memory.z);
 
     inputs[brain::BrainRecurrentInputOffset] = std::clamp(agent.memory.x, -1.0F, 1.0F);
     inputs[brain::BrainRecurrentInputOffset + 1] = std::clamp(agent.memory.y, -1.0F, 1.0F);

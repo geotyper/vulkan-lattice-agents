@@ -201,34 +201,51 @@ VKEXP_LATTICE_MATH_FN uint latticeDominantAxis(float driveX, float driveY, float
     return magnitudeY >= magnitudeZ ? 1u : 2u;
 }
 
-// Which cardinal face an agent builds against, one axis at a time. The two aim
-// drives are read the way a move drive is -- dead zone, dominant axis, sign --
-// so a policy that has learned to steer has already learned to aim.
+// Which cardinal face an agent is turned towards, one axis at a time. The two
+// aim drives are read the way a move drive is -- dead zone, dominant axis, sign
+// -- so a policy that has learned to steer has already learned to aim.
 //
-// When neither drive clears the dead zone the agent keeps building against the
-// way it last moved, which is all it could ever do before there was an aim. So
-// a genome from before this output behaves exactly as it did, and "do not care"
-// stays reachable rather than becoming "do not build".
+// Below the dead zone the agent faces nothing, and this used to fall back to the
+// way it last moved. That fallback was a compatibility patch and it let the old
+// failure back in through the side door: a parked agent with no opinion kept
+// aiming at whatever it had walked into, forever. Aim is a decision now, and not
+// deciding is not building.
 //
 // Never diagonal: one of the two axes wins, and a block goes against a face.
 VKEXP_LATTICE_MATH_FN int latticeAimComponent(uint axis, float driveX, float driveZ,
-                                              float threshold, int headingX, int headingZ) {
+                                              float threshold) {
     const int stepX = latticeAxisStep(driveX, threshold);
     const int stepZ = latticeAxisStep(driveZ, threshold);
-    if (stepX != 0 || stepZ != 0) {
-        // A vertical drive of zero can never be the loudest of the three here,
-        // because reaching this branch means one of the other two cleared the
-        // dead zone -- so the shared tie-break decides between x and z alone.
-        const uint dominant = latticeDominantAxis(driveX, 0.0f, driveZ);
-        if (axis == 0u) {
-            return dominant == 0u ? stepX : 0;
-        }
-        return dominant == 0u ? 0 : stepZ;
+    if (stepX == 0 && stepZ == 0) {
+        return 0;
     }
-    if (headingX != 0) {
-        return axis == 0u ? headingX : 0;
+    // A vertical drive of zero can never be the loudest of the three here,
+    // because reaching this point means one of the other two cleared the dead
+    // zone -- so the shared tie-break decides between x and z alone.
+    const uint dominant = latticeDominantAxis(driveX, 0.0f, driveZ);
+    if (axis == 0u) {
+        return dominant == 0u ? stepX : 0;
     }
-    return axis == 0u ? 0 : headingZ;
+    return dominant == 0u ? 0 : stepZ;
+}
+
+// How long an agent has to stand still before the stillness input saturates.
+//
+// A ramp and not a flag, which is the whole point of it. A deterministic policy
+// in an unchanging neighbourhood produces the same output forever -- that is why
+// an agent that parks itself stays parked for the rest of the generation -- and
+// a flag that reads 1 for the entire stall is just as unchanging as the
+// neighbourhood is. It would move the fixed point, not remove it. A count that
+// rises every tick is an input that is never twice the same, so the output is
+// never twice the same either, and a policy that has learned any threshold at
+// all eventually crosses it and does something else.
+//
+// Distinct from the refusal flag beside it: refusal means a move was asked for
+// and denied, and says nothing about an agent that never asked.
+const float LatticeStillnessSpan = 48.0f;
+
+VKEXP_LATTICE_MATH_FN float latticeStillness(float stillTicks) {
+    return clamp(stillTicks / LatticeStillnessSpan, 0.0f, 1.0f);
 }
 
 // The move one axis contributes, given all three drives and the neighbourhood.

@@ -495,6 +495,13 @@ void compareAgents(const vkexp::AgentState& expected, const vkexp::AgentState& a
     same(expected.metrics.y, actual.metrics.y, "contacts");
     same(expected.metrics.z, actual.metrics.z, "effort");
     same(expected.metrics.w, actual.metrics.w, "refusals");
+    // The recurrent cells and the still-tick counter, neither of which was
+    // compared before. The cells drift like any other float; the counter is a
+    // whole number, so any difference at all in it is a difference of logic and
+    // lands far outside the tolerance rather than inside it.
+    same(expected.memory.x, actual.memory.x, "memory cell 1");
+    same(expected.memory.y, actual.memory.y, "memory cell 2");
+    same(expected.memory.z, actual.memory.z, "still ticks");
     for (std::size_t index = 0; index < expected.hidden.size(); ++index) {
         same(expected.hidden[index].x, actual.hidden[index].x, "hidden.x");
         same(expected.hidden[index].y, actual.hidden[index].y, "hidden.y");

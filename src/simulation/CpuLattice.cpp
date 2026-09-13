@@ -63,20 +63,11 @@ namespace kern = lattice::kernel;
     return landing;
 }
 
-// Mirrors constructionFacing in lattice_step.comp: what the aim drives ask for,
-// and failing that the way the agent last moved.
-[[nodiscard]] std::array<int, 2> constructionFacing(const AgentState& agent,
-                                                    const SimulationStep& settings,
+// Mirrors constructionFacing in lattice_step.comp.
+[[nodiscard]] std::array<int, 2> constructionFacing(const SimulationStep& settings,
                                                     const float aimX, const float aimZ) {
-    int headingX = 0;
-    int headingZ = 0;
-    const auto heading = static_cast<std::uint32_t>(agent.cell.w);
-    if (heading < kern::LatticeNeighborCount) {
-        headingX = kern::latticeNeighborX(heading);
-        headingZ = kern::latticeNeighborZ(heading);
-    }
-    return {kern::latticeAimComponent(0U, aimX, aimZ, settings.moveThreshold, headingX, headingZ),
-            kern::latticeAimComponent(1U, aimX, aimZ, settings.moveThreshold, headingX, headingZ)};
+    return {kern::latticeAimComponent(0U, aimX, aimZ, settings.moveThreshold),
+            kern::latticeAimComponent(1U, aimX, aimZ, settings.moveThreshold)};
 }
 
 } // namespace
@@ -218,7 +209,7 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                         constructionLandingY(worldStructures, settings, wantedX, wantedY, wantedZ);
                 }
             } else if (stepY > 0) {
-                const auto [faceX, faceZ] = constructionFacing(agent, settings, aimDriveX, aimDriveZ);
+                const auto [faceX, faceZ] = constructionFacing(settings, aimDriveX, aimDriveZ);
                 const bool hasFace = (faceX != 0 || faceZ != 0) &&
                                      (hasStructure(worldStructures, settings, agent.cell.x + faceX,
                                                    agent.cell.y, agent.cell.z + faceZ) ||
@@ -279,7 +270,7 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
             } else if (agent.signal.y <= settings.buildThreshold) {
                 outcome = kern::LatticeBuildUnwilling;
             } else {
-                const auto [faceX, faceZ] = constructionFacing(agent, settings, aimDriveX, aimDriveZ);
+                const auto [faceX, faceZ] = constructionFacing(settings, aimDriveX, aimDriveZ);
                 const int buildX = agent.cell.x + faceX;
                 const int buildZ = agent.cell.z + faceZ;
                 if (faceX == 0 && faceZ == 0) {
@@ -398,6 +389,9 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
         // The flag the next step reads back as a self input, so a policy can
         // notice it is stuck without having to infer it from the neighbourhood.
         agent.intent = Int4{agent.cell.x, agent.cell.y, agent.cell.z, refused ? 1 : 0};
+        // And how long it has been standing still, which the refusal flag cannot
+        // say: an agent that never asked to move was never refused.
+        agent.memory.z = moved ? 0.0F : agent.memory.z + 1.0F;
 
         if (settings.worldMode == WorldMode::Construction && agent.beacon.x >= 0 &&
             !worldStructures.empty()) {

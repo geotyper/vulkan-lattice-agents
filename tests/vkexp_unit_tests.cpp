@@ -1865,39 +1865,46 @@ void testConstructionLocalFoundation() {
 void testLatticeAim() {
     namespace lk = vkexp::lattice::kernel;
     constexpr float threshold = 0.25F;
-    const auto aim = [&](const float x, const float z, const int headingX, const int headingZ) {
-        return std::array<int, 2>{
-            lk::latticeAimComponent(0U, x, z, threshold, headingX, headingZ),
-            lk::latticeAimComponent(1U, x, z, threshold, headingX, headingZ)};
+    const auto aim = [&](const float x, const float z) {
+        return std::array<int, 2>{lk::latticeAimComponent(0U, x, z, threshold),
+                                  lk::latticeAimComponent(1U, x, z, threshold)};
     };
 
-    // A drive that clears the dead zone decides, whatever the agent was doing.
-    check((aim(0.8F, 0.0F, 0, -1) == std::array<int, 2>{1, 0}),
-          "An aim drive overrides the way the agent last moved");
-    check((aim(-0.8F, 0.0F, 1, 0) == std::array<int, 2>{-1, 0}),
-          "Including when it points back the way the agent came");
+    check((aim(0.8F, 0.0F) == std::array<int, 2>{1, 0}), "One drive names one face");
+    check((aim(-0.8F, 0.0F) == std::array<int, 2>{-1, 0}), "And its sign is which way");
 
     // Never diagonal: the louder axis takes the whole aim.
-    check((aim(0.9F, 0.4F, 0, 0) == std::array<int, 2>{1, 0}),
+    check((aim(0.9F, 0.4F) == std::array<int, 2>{1, 0}),
           "Two drives give one face, not a diagonal");
-    check((aim(0.4F, -0.9F, 0, 0) == std::array<int, 2>{0, -1}),
+    check((aim(0.4F, -0.9F) == std::array<int, 2>{0, -1}),
           "and the louder of the two is the one that wins");
-    check((aim(0.6F, 0.6F, 0, 0) == std::array<int, 2>{1, 0}),
+    check((aim(0.6F, 0.6F) == std::array<int, 2>{1, 0}),
           "A tie goes to x, the same way the move rule breaks one");
 
-    // Under the dead zone the agent keeps building against the way it moved,
-    // which is all it could do before there was an aim at all.
-    check((aim(0.1F, -0.2F, 0, 1) == std::array<int, 2>{0, 1}),
-          "Below the dead zone the old heading still decides");
-    check((aim(0.0F, 0.0F, -1, 1) == std::array<int, 2>{-1, 0}),
-          "A remembered diagonal names one face, x first");
-    check((aim(0.0F, 0.0F, 0, 0) == std::array<int, 2>{0, 0}),
-          "An agent that has never moved and asks for nothing faces nothing");
-
-    // The threshold is the move threshold, so an aim that would not have moved
-    // the agent does not turn it either.
-    check((lk::latticeAimComponent(0U, threshold, 0.0F, threshold, 0, 0) == 0),
+    // Below the dead zone the agent faces nothing at all. There is deliberately
+    // no fallback to the way it last moved: that fallback is what let a parked
+    // agent keep aiming at whatever it had walked into for the rest of a run.
+    check((aim(0.1F, -0.2F) == std::array<int, 2>{0, 0}),
+          "Below the dead zone the agent faces nothing rather than where it came from");
+    check((aim(0.0F, 0.0F) == std::array<int, 2>{0, 0}), "Asking for nothing is facing nothing");
+    check((lk::latticeAimComponent(0U, threshold, 0.0F, threshold) == 0),
           "Exactly at the threshold is inside the dead zone, as it is for a move");
+}
+
+void testLatticeStillness() {
+    namespace lk = vkexp::lattice::kernel;
+    // A ramp and not a flag. The point of the input is that it is never twice
+    // the same while an agent is stuck: a constant would move the fixed point a
+    // deterministic policy settles into rather than give it a way out.
+    check(lk::latticeStillness(0.0F) == 0.0F, "An agent that just moved reads nothing");
+    const float oneTick = lk::latticeStillness(1.0F);
+    const float twoTicks = lk::latticeStillness(2.0F);
+    check(oneTick > 0.0F && twoTicks > oneTick,
+          "Standing still reads higher every tick, which is what a flag could not do");
+    check(lk::latticeStillness(lk::LatticeStillnessSpan) == 1.0F,
+          "And saturates at one after the full span");
+    check(lk::latticeStillness(lk::LatticeStillnessSpan * 10.0F) == 1.0F,
+          "Standing still far longer than that is still one, not more");
 }
 
 void testLatticeAddressing() {
@@ -2287,6 +2294,7 @@ int main() {
     testStructureShape();
     testConstructionLocalFoundation();
     testLatticeAim();
+    testLatticeStillness();
     testLatticeAddressing();
     testLatticeNeighbourhood();
     testLatticeMoveRule();

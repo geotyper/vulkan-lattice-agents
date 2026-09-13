@@ -40,11 +40,15 @@ const uint BrainNeighborCount = 26u;
 const uint BrainNeighborChannels = 4u;
 // Unit vector to the beacon, and how near it is.
 const uint BrainBeaconInputCount = 4u;
-// Heading as a unit vector, and whether the last move was refused. The heading
-// is fed back rather than kept implicit because a move is chosen in lattice axes
-// and not relative to a facing: without this the network has no way to know
-// which way it was already going.
-const uint BrainSelfInputCount = 4u;
+// Heading as a unit vector, whether the last move was refused, and how long the
+// agent has been standing still. The heading is fed back rather than kept
+// implicit because a move is chosen in lattice axes and not relative to a
+// facing: without this the network has no way to know which way it was already
+// going.
+//
+// The stillness channel is a ramp rather than a flag, and that is the whole of
+// why it is worth a slot. See LatticeStillnessSpan.
+const uint BrainSelfInputCount = 5u;
 const uint BrainRecurrentCount = 2u; // memory cells, fed back as inputs
 
 // One drive per axis rather than one per direction. Twenty-seven directions

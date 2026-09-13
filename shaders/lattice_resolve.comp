@@ -81,6 +81,10 @@ void main() {
     // The flag the next step reads back as a self input, so a policy can notice
     // it is stuck without having to infer it from the neighbourhood.
     agent.intent = ivec4(agent.cell.xyz, refused ? 1 : 0);
+    // And how long it has been standing still, which the refusal flag cannot
+    // say: an agent that never asked to move was never refused. Counted here
+    // because this is the pass that knows whether the move happened.
+    agent.memory.z = moved ? 0.0 : agent.memory.z + 1.0;
 
     if (params.worldMode == LatticeWorldConstruction && agent.beacon.x >= 0) {
         const uint target = latticeCellIndex(agent.beacon.x, agent.beacon.y, agent.beacon.z,
