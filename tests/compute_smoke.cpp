@@ -283,6 +283,8 @@ public:
                              parameters_.size())
                 .writeBuffer(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, structures_.buffer(), 0,
                              structures_.size())
+                .writeBuffer(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buildOutcomes_.buffer(), 0,
+                             buildOutcomes_.size())
                 .update(context.device(), resolveSets_[readIndex]);
         }
         clearSet_ = descriptors_.allocate(clearLayout_.get());
@@ -765,9 +767,9 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
     std::vector<std::uint32_t> outcomes(
         static_cast<std::size_t>(layout.worldCount()) *
         vkexp::lattice::kernel::LatticeBuildOutcomeCount);
-    static constexpr std::array<const char*, 9> reasonNames{
-        "cooling",   "unwilling",      "no facing",  "off the lattice", "blocked",
-        "unsupported", "above frontier", "in the way", "claimed"};
+    static constexpr std::array<const char*, 10> reasonNames{
+        "cooling",     "unwilling",      "no facing",  "off the lattice", "blocked",
+        "unsupported", "above frontier", "in the way", "placed",          "contested"};
 
     LatticeHarness harness{context, settings, layout, weights};
     for (std::uint32_t step = 0; step < 48; ++step) {

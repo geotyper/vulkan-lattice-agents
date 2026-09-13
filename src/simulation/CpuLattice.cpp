@@ -264,7 +264,9 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
             // construction parity probe compares the counters as well as the
             // blocks, so a reason recorded differently is a failure and not a
             // difference of opinion.
-            std::uint32_t outcome = kern::LatticeBuildClaimed;
+            // LatticeBuildOutcomeCount means "not decided here": the agent
+            // placed a bid and the resolve loop will say whether it won.
+            std::uint32_t outcome = kern::LatticeBuildOutcomeCount;
             if (agent.signal.z > 0.0F) {
                 outcome = kern::LatticeBuildCooling;
             } else if (agent.signal.y <= settings.buildThreshold) {
@@ -312,7 +314,7 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                     }
                 }
             }
-            if (!population.buildOutcomes.empty()) {
+            if (!population.buildOutcomes.empty() && outcome < kern::LatticeBuildOutcomeCount) {
                 ++population.buildOutcomes[static_cast<std::size_t>(world) *
                                                kern::LatticeBuildOutcomeCount +
                                            outcome];
@@ -398,6 +400,7 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
             const std::uint32_t target =
                 kern::latticeCellIndex(agent.beacon.x, agent.beacon.y, agent.beacon.z,
                                        settings.latticeWidth, settings.latticeHeight);
+            bool placed = false;
             if (population.claims[worldBase + target] ==
                     kern::latticeBuildClaim(index,
                                             static_cast<std::uint32_t>(population.agents.size())) &&
@@ -406,6 +409,13 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                 agent.signal.z = static_cast<float>(settings.buildIntervalTicks);
                 agent.signal.w = 1.0F;
                 agent.metrics.y += 1.0F;
+                placed = true;
+            }
+            if (!population.buildOutcomes.empty()) {
+                ++population.buildOutcomes[static_cast<std::size_t>(world) *
+                                               kern::LatticeBuildOutcomeCount +
+                                           (placed ? kern::LatticeBuildPlaced
+                                                   : kern::LatticeBuildContested)];
             }
         }
 

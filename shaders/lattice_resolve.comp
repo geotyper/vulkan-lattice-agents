@@ -36,6 +36,9 @@ layout(std430, set = 0, binding = 3) readonly buffer StepParameterBlocks {
 layout(std430, set = 0, binding = 4) buffer Structures {
     int structures[];
 };
+// The tail of the build funnel. The decide pass records every reason an attempt
+// ended before a bid; whether the bid then won is only knowable here.
+layout(std430, set = 0, binding = 5) buffer BuildOutcomes { uint buildOutcomes[]; };
 
 layout(push_constant) uniform StepSelector {
     uint stepIndex;
@@ -92,13 +95,18 @@ void main() {
         // Re-check emptiness at commit time. The decide pass already rejects an
         // occupied target, but this makes "build twice" impossible even if a
         // future action starts changing structures between the two passes.
+        bool placed = false;
         if (claims[worldBase + target] == latticeBuildClaim(id, params.agentCount) &&
             structures[worldBase + target] == LatticeNoStructure) {
             structures[worldBase + target] = int(id) + 1;
             agent.signal.z = float(params.buildIntervalTicks);
             agent.signal.w = 1.0;
             agent.metrics.y += 1.0;
+            placed = true;
         }
+        atomicAdd(buildOutcomes[uint(agent.beacon.w) * LatticeBuildOutcomeCount +
+                                (placed ? LatticeBuildPlaced : LatticeBuildContested)],
+                  1u);
     }
 
     agent.metrics.z += (moved ? 1.0 : 0.0) + fitnessSignalCostFactor(params.fitness) * agent.signal.x;

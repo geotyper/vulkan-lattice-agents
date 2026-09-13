@@ -183,6 +183,8 @@ void SimulationDriver::createStepResources() {
                          stepParameterBuffer_.size())
             .writeBuffer(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, structures_.buffer(), 0,
                          structures_.size())
+            .writeBuffer(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buildOutcomes_.buffer(), 0,
+                         buildOutcomes_.size())
             .update(device_, resolveDescriptorSets_[readIndex]);
 
         // `writeBuffer` is the resolved buffer for this read index. The agent
@@ -891,10 +893,9 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
     const DispatchSize stepGroups = checkedDispatchSize(
         physicalDevice_,
         {{state_.agents.agentCount, 1, 1}, {64, 1, 1}, sizeof(std::uint32_t), stepRanges});
-    const std::array<VkDeviceSize, 5> resolveRanges{agentBuffers_.write().size(),
-                                                    occupancy_.size(), claims_.size(),
-                                                    stepParameterBuffer_.size(),
-                                                    structures_.size()};
+    const std::array<VkDeviceSize, 6> resolveRanges{
+        agentBuffers_.write().size(), occupancy_.size(),  claims_.size(),
+        stepParameterBuffer_.size(),  structures_.size(), buildOutcomes_.size()};
     const DispatchSize resolveGroups = checkedDispatchSize(
         physicalDevice_,
         {{state_.agents.agentCount, 1, 1}, {64, 1, 1}, sizeof(std::uint32_t), resolveRanges});

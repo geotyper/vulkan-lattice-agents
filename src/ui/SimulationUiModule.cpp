@@ -477,9 +477,14 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     plotHistory("Best", state_.history.bestFitness);
     plotHistory("Median", state_.history.medianFitness);
     plotHistory("Mean", state_.history.meanFitness);
-    plotHistory(state_.settings.worldMode == WorldMode::Construction ? "Weighted block fill"
-                                                                     : "Reached the beacon",
-                state_.history.arrivalRatio, 0.0F, 1.0F);
+    // Floored at zero and scaled to the data above it. A fixed 0..1 axis is
+    // what a fraction deserves in principle and unreadable in practice: a run
+    // filling three per cent of its lattice draws as a flat line on the bottom
+    // edge whatever it is doing, and the headline number above says the level
+    // anyway.
+    plotHistory(state_.settings.worldMode == WorldMode::Beacon ? "Reached the beacon"
+                                                               : "Weighted block fill",
+                state_.history.arrivalRatio, 0.0F);
     ImGui::SeparatorText("Evolution parameters");
     ImGui::Text("Population: %zu", state_.evolution.populationSize);
     ImGui::Text("Elites: %zu   Tournament: %zu", state_.evolution.eliteCount,
@@ -732,10 +737,10 @@ void SimulationUiModule::drawBuildOutcomes() {
     const std::size_t visible = std::min<std::size_t>(state_.worlds.selectedWorld, worlds - 1);
 
     ImGui::SeparatorText("Why the builders stopped");
-    static constexpr std::array<const char*, 9> names{
-        "Cooling",  "Unwilling",      "No facing", "Off the lattice", "Blocked",
-        "No support", "Above frontier", "In the way", "Claimed"};
-    std::array<std::uint64_t, 9> total{};
+    static constexpr std::array<const char*, 10> names{
+        "Cooling",    "Unwilling",      "No facing",  "Off the lattice", "Blocked",
+        "No support", "Above frontier", "In the way", "Placed",          "Lost the cell"};
+    std::array<std::uint64_t, 10> total{};
     std::uint64_t attempts = 0;
     for (std::size_t world = 0; world < worlds; ++world) {
         for (std::size_t reason = 0; reason < count; ++reason) {

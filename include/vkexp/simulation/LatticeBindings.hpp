@@ -19,7 +19,7 @@ namespace vkexp {
 // against what the shaders declare, so adding a buffer to a pass fails as a
 // wrong number here rather than as a descriptor nobody wrote.
 inline constexpr std::uint32_t latticeStepBindings = 8;
-inline constexpr std::uint32_t latticeResolveBindings = 5;
+inline constexpr std::uint32_t latticeResolveBindings = 6;
 inline constexpr std::uint32_t latticeClearBindings = 2;
 inline constexpr std::uint32_t latticeTrailCaptureBindings = 2;
 // Not a pass of the step: the layout echo test's own shader, counted here so

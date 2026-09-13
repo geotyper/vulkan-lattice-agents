@@ -370,7 +370,9 @@ void main() {
         // fails. The chain below is written as a sequence of early exits rather
         // than one condition precisely so that there is somewhere to record it;
         // mirrored by the same chain in vkexp::stepLatticeCpu.
-        uint outcome = LatticeBuildClaimed;
+        // LatticeBuildOutcomeCount means "not decided here": the agent placed a
+        // bid and the resolve pass will say whether it won.
+        uint outcome = LatticeBuildOutcomeCount;
         if (agent.signal.z > 0.0) {
             outcome = LatticeBuildCooling;
         } else if (agent.signal.y <= params.buildThreshold) {
@@ -417,7 +419,9 @@ void main() {
                 }
             }
         }
-        atomicAdd(buildOutcomes[world * LatticeBuildOutcomeCount + outcome], 1u);
+        if (outcome < LatticeBuildOutcomeCount) {
+            atomicAdd(buildOutcomes[world * LatticeBuildOutcomeCount + outcome], 1u);
+        }
     } else if (stepX != 0 || stepY != 0 || stepZ != 0) {
         const int wantedX = agent.cell.x + stepX;
         const int wantedY = agent.cell.y + stepY;

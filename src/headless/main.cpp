@@ -507,7 +507,7 @@ int run(const Options& options) {
             *csv << "generation,lattice,seed,best,median,mean,arrival_ratio,"
                     "blocks,footprint,peak,mean_height,height_spread,compactness,overhangs,"
                     "roofed,cooling,unwilling,no_facing,off_lattice,blocked,unsupported,"
-                    "above_frontier,in_the_way,claimed\n";
+                    "above_frontier,in_the_way,placed,contested\n";
         }
     }
 
