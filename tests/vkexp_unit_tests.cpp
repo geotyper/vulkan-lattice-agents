@@ -1,5 +1,6 @@
 #include "vkexp/compute/ComputeResources.hpp"
 #include "vkexp/simulation/LatticeBindings.hpp"
+#include "vkexp/graphics/TransparencyKernel.hpp"
 #include "vkexp/evolution/GeneticAlgorithm.hpp"
 #include "vkexp/evolution/GenomeArchive.hpp"
 #include "vkexp/lattice/LatticeKernel.hpp"
@@ -1522,6 +1523,64 @@ struct ShaderBindings {
 // like a bug. So the two claims that make a slide a slide are asserted
 // directly: the movement is perpendicular to where the camera is looking, and
 // its length is what was asked for.
+// The shape of the transparency weight, not its values.
+//
+// Weighted blended transparency resolves a pixel as a weighted mean, so the
+// weight is the method. When it is wrong the pass still runs, still blends and
+// still produces a picture -- an evenly averaged one, in which moving any
+// single fragment's opacity barely moves the result. There is no error to
+// report and nothing to see but a control that does nothing, which is exactly
+// what the first version of this did: window depth across the box came out as
+// 2.2e5 against 1.3e5, both of which clamped to the same ceiling, so the near
+// face of the lattice and the far face weighed the same.
+//
+// So the assertions are about spread and monotonicity, and the one that matters
+// is that the front of the box outweighs the back of it by a wide margin at
+// every distance the camera can be at.
+void testTransparencyWeight() {
+    namespace weight = vkexp::graphics::kernel;
+
+    // The camera lives between these two, in half-diagonals; the box is one
+    // half-diagonal in every direction from what it looks at. Framing the whole
+    // lattice and pressing against one corner of it have to weigh their
+    // fragments the same way -- a spread that collapsed as the camera pulled
+    // back would fail precisely when seeing into a crowd is worth most.
+    constexpr float nearestCamera = 0.35F;
+    constexpr float furthestCamera = 12.0F;
+
+    for (const float distance : {nearestCamera, 1.0F, 2.3F, 6.0F, furthestCamera}) {
+        const float front = weight::latticeTransparencyWeight(0.5F, distance - 1.0F, distance);
+        const float middle = weight::latticeTransparencyWeight(0.5F, distance, distance);
+        const float back = weight::latticeTransparencyWeight(0.5F, distance + 1.0F, distance);
+        check(front > middle && middle > back,
+              "A nearer fragment always weighs more than a further one");
+        // Ten to one is the difference between a surface and a smear. Below
+        // that the nearest voxel stops reading as the thing in front.
+        check(front > back * 10.0F,
+              "The near face of the box outweighs the far face by at least ten to one");
+    }
+
+    // Opacity has to keep reaching the weight across its whole range. The
+    // published form runs it through min(1, alpha * 10), which is flat for
+    // everything above 0.1 -- so the one control a viewer has stops working
+    // exactly where it starts being useful.
+    float previous = 0.0F;
+    for (const float alpha : {0.02F, 0.1F, 0.34F, 0.7F, 1.0F}) {
+        const float value = weight::latticeTransparencyWeight(alpha, 2.3F, 2.3F);
+        check(value > previous, "A more opaque fragment weighs more, at every opacity");
+        previous = value;
+    }
+    check(closeTo(weight::latticeTransparencyWeight(0.0F, 2.3F, 2.3F), 0.0F),
+          "A fully transparent fragment contributes nothing");
+
+    // And the accumulation buffer is half precision, so a crowded pixel has to
+    // stay well inside its range. The weight is per fragment; a few hundred of
+    // them at the nearest the camera goes is the worst case a viewer can build.
+    const float worst =
+        weight::latticeTransparencyWeight(1.0F, nearestCamera - 1.0F, nearestCamera) * 512.0F;
+    check(worst < 60000.0F, "A crowded pixel cannot overflow a half-float accumulation");
+}
+
 void testLatticeCameraSlide() {
     const auto eyeDirection = [](const vkexp::LatticeCamera& camera) {
         return std::array<float, 3>{std::cos(camera.pitch) * std::sin(camera.yaw),
@@ -2035,6 +2094,7 @@ int main() {
     testPingPongState();
     testShaderBindingContract();
     testLatticeCameraSlide();
+    testTransparencyWeight();
     testLatticeSpawnCapacity();
     testLatticeAddressing();
     testLatticeNeighbourhood();
