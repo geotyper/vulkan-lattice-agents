@@ -641,11 +641,12 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
         vkCmdDraw(commands, cubeVertexCount, 1, 0, 0);
         parameters.camera[3] = agentScale;
     }
-    if (drawStructures) {
-        // One instance per cell is deliberately simple: the structure field is
-        // already on the device, and empty instances collapse in the vertex
-        // shader without a compaction pass or readback. A tiny seam keeps a
-        // tower legible as masonry instead of one featureless prism.
+    // The block field, drawn into whichever pass the style puts it in. One
+    // instance per cell is deliberately simple: the field is already on the
+    // device, and empty instances collapse in the vertex shader without a
+    // compaction pass or readback. A tiny seam keeps a tower legible as masonry
+    // instead of one featureless prism.
+    const auto drawStructureField = [&] {
         const std::array<std::int32_t, 4> savedBeacon = parameters.beacon;
         const float savedScale = parameters.camera[3];
         parameters.beacon[3] = static_cast<std::int32_t>(state_.worlds.selectedWorld);
@@ -655,6 +656,10 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
         vkCmdDraw(commands, cubeVertexCount, state_.lattice.cellsPerWorld, 0, 0);
         parameters.beacon = savedBeacon;
         parameters.camera[3] = savedScale;
+    };
+
+    if (drawStructures && !transparent) {
+        drawStructureField();
     }
     if (drawAgents && !transparent) {
         pushWord(modeAgents);
@@ -663,7 +668,7 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
     }
     vkCmdEndRendering(commands);
 
-    if (drawTrails || (drawAgents && transparent)) {
+    if (drawTrails || (transparent && (drawAgents || drawStructures))) {
         // The opaque pass clears and then writes depth for the beacon and box;
         // the transparent pass tests every agent against that result. Ending a
         // dynamic-rendering instance supplies no memory dependency of its own.
@@ -748,6 +753,12 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
             parameters.beacon = savedBeacon;
             parameters.camera[3] = savedScale;
             parameters.tint[0] = savedOpacity;
+        }
+        // Blocks and agents go into the same weighted average, in no
+        // particular order -- that is what the pass is for. The blocks are
+        // listed first only because that is the order they are built in.
+        if (drawStructures && transparent) {
+            drawStructureField();
         }
         if (drawAgents && transparent) {
             pushWord(modeAgents);
