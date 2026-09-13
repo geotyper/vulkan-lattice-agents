@@ -134,7 +134,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
 
     ImGui::SeparatorText("The lattice");
     int worldMode = static_cast<int>(state_.settings.worldMode);
-    constexpr const char* worldModes[] = {"Beacon", "Construction"};
+    constexpr const char* worldModes[] = {"Beacon", "Construction", "Harvest"};
     static_assert(std::size(worldModes) == worldModeCount);
     if (ImGui::Combo("World", &worldMode, worldModes, static_cast<int>(worldModeCount))) {
         state_.settings.worldMode = static_cast<WorldMode>(worldMode);
@@ -221,7 +221,17 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                           "of the decision to stand still: at zero an agent moves every step "
                           "whatever it thinks, and near one it has to commit.");
 
-    if (state_.settings.worldMode == WorldMode::Construction) {
+    if (worldBuilds(state_.settings.worldMode)) {
+        if (state_.settings.worldMode == WorldMode::Harvest) {
+            int resourceHeight = static_cast<int>(state_.settings.resourceHeight);
+            if (ImGui::SliderInt("Resource height", &resourceHeight, 1,
+                                 static_cast<int>(state_.settings.latticeHeight) - 1, "%d levels")) {
+                state_.settings.resourceHeight = static_cast<std::uint32_t>(resourceHeight);
+            }
+            ImGui::SetItemTooltip("How far above the floor the resource sits. Nobody leaves the "
+                                  "floor without a structure to climb, so this is how much has to "
+                                  "be built before anything is collected at all.");
+        }
         int buildInterval = static_cast<int>(state_.settings.buildIntervalTicks);
         if (ImGui::SliderInt("Build interval", &buildInterval, 1, 120, "%d ticks")) {
             state_.settings.buildIntervalTicks = static_cast<std::uint32_t>(buildInterval);
@@ -258,10 +268,19 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                            0.05F, "%.4f");
         ImGui::SetItemTooltip("Group charge per agent and tick spent on the x/z perimeter. The "
                               "height ceiling is not penalised.");
-        ImGui::TextWrapped("Fitness is the sum of block levels minus boundary dwell. A block may "
-                           "stand up to %u levels above the nearest level below it that is filled "
-                           "enough locally; every genome in the world receives the same total.",
-                           state_.settings.constructionHeightLead);
+        if (state_.settings.worldMode == WorldMode::Harvest) {
+            ImGui::TextWrapped(
+                "Fitness is loads delivered, plus how near anyone got to the resource. Blocks "
+                "score nothing: a block is time spent, and spending it well is the problem. A "
+                "load is picked up at the resource and scored on the floor, so a route that can "
+                "be used twice is worth more than one lucky scramble.");
+        } else {
+            ImGui::TextWrapped(
+                "Fitness is the sum of block levels minus boundary dwell. A block may stand up to "
+                "%u levels above the nearest level below it that is filled enough locally; every "
+                "genome in the world receives the same total.",
+                state_.settings.constructionHeightLead);
+        }
         ImGui::TextDisabled(state_.settings.allowSideSupportedBlocks != 0U
                                 ? "Blocks may use a floor, lower block or cardinal side face."
                                 : "Blocks need floor or a block directly below; walls climb.");
@@ -435,7 +454,11 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::Text("Best fitness:   %.4f", state_.statistics.bestFitness);
     ImGui::Text("Median fitness: %.4f", state_.statistics.medianFitness);
     ImGui::Text("Mean fitness:   %.4f", state_.statistics.meanFitness);
-    if (state_.settings.worldMode == WorldMode::Construction) {
+    if (state_.settings.worldMode == WorldMode::Harvest) {
+        ImGui::Text("Delivered a load: %.1f%% of agents", state_.statistics.arrivalRatio * 100.0F);
+        drawStructureShapes();
+        drawBuildOutcomes();
+    } else if (state_.settings.worldMode == WorldMode::Construction) {
         ImGui::Text("Mean weighted fill: %.2f%%", state_.statistics.arrivalRatio * 100.0F);
         drawStructureShapes();
         drawBuildOutcomes();

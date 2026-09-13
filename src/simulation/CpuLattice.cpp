@@ -183,7 +183,7 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                                                      settings.moveThreshold);
 
         agent.intent = Int4{agent.cell.x, agent.cell.y, agent.cell.z, 0};
-        if (settings.worldMode == WorldMode::Construction) {
+        if (worldBuilds(settings.worldMode)) {
             int wantedX = agent.cell.x;
             int wantedY = agent.cell.y;
             int wantedZ = agent.cell.z;
@@ -373,7 +373,7 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                 const int movedX = agent.intent.x - agent.cell.x;
                 const int movedY = agent.intent.y - agent.cell.y;
                 const int movedZ = agent.intent.z - agent.cell.z;
-                if (settings.worldMode != WorldMode::Construction || movedX != 0 || movedZ != 0) {
+                if (!worldBuilds(settings.worldMode) || movedX != 0 || movedZ != 0) {
                     agent.cell.w = static_cast<std::int32_t>(
                         kern::latticeNeighborIndex(movedX, movedY, movedZ));
                 }
@@ -382,7 +382,7 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                 agent.cell.z = agent.intent.z;
                 moved = true;
             } else {
-                refused = settings.worldMode != WorldMode::Construction ||
+                refused = !worldBuilds(settings.worldMode) ||
                           population.claims[worldBase + wanted] >= 0;
             }
         }
@@ -393,7 +393,7 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
         // say: an agent that never asked to move was never refused.
         agent.memory.z = moved ? 0.0F : agent.memory.z + 1.0F;
 
-        if (settings.worldMode == WorldMode::Construction && agent.beacon.x >= 0 &&
+        if (worldBuilds(settings.worldMode) && agent.beacon.x >= 0 &&
             !worldStructures.empty()) {
             const std::uint32_t target =
                 kern::latticeCellIndex(agent.beacon.x, agent.beacon.y, agent.beacon.z,
@@ -411,7 +411,30 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
 
         agent.metrics.z +=
             (moved ? 1.0F : 0.0F) + settings.fitness.signalCostFactor * agent.signal.x;
-        if (settings.worldMode == WorldMode::Construction) {
+        if (settings.worldMode == WorldMode::Harvest) {
+            // Mirrors the harvest block of lattice_resolve.comp: pick up at the
+            // resource, score on the floor.
+            const std::uint32_t hash =
+                kern::latticeResourceHash(world, settings.beaconSeed);
+            const int resourceX = kern::latticeResourceX(hash, settings.latticeWidth);
+            const int resourceY =
+                kern::latticeResourceY(settings.resourceHeight, settings.latticeHeight);
+            const int resourceZ =
+                kern::latticeResourceZ(hash, settings.latticeWidth, settings.latticeDepth);
+            const std::uint32_t distance = kern::latticeStepDistance(
+                static_cast<std::uint32_t>(settings.neighborhood), resourceX - agent.cell.x,
+                resourceY - agent.cell.y, resourceZ - agent.cell.z);
+            agent.metrics.x = std::max(agent.metrics.x,
+                                       kern::latticeNearness(distance, maximumDistance));
+            if (agent.memory.w <= 0.0F) {
+                if (kern::latticeBeaconReached(distance, settings.beaconContactRadius)) {
+                    agent.memory.w = 1.0F;
+                }
+            } else if (agent.cell.y == 0) {
+                agent.memory.w = 0.0F;
+                agent.metrics.w += 1.0F;
+            }
+        } else if (settings.worldMode == WorldMode::Construction) {
             const bool onHorizontalPerimeter =
                 agent.cell.x == 0 || agent.cell.z == 0 ||
                 agent.cell.x == static_cast<std::int32_t>(settings.latticeWidth) - 1 ||

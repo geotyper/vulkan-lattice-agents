@@ -66,7 +66,7 @@ void main() {
             const int movedZ = agent.intent.z - agent.cell.z;
             // Pure vertical climbing keeps the face the agent was holding as
             // its facing, so it can continue upward or add to that column.
-            if (params.worldMode != LatticeWorldConstruction || movedX != 0 || movedZ != 0) {
+            if (!latticeWorldBuilds(params.worldMode) || movedX != 0 || movedZ != 0) {
                 agent.cell.w = int(latticeNeighborIndex(movedX, movedY, movedZ));
             }
             agent.cell.xyz = agent.intent.xyz;
@@ -74,7 +74,7 @@ void main() {
         } else {
             // A build claim is a new wall, not a failed collision with an
             // agent, and construction walls carry no refusal penalty.
-            refused = params.worldMode != LatticeWorldConstruction ||
+            refused = !latticeWorldBuilds(params.worldMode) ||
                       claims[worldBase + wanted] >= 0;
         }
     }
@@ -86,7 +86,7 @@ void main() {
     // because this is the pass that knows whether the move happened.
     agent.memory.z = moved ? 0.0 : agent.memory.z + 1.0;
 
-    if (params.worldMode == LatticeWorldConstruction && agent.beacon.x >= 0) {
+    if (latticeWorldBuilds(params.worldMode) && agent.beacon.x >= 0) {
         const uint target = latticeCellIndex(agent.beacon.x, agent.beacon.y, agent.beacon.z,
                                              params.latticeWidth, params.latticeHeight);
         // Re-check emptiness at commit time. The decide pass already rejects an
@@ -102,7 +102,31 @@ void main() {
     }
 
     agent.metrics.z += (moved ? 1.0 : 0.0) + fitnessSignalCostFactor(params.fitness) * agent.signal.x;
-    if (params.worldMode == LatticeWorldConstruction) {
+    if (params.worldMode == LatticeWorldHarvest) {
+        // Pick up at the resource, score on the floor. Fetching rather than
+        // touching: a load that has to come back down makes a route pay off
+        // every time it is used, so what is selected for is a path rather than
+        // one lucky scramble. See PLAN.md.
+        const uint hash = latticeResourceHash(uint(agent.beacon.w), params.beaconSeed);
+        const int resourceX = latticeResourceX(hash, params.latticeWidth);
+        const int resourceY = latticeResourceY(params.resourceHeight, params.latticeHeight);
+        const int resourceZ = latticeResourceZ(hash, params.latticeWidth, params.latticeDepth);
+        const uint distance = latticeStepDistance(params.neighborhood, resourceX - agent.cell.x,
+                                                  resourceY - agent.cell.y,
+                                                  resourceZ - agent.cell.z);
+        // The shaping, and the only gradient an early population has: nobody
+        // reaches height four by accident, so how near anyone ever got is what
+        // selection has to work with until somebody arrives.
+        agent.metrics.x = max(agent.metrics.x, latticeNearness(distance, params.maximumDistance));
+        if (agent.memory.w <= 0.0) {
+            if (latticeBeaconReached(distance, params.beaconContactRadius)) {
+                agent.memory.w = 1.0;
+            }
+        } else if (agent.cell.y == 0) {
+            agent.memory.w = 0.0;
+            agent.metrics.w += 1.0;
+        }
+    } else if (params.worldMode == LatticeWorldConstruction) {
         const bool onHorizontalPerimeter =
             agent.cell.x == 0 || agent.cell.z == 0 ||
             agent.cell.x == int(params.latticeWidth) - 1 ||

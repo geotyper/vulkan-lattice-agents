@@ -84,6 +84,7 @@ public:
     // fewer agents. Both quantities only ever fall, and both have a floor, so
     // repeating the pair until the group size stops moving terminates.
     void settleLayout();
+    void readStructureDiagnosis();
     // Re-reads the lattice extents from the settings, clamping them to what the
     // occupancy allocation can hold, and republishes the view. Called whenever a
     // slider moves the box.

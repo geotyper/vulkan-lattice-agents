@@ -34,14 +34,72 @@ const uint LatticeNeighborhoodFaces = 0u;
 const uint LatticeNeighborhoodMoore = 1u;
 const uint LatticeNeighborhoodCount = 2u;
 
-// Two tasks share the lattice machinery. The navigation baseline follows a
+// Three tasks share the lattice machinery. The navigation baseline follows a
 // beacon; construction replaces it with a persistent field of supported blocks
-// and constrains agents to surfaces and climbable faces.
+// and constrains agents to surfaces and climbable faces; harvest keeps every one
+// of construction's rules and moves the reward off the building and onto
+// something only a building can reach.
 const uint LatticeWorldBeacon = 0u;
 const uint LatticeWorldConstruction = 1u;
-const uint LatticeWorldCount = 2u;
+const uint LatticeWorldHarvest = 2u;
+const uint LatticeWorldCount = 3u;
+
+// Whether a world has a block field and the movement rules that go with it.
+// Written once because it is asked in seven places across two languages, and a
+// world mode that means "you may build" must not be a list somebody extends in
+// six of them.
+VKEXP_LATTICE_FN bool latticeWorldBuilds(uint worldMode) {
+    return worldMode == LatticeWorldConstruction || worldMode == LatticeWorldHarvest;
+}
 
 const int LatticeNoStructure = 0;
+
+// --- placement ---------------------------------------------------------------
+
+// The integer hash that places everything a world needs placed. Shared rather
+// than host-only because the harvest world's resource has to be found by the
+// shader as well: mirroring it onto the agent record would cost the lane that
+// carries the per-step build intent, and a resource is a property of the world,
+// not of the agent looking at it.
+VKEXP_LATTICE_FN uint latticeMix(uint value) {
+    value ^= value >> 16u;
+    value *= 0x7FEB352Du;
+    value ^= value >> 15u;
+    value *= 0x846CA68Bu;
+    value ^= value >> 16u;
+    return value;
+}
+
+VKEXP_LATTICE_FN uint latticeMix(uint first, uint second) {
+    return latticeMix(first ^ (latticeMix(second) + 0x9E3779B9u + (first << 6u) + (first >> 2u)));
+}
+
+// Where the resource stands in one world, as a pure function of the world index
+// and the seed -- like a beacon, and for the same two reasons: a genome is
+// scored on several placements rather than on one it could memorise, and world
+// 91 can be placed without having placed world 90.
+//
+// Hashed against its own constant so that a harvest world and a beacon world
+// built from the same seed do not put their objectives in the same cell.
+VKEXP_LATTICE_FN uint latticeResourceHash(uint world, uint seed) {
+    return latticeMix(seed ^ 0x8E5017u, world);
+}
+
+VKEXP_LATTICE_FN int latticeResourceX(uint hash, uint width) {
+    return int(hash % width);
+}
+
+VKEXP_LATTICE_FN int latticeResourceZ(uint hash, uint width, uint depth) {
+    return int((hash / width) % depth);
+}
+
+// Clamped to the box rather than wrapped: a resource asked for above the ceiling
+// is a setting to correct, and wrapping it to somewhere near the floor would
+// hide that by making the world quietly easy.
+VKEXP_LATTICE_FN int latticeResourceY(uint resourceHeight, uint height) {
+    const uint ceiling = height > 0u ? height - 1u : 0u;
+    return int(resourceHeight < ceiling ? resourceHeight : ceiling);
+}
 
 // Why a build attempt did or did not become a block, counted per world over a
 // generation. Exactly one of these is recorded per agent per step in the

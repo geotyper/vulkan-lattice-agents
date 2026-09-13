@@ -469,16 +469,82 @@ bool SimulationDriver::generationComplete() const {
     return state_.statistics.step >= state_.controls.stepsPerGeneration;
 }
 
+// The block field and why the builders were refused, read back together
+// because they answer one question: what happened to all that effort. Neither
+// reaches fitness in any world.
+void SimulationDriver::readStructureDiagnosis() {
+    const std::size_t activeCells =
+        static_cast<std::size_t>(state_.lattice.cellsPerWorld) * state_.worlds.worldCount;
+    structureStaging_.resize(activeCells);
+    structures_.read(structureStaging_.data(), structureStaging_.size() * sizeof(std::int32_t));
+
+    buildOutcomeStaging_.assign(static_cast<std::size_t>(state_.worlds.worldCount) *
+                                    lattice::kernel::LatticeBuildOutcomeCount,
+                                0U);
+    buildOutcomes_.read(buildOutcomeStaging_.data(),
+                        buildOutcomeStaging_.size() * sizeof(std::uint32_t));
+    state_.statistics.buildOutcomes = buildOutcomeStaging_;
+
+    state_.statistics.worldShapes.assign(state_.worlds.worldCount, StructureShape{});
+    state_.statistics.bestWorld = 0;
+    for (std::uint32_t world = 0; world < state_.worlds.worldCount; ++world) {
+        const std::size_t begin = static_cast<std::size_t>(world) * state_.lattice.cellsPerWorld;
+        state_.statistics.worldShapes[world] = measureStructureShape(
+            std::span<const std::int32_t>{structureStaging_}.subspan(
+                begin, state_.lattice.cellsPerWorld),
+            state_.settings);
+    }
+}
+
 GenerationSummary SimulationDriver::finishGeneration() {
     agentBuffers_.read().read(agents_.data(), agents_.size() * sizeof(AgentState));
     std::vector<float> fitness(evolution_.population().size());
     std::size_t arrived = 0;
     float objectiveRatio = 0.0F;
-    if (state_.settings.worldMode == WorldMode::Construction) {
-        const std::size_t activeCells =
-            static_cast<std::size_t>(state_.lattice.cellsPerWorld) * state_.worlds.worldCount;
-        structureStaging_.resize(activeCells);
-        structures_.read(structureStaging_.data(), structureStaging_.size() * sizeof(std::int32_t));
+    // Read back before scoring, and for every world that builds rather than for
+    // the one that is scored on building. The harvest world is where what was
+    // built matters most and is counted least: the fitness below does not look
+    // at a single block, so the only way to see whether a group found a cheaper
+    // route or a bigger pile is to measure the shape.
+    if (worldBuilds(state_.settings.worldMode)) {
+        readStructureDiagnosis();
+    } else {
+        state_.statistics.worldShapes.clear();
+        state_.statistics.buildOutcomes.clear();
+        state_.statistics.bestWorld = 0;
+    }
+    if (state_.settings.worldMode == WorldMode::Harvest) {
+        // Deliveries, and the best anyone got to the resource. Blocks score
+        // nothing at all here: a block is time spent, and whether it was spent
+        // well is exactly the question the world asks. The nearness term is
+        // shaping and not the objective -- without it no early population has a
+        // gradient, because nobody reaches height four by accident.
+        std::vector<float> deliveries(state_.worlds.worldCount, 0.0F);
+        std::vector<float> reach(state_.worlds.worldCount, 0.0F);
+        for (std::size_t agent = 0; agent < agents_.size(); ++agent) {
+            const std::uint32_t world =
+                logicalWorldForAgent(static_cast<std::uint32_t>(agent),
+                                     state_.worlds.agentsPerWorld, config_.trialsPerGenome);
+            deliveries[world] += agents_[agent].metrics.w;
+            reach[world] = std::max(reach[world], agents_[agent].metrics.x);
+        }
+        for (std::size_t genome = 0; genome < fitness.size(); ++genome) {
+            const std::uint32_t group =
+                static_cast<std::uint32_t>(genome) / state_.worlds.agentsPerWorld;
+            for (std::uint32_t trial = 0; trial < config_.trialsPerGenome; ++trial) {
+                const std::uint32_t world = group * config_.trialsPerGenome + trial;
+                fitness[genome] +=
+                    state_.settings.fitness.objectiveBonus * deliveries[world] +
+                    state_.settings.fitness.trackingReward * reach[world];
+            }
+            fitness[genome] /= static_cast<float>(config_.trialsPerGenome);
+        }
+        arrived = static_cast<std::size_t>(
+            std::count_if(agents_.begin(), agents_.end(),
+                          [](const AgentState& agent) { return agent.metrics.w > 0.0F; }));
+        objectiveRatio =
+            static_cast<float>(arrived) / static_cast<float>(std::max<std::size_t>(agents_.size(), 1));
+    } else if (state_.settings.worldMode == WorldMode::Construction) {
         std::vector<float> weightedBlocks(state_.worlds.worldCount, 0.0F);
         std::vector<float> perimeterTicks(state_.worlds.worldCount, 0.0F);
         const std::uint32_t width = state_.settings.latticeWidth;
@@ -503,24 +569,7 @@ GenerationSummary SimulationDriver::finishGeneration() {
                                      state_.worlds.agentsPerWorld, config_.trialsPerGenome);
             perimeterTicks[world] += agents_[agent].metrics.w;
         }
-        buildOutcomeStaging_.assign(static_cast<std::size_t>(state_.worlds.worldCount) *
-                                        lattice::kernel::LatticeBuildOutcomeCount,
-                                    0U);
-        buildOutcomes_.read(buildOutcomeStaging_.data(),
-                            buildOutcomeStaging_.size() * sizeof(std::uint32_t));
-        state_.statistics.buildOutcomes = buildOutcomeStaging_;
-
-        // What each world actually looks like. Nothing below reads it back into
-        // fitness -- it is reported so that two runs with the same score can be
-        // told apart, which the score alone cannot do.
-        state_.statistics.worldShapes.assign(state_.worlds.worldCount, StructureShape{});
-        state_.statistics.bestWorld = 0;
         for (std::uint32_t world = 0; world < state_.worlds.worldCount; ++world) {
-            const std::size_t begin = static_cast<std::size_t>(world) * state_.lattice.cellsPerWorld;
-            state_.statistics.worldShapes[world] = measureStructureShape(
-                std::span<const std::int32_t>{structureStaging_}.subspan(
-                    begin, state_.lattice.cellsPerWorld),
-                state_.settings);
             if (weightedBlocks[world] > weightedBlocks[state_.statistics.bestWorld]) {
                 state_.statistics.bestWorld = world;
             }

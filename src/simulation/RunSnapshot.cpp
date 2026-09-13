@@ -61,7 +61,7 @@ constexpr std::uint32_t settingsFloatCount = 11;
 // SimulationStep, and this is what notices when a new tunable is added and
 // quietly not saved. If it fires: add the field to one of the two lists above,
 // bump runSnapshotVersion, then update this number.
-static_assert(sizeof(SimulationStep) == 104,
+static_assert(sizeof(SimulationStep) == 108,
               "SimulationStep changed shape -- update the run snapshot field lists");
 
 // The fields that are not floats, kept apart so the float list above stays a
@@ -82,9 +82,10 @@ struct SettingsIntegers {
     std::uint32_t constructionHeightLead{};
     std::uint32_t allowSideSupportedBlocks{};
     std::uint32_t constructionSupportRadius{};
+    std::uint32_t resourceHeight{};
 };
 
-static_assert(sizeof(SettingsIntegers) == 60);
+static_assert(sizeof(SettingsIntegers) == 64);
 
 void readExactly(std::ifstream& stream, void* destination, const std::size_t bytes,
                  const std::filesystem::path& path) {
@@ -149,7 +150,8 @@ void saveRunSnapshot(const std::filesystem::path& path, const RunSnapshot& snaps
                                     settings.buildIntervalTicks,
                                     settings.constructionHeightLead,
                                     settings.allowSideSupportedBlocks,
-                                    settings.constructionSupportRadius};
+                                    settings.constructionSupportRadius,
+                                    settings.resourceHeight};
     stream.write(reinterpret_cast<const char*>(&integers), sizeof(integers));
 
     for (const Genome& genome : snapshot.genomes) {
@@ -161,7 +163,7 @@ void saveRunSnapshot(const std::filesystem::path& path, const RunSnapshot& snaps
     const std::uint32_t floorCapacity =
         snapshot.settings.latticeWidth * snapshot.settings.latticeDepth;
     const std::uint32_t requestedAgents =
-        snapshot.settings.worldMode == WorldMode::Construction
+        worldBuilds(snapshot.settings.worldMode)
             ? std::min(snapshot.requestedAgentsPerWorld, floorCapacity)
             : snapshot.requestedAgentsPerWorld;
     const std::uint32_t agentsPerWorld =
@@ -278,6 +280,7 @@ RunSnapshot loadRunSnapshot(const std::filesystem::path& path) {
     snapshot.settings.buildIntervalTicks = integers.buildIntervalTicks;
     snapshot.settings.constructionHeightLead = integers.constructionHeightLead;
     snapshot.settings.constructionSupportRadius = integers.constructionSupportRadius;
+    snapshot.settings.resourceHeight = integers.resourceHeight;
     snapshot.settings.allowSideSupportedBlocks = integers.allowSideSupportedBlocks;
 
     snapshot.genomes.assign(header.genomeCount, Genome{neuro::Weights(header.weightCount, 0.0F)});
@@ -289,7 +292,7 @@ RunSnapshot loadRunSnapshot(const std::filesystem::path& path) {
     const std::uint32_t floorCapacity =
         snapshot.settings.latticeWidth * snapshot.settings.latticeDepth;
     const std::uint32_t requestedAgents =
-        snapshot.settings.worldMode == WorldMode::Construction
+        worldBuilds(snapshot.settings.worldMode)
             ? std::min(snapshot.requestedAgentsPerWorld, floorCapacity)
             : snapshot.requestedAgentsPerWorld;
     const std::uint32_t agentsPerWorld = clampAgentsPerWorld(header.genomeCount, requestedAgents);

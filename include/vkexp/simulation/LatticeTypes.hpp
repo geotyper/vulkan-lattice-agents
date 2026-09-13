@@ -34,7 +34,13 @@ inline constexpr std::size_t neighborhoodCount = lattice::kernel::LatticeNeighbo
 enum class WorldMode : std::uint32_t {
     Beacon = lattice::kernel::LatticeWorldBeacon,
     Construction = lattice::kernel::LatticeWorldConstruction,
+    Harvest = lattice::kernel::LatticeWorldHarvest,
 };
+
+// Whether this world has a block field and the movement rules that go with it.
+[[nodiscard]] constexpr bool worldBuilds(const WorldMode mode) {
+    return lattice::kernel::latticeWorldBuilds(static_cast<std::uint32_t>(mode));
+}
 
 inline constexpr std::size_t worldModeCount = lattice::kernel::LatticeWorldCount;
 
@@ -175,8 +181,10 @@ struct alignas(16) AgentState {
     // best nearness reached, steps in contact, effort spent, moves refused.
     // What each is worth is a weight; see latticeTrialFitness.
     // Construction reuses .x for best relative height, .y for blocks placed
-    // and .w for horizontal-perimeter ticks. Scoring interprets the shared
-    // record according to worldMode.
+    // and .w for horizontal-perimeter ticks. Harvest keeps .y as blocks placed,
+    // because it still builds, puts nearness to the resource in .x and
+    // deliveries in .w -- which is the only one of the four it is scored on.
+    // Scoring interprets the shared record according to worldMode.
     Float4 metrics;
     // The two output-layer recurrent cells, fed back as inputs next step, and
     // two spare lanes. Kept even though every hidden neuron now carries its own
@@ -329,6 +337,10 @@ struct SimulationStep {
     // every part of the world wait for every other part can only produce a
     // layer cake.
     std::uint32_t constructionSupportRadius{2};
+    // Harvest: how far above the floor the resource sits. Four rather than one,
+    // because a resource an agent could walk to would make the building
+    // optional, and the whole of this world is that it is not.
+    std::uint32_t resourceHeight{4};
     // Opt-in cantilevers: a block may use a cardinal x/z face as support. Edge
     // and corner contact remain insufficient.
     std::uint32_t allowSideSupportedBlocks{};
@@ -369,7 +381,7 @@ struct SimulationStep {
 // invariant the whole arbitration rests on. So the number is named here and
 // clamped once, where the settings are known.
 [[nodiscard]] constexpr std::uint32_t latticeSpawnCapacity(const SimulationStep& settings) {
-    if (settings.worldMode == WorldMode::Construction) {
+    if (worldBuilds(settings.worldMode)) {
         return std::max(settings.latticeWidth * settings.latticeDepth, 1U);
     }
     return std::max(latticeCellsPerWorld(settings), 2U) - 1U;
@@ -438,21 +450,25 @@ struct alignas(16) GpuStepParameters {
     std::uint32_t constructionHeightLead{};
     std::uint32_t allowSideSupportedBlocks{};
     std::uint32_t constructionSupportRadius{};
+    std::uint32_t resourceHeight{};
+    // Only the harvest world reads it, and only to place its resource. On the
+    // device rather than mirrored onto the agent because a resource belongs to
+    // the world, and the lanes that would carry it are the per-step build
+    // intent.
+    std::uint32_t beaconSeed{};
     GpuFitnessWeights fitness;
 };
 
-static_assert(sizeof(GpuStepParameters) == 128);
+static_assert(sizeof(GpuStepParameters) == 144);
 static_assert(offsetof(GpuStepParameters, latticeWidth) == 28);
-// The one offset the GLSL mirror cannot derive for itself. Twenty-four scalars
-// come to exactly 96 bytes, so nothing is padded today -- but the shader only
-// agrees because its copy of this block is declared as vec4s, which std430
-// aligns to 16 just as `alignas(16)` does here. Eight floats there would align
-// to 4, and the moment the scalar count stops being a multiple of four the two
-// strides would differ by a word: invisible at step index zero and total
-// nonsense at every index after it.
-static_assert(offsetof(GpuStepParameters, fitness) == 96);
+// The one offset the GLSL mirror cannot derive for itself. Twenty-six scalars
+// come to 104 bytes and both languages round this block up to 112 -- but only
+// because the shader's copy is declared as vec4s, which std430 aligns to 16
+// just as `alignas(16)` does here. Eight floats there would align to 4, and the
+// two strides would then differ by three words: invisible at step index zero
+// and total nonsense at every index after it.
+static_assert(offsetof(GpuStepParameters, fitness) == 112);
 static_assert(offsetof(GpuStepParameters, neuronModel) == 56);
-static_assert(offsetof(GpuStepParameters, fitness) == 96);
 
 // The network this run actually builds. The two ends are the lattice's own: how
 // many cells surround one, and how many drives a move needs. Only the hidden

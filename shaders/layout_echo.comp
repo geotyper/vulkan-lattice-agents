@@ -58,6 +58,8 @@ void main() {
     echo[at++] = params.constructionHeightLead;
     echo[at++] = params.allowSideSupportedBlocks;
     echo[at++] = params.constructionSupportRadius;
+    echo[at++] = params.resourceHeight;
+    echo[at++] = params.beaconSeed;
     echo[at++] = floatBitsToUint(params.fitness.shaping.x);
     echo[at++] = floatBitsToUint(params.fitness.shaping.y);
     echo[at++] = floatBitsToUint(params.fitness.shaping.z);

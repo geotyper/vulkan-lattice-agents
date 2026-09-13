@@ -1133,10 +1133,12 @@ void testPopulationReload() {
 
 void testStepParameterPacking() {
     // The GPU step parameters outgrew the 128 bytes Vulkan guarantees for push
-    // constants, which is why they travel in a storage buffer.
-    check(sizeof(vkexp::GpuStepParameters) <= 128,
-          "Step parameters fit a cache line pair, which is what indexing them per "
-          "step is worth doing for");
+    // constants, which is why they travel in a storage buffer. What matters now
+    // is only that the block stays a whole number of 16-byte vectors: that is
+    // the alignment both languages round it to, and a stride the two disagree
+    // about is invisible at step zero and nonsense at every step after it.
+    check(sizeof(vkexp::GpuStepParameters) % 16 == 0,
+          "The step parameter block is a whole number of 16-byte vectors");
 
     vkexp::SimulationStep settings{};
     settings.latticeWidth = 20;
@@ -1907,6 +1909,65 @@ void testLatticeStillness() {
           "Standing still far longer than that is still one, not more");
 }
 
+void testHarvestResource() {
+    vkexp::SimulationStep settings{};
+    settings.worldMode = vkexp::WorldMode::Harvest;
+    settings.latticeWidth = 12;
+    settings.latticeHeight = 10;
+    settings.latticeDepth = 9;
+    settings.resourceHeight = 4;
+    settings.beaconSeed = 0x5EEDU;
+
+    // Inside the box, at the height it was asked for, and the same answer every
+    // time it is asked: the device works this out for itself from the same
+    // functions, so a placement that drifted would put the shader's resource
+    // somewhere the host never draws.
+    std::set<std::array<std::int32_t, 3>> placements;
+    for (std::uint32_t world = 0; world < 64; ++world) {
+        const vkexp::Int4 cell = vkexp::lattice::resourceCell(settings, world);
+        check(vkexp::lattice::kernel::latticeInBounds(cell.x, cell.y, cell.z, settings.latticeWidth,
+                                                      settings.latticeHeight,
+                                                      settings.latticeDepth),
+              "Every world's resource is inside the lattice");
+        check(cell.y == 4, "and at the height the setting asked for");
+        check(cell.w == static_cast<std::int32_t>(world), "and knows which world it belongs to");
+        check(vkexp::lattice::resourceCell(settings, world).x == cell.x,
+              "Placement is a function of the world index, not a generator");
+        placements.insert({cell.x, cell.y, cell.z});
+    }
+    check(placements.size() > 16,
+          "Sixty-four worlds do not all put the resource in the same column");
+
+    // A resource asked for above the ceiling is clamped rather than wrapped.
+    // Wrapping would put it near the floor and make the world quietly easy,
+    // which is the opposite of saying the setting was wrong.
+    settings.resourceHeight = 99;
+    check(vkexp::lattice::resourceCell(settings, 0).y ==
+              static_cast<std::int32_t>(settings.latticeHeight) - 1,
+          "A resource above the ceiling sits on the ceiling, not back near the floor");
+
+    // It never shares a cell with the beacon of the same seed and world: the two
+    // are hashed against different constants precisely so that a run switched
+    // from one world to the other is a different problem and not the same one.
+    settings.resourceHeight = 4;
+    std::size_t collisions = 0;
+    for (std::uint32_t world = 0; world < 64; ++world) {
+        const vkexp::Int4 resource = vkexp::lattice::resourceCell(settings, world);
+        const vkexp::Int4 beacon = vkexp::lattice::beaconCell(settings, world);
+        collisions += resource.x == beacon.x && resource.z == beacon.z ? 1 : 0;
+    }
+    check(collisions < 16, "The resource and the beacon are not the same placement");
+
+    // Harvest builds, so it spawns on the floor and keeps the construction
+    // spawn capacity rather than the beacon one.
+    check(vkexp::worldBuilds(vkexp::WorldMode::Harvest) &&
+              vkexp::worldBuilds(vkexp::WorldMode::Construction) &&
+              !vkexp::worldBuilds(vkexp::WorldMode::Beacon),
+          "Harvest is a building world and beacon is not");
+    check(vkexp::latticeSpawnCapacity(settings) == settings.latticeWidth * settings.latticeDepth,
+          "A harvest world stands its group on the floor, like a construction world");
+}
+
 void testLatticeAddressing() {
     constexpr std::uint32_t width = 7;
     constexpr std::uint32_t height = 5;
@@ -2295,6 +2356,7 @@ int main() {
     testConstructionLocalFoundation();
     testLatticeAim();
     testLatticeStillness();
+    testHarvestResource();
     testLatticeAddressing();
     testLatticeNeighbourhood();
     testLatticeMoveRule();

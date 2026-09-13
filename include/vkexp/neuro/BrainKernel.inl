@@ -38,8 +38,20 @@ const uint BrainNeighborCount = 26u;
 // block and two fifths aimed out of the world, which is what being unable to
 // tell them apart costs.
 const uint BrainNeighborChannels = 4u;
-// Unit vector to the beacon, and how near it is.
-const uint BrainBeaconInputCount = 4u;
+// What the world's task tells the agent. Six slots, read differently by each
+// world and named once here rather than in three sensing functions:
+//
+//   beacon        0-2 unit vector to the beacon, 3 nearness, 4-5 unused
+//   construction  0 own height, 1 may build now, 2 built last step,
+//                 3 standing on something, 4-5 unused
+//   harvest       0-2 unit vector to the resource, 3 nearness,
+//                 4 may build now, 5 carrying a load
+//
+// A world that uses fewer leaves the rest at zero. Two spare slots across two
+// modes is a cheaper price than a block whose width depends on the mode, which
+// would make a population unloadable across worlds -- the same trade the
+// neighbourhood block already makes for the movement setting.
+const uint BrainBeaconInputCount = 6u;
 // Heading as a unit vector, whether the last move was refused, and how long the
 // agent has been standing still. The heading is fed back rather than kept
 // implicit because a move is chosen in lattice axes and not relative to a

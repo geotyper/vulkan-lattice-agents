@@ -346,6 +346,57 @@ rebuilding it on load costs less than writing it and cannot disagree with the
 agents it was built from. Construction is stored: a tower is history and cannot
 be inferred from where its builders happen to stand.
 
+## A third world: building towards something
+
+The construction world scores blocks weighted by height, which makes the
+structure the goal. That is the thing wrong with it. A goal that *is* the
+building admits exactly one answer -- more building -- and every question worth
+asking about architecture is a question about what a building is *for*.
+
+So the third world puts the reward somewhere a building is the only way to
+reach, and stops scoring the building at all.
+
+**The shape of it.** A resource sits at a cell above the floor. Nothing else
+changes about movement: in a construction world an agent may only climb a face
+of an existing structure, so with nothing built nobody leaves height zero, and
+any resource above the floor is unreachable by definition. To reach it, someone
+has to build something climbable underneath it. The structure is the path, and
+its shape is whatever gets an agent up there -- which is what makes it
+architecture rather than mass.
+
+**Fetch, not touch.** An agent that reaches the resource picks up a load and
+scores when it carries the load back down to the floor. Touching would be
+cheaper to implement and much weaker: a one-shot scramble scores as well as a
+staircase, so nothing selects for a path anyone can use twice. A load that has
+to come back down makes the route pay off every time it is used, which is what
+turns a lucky pile into infrastructure -- and, with a group in one world sharing
+a score, what makes one agent's ladder worth building for the others.
+
+**Where the resource is.** A pure function of the world index and the seed, the
+way beacons already are, so a genome is scored on several placements rather than
+one it can memorise, and so world 91 can be placed without placing world 90. It
+lives in `LatticeKernel.inl` and both languages compute it: nothing is mirrored
+onto the agent record, which leaves `beacon.xyz` free to keep meaning the
+per-step build intent, as it does in the construction world.
+
+**What fitness is.** Deliveries, plus the height shaping the construction world
+already accumulates. Deliveries alone is a needle in a haystack -- no early
+population reaches height four by accident -- and the best height an agent
+touched is a gradient pointing the right way that costs nothing new to compute.
+Blocks score nothing. A block is time spent, and spending it well is the whole
+problem.
+
+**What to watch.** Not mean fitness. The shape descriptors: whether the thing
+under the resource is a column, a ramp, or a staircase, and whether the same
+world builds one path or several. A run where deliveries rise while block count
+falls is the result worth having, because it means the group found a cheaper
+route rather than a bigger pile.
+
+**What is deliberately not in the first version.** A depleting resource,
+several resource nodes, a resource that has to be carried to a particular
+deposit rather than to the floor, and any cost per block. Each is a separate
+pressure and rule 4 says one at a time.
+
 ## Immediate next step
 
 **Measure again from scratch.** Every run recorded before the step parameter

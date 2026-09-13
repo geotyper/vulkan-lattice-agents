@@ -31,6 +31,8 @@ GpuStepParameters packStepParameters(const SimulationStep& settings,
             settings.constructionHeightLead,
             settings.allowSideSupportedBlocks,
             settings.constructionSupportRadius,
+            settings.resourceHeight,
+            settings.beaconSeed,
             packFitnessWeights(settings.fitness)};
 }
 
