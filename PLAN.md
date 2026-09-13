@@ -94,12 +94,11 @@ learnable and the shaping is readable.
 - [x] a camera that turns, zooms, slides and can be switched between perspective
       and orthographic, with a slab control for seeing inside a full box;
 - [x] a per-world picker that reaches trials as well as groups;
-- [ ] **see-through voxels that answer the opacity control.** The transparent
+- [x] see-through voxels that answer the opacity control. The transparent
       style resolves without sorting -- weighted blended, for the same reason
-      the lattice settles a contested cell with a minimum -- but moving the
-      slider currently changes nothing on screen, so either the pass is not
-      running or the weight is swallowing the alpha. Until this is understood
-      the slab is the only way to see inside a crowd;
+      the lattice settles a contested cell with a minimum -- and the weight is
+      now a shared kernel with a test on its shape, because a weight that has
+      gone flat produces a picture rather than an error;
 - [ ] inspect one agent: its neighbourhood vector, activations and drives;
 - [ ] generation timing.
 
@@ -367,6 +366,10 @@ are selecting coordination. Only after that comparison should compactness,
 symmetry or material cost enter fitness, since each defines a different
 aesthetic rather than displaying this one.
 
-The see-through voxel style is the one open defect: the control exists, the
-pass exists, and the picture does not change. It blocks reading a crowded world
-from outside, which is exactly what a construction run needs.
+One thing to watch while reading a crowded world from outside: the trails and
+the agents resolve through the same transparency pass, so a long trail history
+puts a thousand fragments in front of twelve. The depth weighting now gives the
+nearest surface about fifty times the say of the far side, which is what makes
+an agent read as an agent, but a box full of breadcrumbs is still a box full of
+breadcrumbs. Turning the trails off, or shortening them, is what makes the
+opacity control legible.

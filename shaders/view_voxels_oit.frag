@@ -4,6 +4,7 @@
 #include "neuro/brain_kernel.glsl"
 #include "simulation/agent_layout.glsl"
 #include "lattice/lattice_view.glsl"
+#include "lattice/transparency_kernel.glsl"
 
 // Weighted blended order-independent transparency (McGuire & Bavoil). The
 // reason it is here rather than a back-to-front sort is the same reason the
@@ -33,13 +34,19 @@ void main() {
                               0.0, 1.0);
 
     // Nearer fragments weigh more, so a voxel at the front of the box is not
-    // washed out by the ones behind it. The constants are the paper's: what
-    // matters is that the weight falls off fast with depth and never reaches
-    // zero, which is what keeps a deep stack from saturating.
-    const float depth = gl_FragCoord.z;
-    const float weight =
-        clamp(pow(min(1.0, alpha * 10.0) + 0.01, 3.0) * 1e8 * pow(1.0 - depth * 0.9, 3.0),
-              1e-2, 3e3);
+    // washed out by the ones behind it. The distance is measured in
+    // half-diagonals of the lattice and in a straight line from the eye --
+    // linear, and on the same scale as the camera's own distance control.
+    // Window depth would be the cheaper thing to reach for and is what the
+    // published form uses; see TransparencyKernel.inl for why it cannot work
+    // with a near plane this close to the eye.
+    const float boxRadius = max(0.5 * length(latticeExtent()), 1.0e-3);
+    // The box is centred on the origin whatever the camera has been dragged to
+    // look at, so how far the eye is from the origin is how far it is from the
+    // lattice -- which is the scale the weight reads the fragment against.
+    const float eyeDistance = length(view.camera.xyz) / boxRadius;
+    const float fragmentDistance = length(fragWorld - view.camera.xyz) / boxRadius;
+    const float weight = latticeTransparencyWeight(alpha, fragmentDistance, eyeDistance);
 
     outAccumulation = vec4(shaded * alpha, alpha) * weight;
     outRevealage = alpha;
