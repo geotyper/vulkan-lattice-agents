@@ -22,6 +22,7 @@ const uint LatticeViewModeAgents = 0u;
 const uint LatticeViewModeBeacon = 1u;
 const uint LatticeViewModeBounds = 2u;
 const uint LatticeViewModeTrail = 3u;
+const uint LatticeViewModeStructure = 4u;
 
 uint latticeViewMode() { return uint(view.lattice.w) & 0xffu; }
 uint latticeViewSliceAxis() { return (uint(view.lattice.w) >> 8u) & 0xffu; }

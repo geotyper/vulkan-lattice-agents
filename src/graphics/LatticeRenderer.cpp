@@ -109,6 +109,7 @@ constexpr std::uint32_t modeAgents = 0;
 constexpr std::uint32_t modeBeacon = 1;
 constexpr std::uint32_t modeBounds = 2;
 constexpr std::uint32_t modeTrail = 3;
+constexpr std::uint32_t modeStructure = 4;
 
 // Mirrors the push constant block in shaders/lattice/lattice_view.glsl. Exactly
 // the 128 bytes Vulkan guarantees, with nothing spare: the mode, the slice axis
@@ -129,6 +130,7 @@ LatticeRenderer::LatticeRenderer(SimulationState& state, Profiler& profiler)
     : state_(state), metric_(profiler.registerMetric("Lattice view")) {}
 
 void LatticeRenderer::onAttach(AppContext& context) {
+    state_.display.camera = latticeHomeCamera(state_.settings);
     createPipelines(context);
     createTarget(context, state_.viewport.extent);
 }
@@ -148,12 +150,12 @@ namespace {
 
 void LatticeRenderer::createPipelines(AppContext& context) {
     if (state_.agents.buffers[0] == VK_NULL_HANDLE || state_.agents.buffers[1] == VK_NULL_HANDLE ||
-        state_.trails.buffer == VK_NULL_HANDLE) {
+        state_.trails.buffer == VK_NULL_HANDLE || state_.structures.buffer == VK_NULL_HANDLE) {
         throw std::logic_error("LatticeRenderer requires SimulationModule to be attached first");
     }
     const VkDevice device = context.vulkan.device();
 
-    std::array<VkDescriptorSetLayoutBinding, 2> agentBindings{};
+    std::array<VkDescriptorSetLayoutBinding, 3> agentBindings{};
     for (std::uint32_t index = 0; index < agentBindings.size(); ++index) {
         agentBindings[index].binding = index;
         agentBindings[index].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -168,7 +170,7 @@ void LatticeRenderer::createPipelines(AppContext& context) {
                                     agentSetLayout_.put(device)) != VK_SUCCESS) {
         throw std::runtime_error("Unable to create lattice view descriptor layout");
     }
-    agentAllocator_.create(device, {2, {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4}}});
+    agentAllocator_.create(device, {2, {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6}}});
     for (std::size_t index = 0; index < agentSets_.size(); ++index) {
         agentSets_[index] = agentAllocator_.allocate(agentSetLayout_.get());
         DescriptorSetWriter{}
@@ -176,6 +178,8 @@ void LatticeRenderer::createPipelines(AppContext& context) {
                          state_.agents.size)
             .writeBuffer(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, state_.trails.buffer, 0,
                          state_.trails.size)
+            .writeBuffer(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, state_.structures.buffer, 0,
+                         state_.structures.size)
             .update(device, agentSets_[index]);
     }
 
@@ -586,6 +590,9 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
 
     const bool transparent = display.voxelStyle == VoxelStyle::Transparent;
     const bool drawAgents = display.agents && visibleAgents > 0 && state_.agents.agentCount > 0;
+    const bool drawStructures = display.structures &&
+                                settings.worldMode == WorldMode::Construction &&
+                                state_.structures.buffer != VK_NULL_HANDLE;
     const std::uint32_t trailSamples =
         std::min({state_.trails.recordedTicks, display.trailLength, state_.trails.capacity});
     const bool drawTrails = display.trails && visibleAgents > 0 && trailSamples > 0 &&
@@ -604,7 +611,7 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
         vkCmdDraw(commands, boxEdgeVertexCount, 1, 0, 0);
     }
     vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, voxelPipeline_.get());
-    if (display.beacons) {
+    if (display.beacons && settings.worldMode == WorldMode::Beacon) {
         // Always opaque, and a little larger than a cell. It is the one thing in
         // the box whose position is the question rather than the answer, so it
         // should not be the thing that disappears when transparency is on.
@@ -614,6 +621,21 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
         push();
         vkCmdDraw(commands, cubeVertexCount, 1, 0, 0);
         parameters.camera[3] = agentScale;
+    }
+    if (drawStructures) {
+        // One instance per cell is deliberately simple: the structure field is
+        // already on the device, and empty instances collapse in the vertex
+        // shader without a compaction pass or readback. A tiny seam keeps a
+        // tower legible as masonry instead of one featureless prism.
+        const std::array<std::int32_t, 4> savedBeacon = parameters.beacon;
+        const float savedScale = parameters.camera[3];
+        parameters.beacon[3] = static_cast<std::int32_t>(state_.worlds.selectedWorld);
+        parameters.camera[3] = 0.94F;
+        pushWord(modeStructure);
+        push();
+        vkCmdDraw(commands, cubeVertexCount, state_.lattice.cellsPerWorld, 0, 0);
+        parameters.beacon = savedBeacon;
+        parameters.camera[3] = savedScale;
     }
     if (drawAgents && !transparent) {
         pushWord(modeAgents);

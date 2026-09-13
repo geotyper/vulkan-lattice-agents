@@ -19,15 +19,14 @@ than one application-specific module.
 
 ## Current experiment
 
-**One beacon cell per world.** Each logical world has a single target cell,
-placed by a hash of the run's beacon seed and the world index. An agent is
-scored on the nearest it ever got, plus a bonus for every step spent within the
-contact radius, minus what it spent moving and minus what it wasted walking into
-walls and into other agents.
+There are two selectable tasks. **Construction** starts agents on the floor and
+gives them a shared persistent block field; the interactive build opens in this
+mode. **Beacon** remains the navigation baseline, with one hashed target cell per
+logical world.
 
 ```
 Lattice:    32x32x16 = 16384 cells per world, Moore (26)
-Brain:      88 -> 20 -> 6
+Brain:      88 -> 20 -> 7
 Trial:      900 steps = 15.0 s at 60.0 Hz
 Population: 512 genomes x 4 trials = 2048 agents in 172 lattices
 Movement:   threshold 0.25, beacon reached within 1 cell(s)
@@ -39,17 +38,18 @@ Movement:   threshold 0.25, beacon reached within 1 cell(s)
   group size 512 genomes occupy 43 groups and 172 independent lattices;
 - 26 neighbouring cells read as three channels each -- occupied, blocked,
   and what the occupant is broadcasting -- 78 inputs;
-- a unit direction to the beacon and a nearness scalar, 4 inputs;
+- four task inputs: beacon direction/nearness, or height, build readiness,
+  previous build success and physical support;
 - the agent's own heading as the unit step it last took, plus a flag saying its
   last move was refused, 4 inputs;
 - two recurrent memory cells fed back, 2 inputs;
-- `88 inputs -> 20 tanh neurons -> 6 outputs` by default, with the hidden layers
+- `88 inputs -> 20 tanh neurons -> 7 outputs` by default, with the hidden layers
   configurable from the Brain window: up to three of them, 32 neurons in total;
 - every hidden neuron holds its own state and a time constant that is evolved,
   recomputed from the inputs each step, or pinned to the step, so a memory is
   measured in seconds and can be held until something says to let go;
-- outputs are three movement drives, one broadcast intensity, and the two
-  recurrent cells;
+- outputs are three movement drives, one broadcast intensity, one build impulse,
+  and the two recurrent cells;
 - a move is one cell per step, along the faces or along any of the 26 diagonals,
   chosen by a setting;
 - contested cells resolved by a rule that does not depend on the order agents
@@ -70,14 +70,57 @@ controls four agents with the same weights but different spawn cells and a
 different beacon, and their scores are averaged before selection, which
 discourages a solution that only works from one corner of one lattice.
 
+### Construction world
+
+A construction block normally appears only on the floor or directly above
+another block in the same `(x,z)` column. The optional `Side-supported bridges`
+rule also accepts contact through one cardinal x/z face; diagonal edge and
+corner contact never provide support. With the option enabled, an unsupported
+placement in front of an elevated agent falls back one level, in front of its
+feet. An agent standing on a column can therefore start a bridge, step onto it
+and extend it. The build output has a configurable threshold and a successful
+placement starts a configurable cooldown (12 ticks by default). An occupied
+target is rejected both when actions are proposed and again when the winning
+action is committed, so an existing block can never be built a second time.
+
+Construction also has a shared moving frontier. A course advances the
+foundation height only after at least 25% of its x/z area is occupied, and
+courses are counted consecutively upward from the floor. New blocks may be
+placed at most five levels above that foundation. Sparse high blocks therefore
+cannot lift the frontier: a group that wants more height has to broaden every
+lower course first. Both the fill threshold and the five-level headroom are
+runtime settings. This encourages terraces, buttressed towers and clusters
+without prescribing symmetry or a target silhouette.
+
+Agents normally walk on the floor or on top of blocks. Moving into a one-block
+ledge steps onto it; an upward drive while facing a column climbs the face while
+preserving that facing. Moving away from every supporting face causes an
+immediate fall to the nearest floor or block below. A construction block appears
+in the blocked sensor channel like a wall, but contact with it is not counted as
+a refused move and carries no wall penalty.
+
+Fitness is deliberately collective: at the generation boundary every block
+scores its one-based height (`y + 1`), and the values are summed for the whole
+logical world. The sum is not divided by the number of blocks: doing so would
+make a useful new foundation lower the average and favour one thin column again.
+Every agent-tick spent on the horizontal perimeter is then charged the
+configurable `boundaryPenalty` (0.002 by default); neither the construction
+frontier nor the height ceiling is a boundary for this purpose. Every genome
+sharing a world receives the same net total, averaged over its four trial worlds. The renderer gives blocks a
+clay-to-sun gradient by height, a small deterministic maker variation and narrow
+seams, so a growing structure reads as masonry rather than a single flat prism.
+
 **The viewport reads the simulation; it does not participate in it.** Solid
 voxels write depth and make a crowd's surface readable. See-through voxels use
 weighted blended order-independent transparency, so looking inside a world does
 not require reading the GPU agent buffer back and sorting it on the CPU. The
-camera starts side-on, centred on the lattice, and can switch between perspective
-and orthographic projection. A slice
+camera starts side-on and centred on the lattice, looking along the shorter
+horizontal axis so the world's widest edge fills the view. It can switch between
+perspective and orthographic projection. A slice
 along x, y or z is the exact alternative when adjacency matters more than the
-whole population. Drag the picture to orbit and use the wheel to zoom.
+whole population. Drag the picture to orbit and use the wheel to zoom. In
+construction mode the view reads the built-block field directly, without a CPU
+copy or compaction pass.
 
 `Trails` records the last 256 resolved cells of every agent in a fixed GPU ring
 and draws a configurable newest span as smaller translucent voxels. Colour is
@@ -99,7 +142,8 @@ alternative -- one large lattice with the whole population in it -- would have
 meant giving up the group structure the genetic algorithm is built on, and with
 it the four trials, the sweeps and every statistic that compares worlds.
 
-**The allocation is fixed and the lattice gives way.** Both grids are allocated
+**The allocation is fixed and the lattice gives way.** Occupancy, claims and the
+construction field are allocated
 once at a budget (256 MiB, or a sixteenth of device memory, whichever is
 smaller) and never resized. A configuration that would not fit is shrunk to one
 that does -- the longest extent halved until it fits -- and the clamped extents
@@ -343,21 +387,21 @@ layout are derived from the counts in it, so raising one number moves the CPU
 evaluator, the sensor sampler, the compute shader and the tests together.
 
 The genome is one flat vector, as long as the plan needs. Under the default plan
--- one hidden layer of twenty -- that is 3706 floats in seven blocks:
+-- one hidden layer of twenty -- that is 3727 floats in seven blocks:
 
 | Block | Size | Read by |
 | --- | --- | --- |
 | inputs -> hidden 0 | 88 x 20 = 1760 | every model |
 | hidden 0 bias | 20 | every model |
-| hidden 0 -> output | 20 x 6 = 120 | every model |
-| output bias | 6 | every model |
+| hidden 0 -> output | 20 x 7 = 140 | every model |
+| output bias | 7 | every model |
 | time constants | 20 | `time`, `spiking` |
 | gate 0 weights | 20 x 88 = 1760 | `gated` |
 | gate 0 biases | 20 | `gated` |
 
 A deeper plan has one weights-and-bias pair per layer, and one gate pair to
 mirror it; the output layer always reads the last hidden layer. `12,8,8` comes
-to 2570 weights in fifteen blocks -- *fewer* than the flat default, because the
+to 2579 weights in fifteen blocks -- *fewer* than the flat default, because the
 first matrix is what dominates.
 
 Every model carries every block, whichever one is selected. That is deliberate:
@@ -402,8 +446,8 @@ the network usually has: a shader that read the plan even slightly differently
 would drift there and nowhere else.
 
 **The genome is exactly as long as its plan.** There is no fixed stride and no
-tail: the flat default is 3706 weights, `12,8,8` is 2570, and a single 32-wide
-layer is 5926. Interchangeability comes from the file saying which network it
+tail: the flat default is 3727 weights, `12,8,8` is 2579, and a single 32-wide
+layer is 5959. Interchangeability comes from the file saying which network it
 holds, not from every run sharing one length -- an archive records the plan in
 its header and the structure block beside it, and refuses to load into a build
 that lays that network out differently, naming the block that moved.
@@ -435,7 +479,7 @@ call: the input vector is addressed by `brainNeighborChannelIndex` and its
 siblings, the genome by `brainHiddenWeightIndex` and its siblings, and both
 languages compile those from the one preset. That makes the layout impossible to
 get *wrong* -- and impossible to *state*. Nothing could hand a file, or a
-reader, the sentence "slots 78 to 82 are the beacon".
+reader, the sentence "slots 78 to 82 are the task state".
 
 `describeBrain` produces exactly that sentence, as a structure of named blocks,
 and it produces it by asking the same index functions where each block begins.
@@ -447,11 +491,11 @@ vklat_headless --neuron-model gated --describe-brain brain.json
 
 ```json
 {
-  "inputs_count": 88, "hidden_count": 20, "outputs_count": 6,
-  "weight_count": 3706, "neuron_model": "gated",
+  "inputs_count": 88, "hidden_count": 20, "outputs_count": 7,
+  "weight_count": 3727, "neuron_model": "gated",
   "inputs": [
     { "name": "neighbourhood", "offset": 0, "count": 78, "rows": 26, "columns": 3 },
-    { "name": "beacon", "offset": 78, "count": 4 },
+    { "name": "task", "offset": 78, "count": 4 },
     { "name": "self", "offset": 82, "count": 4 },
     { "name": "memory_in", "offset": 86, "count": 2 }
   ],
@@ -476,7 +520,7 @@ right would be worse than none, because the loader below acts on it.
 how. A genome archive carries this document plus the layer plan in its header,
 so a file states which network it holds; it refuses to load into a build that
 lays that network out differently, naming the block: *"input block 'beacon' is
-missing"* rather than *"3706 weights, expected 2530"*. Archives are version 4,
+missing"* rather than *"3727 weights, expected 2539"*. Archives are version 4,
 and version 4 is also the oldest accepted: an archive from the metric arena
 holds weights addressed to photoreceptors and tactile sectors that no longer
 exist, so loading one would be silently wrong rather than usefully old. Run

@@ -31,6 +31,7 @@ namespace vkexp {
 [[nodiscard]] neuro::Inputs sampleAgentInputs(const AgentState& agent,
                                               std::span<const float> signals,
                                               std::span<const std::int32_t> occupancy,
-                                              const SimulationStep& settings);
+                                              const SimulationStep& settings,
+                                              std::span<const std::int32_t> structures = {});
 
 } // namespace vkexp

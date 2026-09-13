@@ -71,10 +71,10 @@ struct SimulationStatistics {
     float bestFitness{};
     float meanFitness{};
     float medianFitness{};
-    // The fraction of agents that spent at least one step within the beacon's
-    // contact radius. "Arrival" and not "occupation": a lattice cell holds one
-    // agent, so how long a group could stand on the beacon is a statement about
-    // the contact radius, and whether they got there is a statement about them.
+    // Beacon mode: fraction of agents that reached the contact radius.
+    // Construction mode: mean height-weighted block fill across worlds,
+    // normalised by the theoretical full lattice. The historic name remains
+    // part of CSV/sweep storage.
     float arrivalRatio{};
 };
 
@@ -108,11 +108,10 @@ enum class CameraProjection : std::uint32_t {
 // control that cannot lose the box is one fewer way to end up staring at
 // nothing.
 struct LatticeCamera {
-    // Start exactly side-on: the eye is on +x at the world's centre height and
-    // looks at the origin, which is also the centre used by every lattice
-    // vertex. Orbiting remains available from this unambiguous home view.
-    float yaw{1.570796327F}; // radians around the up axis
-    float pitch{};           // radians above the horizon, clamped short of the poles
+    // Start exactly side-on. The default box is wider on x, so the eye begins
+    // on +z and sees that widest horizontal edge across the viewport.
+    float yaw{};   // radians around the up axis
+    float pitch{}; // radians above the horizon, clamped short of the poles
     // Multiples of the box's half-diagonal, so the default frames any lattice
     // rather than the one it was tuned on.
     float distance{2.3F};
@@ -121,11 +120,23 @@ struct LatticeCamera {
     float spinRate{0.15F}; // radians per second while spinning
 };
 
+// Face the broader horizontal side: look along the shorter of x/z so the
+// longer one spans the picture. Height remains vertical and pitch stays zero.
+// Kept next to the camera state so startup and the Reset view button cannot
+// quietly acquire different definitions of "home".
+[[nodiscard]] constexpr LatticeCamera latticeHomeCamera(const SimulationStep& settings) {
+    LatticeCamera camera{};
+    constexpr float halfPi = 1.570796327F;
+    camera.yaw = settings.latticeWidth >= settings.latticeDepth ? 0.0F : halfPi;
+    return camera;
+}
+
 // What the viewport draws. None of this reaches the simulation -- turning the
 // agents off changes the picture, not the run.
 struct SimulationDisplay {
     bool agents{true};
     bool beacons{true};
+    bool structures{true};
     bool trails{true};
     // The lattice as a wireframe box, so a sparse world still reads as a volume
     // rather than as points floating in nothing.
@@ -184,6 +195,14 @@ struct LatticeBufferView {
     std::uint32_t cellsPerWorld{};
 };
 
+// Persistent blocks built during the current generation. Zero is empty and a
+// positive value identifies the builder, which lets the view add subtle colour
+// variation without turning ownership into simulation behaviour.
+struct StructureBufferView {
+    VkBuffer buffer{};
+    VkDeviceSize size{};
+};
+
 inline constexpr std::uint32_t trailHistoryCapacity = 256;
 
 // One ivec4 position per agent per recorded tick, arranged as fixed-size rings.
@@ -217,6 +236,7 @@ struct SimulationState {
     SimulationDisplay display;
     AgentBufferView agents;
     LatticeBufferView lattice;
+    StructureBufferView structures;
     TrailBufferView trails;
     SimulationViewport viewport;
 };

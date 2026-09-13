@@ -273,24 +273,23 @@ field.
 Both refuse a file written for a different brain. Archives are version 4 and
 version 4 is also the oldest accepted: an archive from the metric arena holds
 weights addressed to photoreceptors that no longer exist, so loading one would
-be silently wrong rather than usefully old. Snapshots restart at version 1 under
-a new magic, for the same reason.
+be silently wrong rather than usefully old. Snapshots use the new lattice magic;
+version 5 adds optional cardinal side support after version 2 introduced the
+built field, version 3 its scoring settings and version 4 the construction
+frontier.
 
 The occupancy grid is not stored. It is derived from where the agents stand, so
 rebuilding it on load costs less than writing it and cannot disagree with the
-agents it was built from.
+agents it was built from. Construction is stored: a tower is history and cannot
+be inferred from where its builders happen to stand.
 
 ## Immediate next step
 
-Measure before extending. The four neuron models and both
-neighbourhoods are one flag apart from each other, and none of the comparisons
-has been run on the lattice: arrival is the number to read, not best fitness,
-because a policy that never arrives and one that arrives and leaves both look
-like adequate fitness. The completed renderer makes the difference inspectable:
-replay a champion, slice through the box, and distinguish a direct route from a
-queue, a clump or repeated refusals.
-
-Held deliberately: obstacles, deposits and a second agent kind are all the same
-change -- another value a cell can hold -- and writing one of them well is worth
-more than writing all three. The lattice makes them cheap enough that the reason
-to wait is evidence, not rendering infrastructure.
+Measure whether sparse collective height is sufficient. Construction now gives
+every world a persistent, sensed block field and every genome in that world the
+same tallest-block score. The first evidence to read is not mean fitness but the
+shape of replayed structures: isolated columns show that height alone is enough;
+terraces or cooperating climbs show that the movement constraints are selecting
+coordination. Only after that comparison should compactness, symmetry or material
+cost be added to fitness, since each would define a different aesthetic rather
+than merely display this one.

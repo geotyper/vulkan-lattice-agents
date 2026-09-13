@@ -1,10 +1,10 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
-#include "neuro/brain_kernel.glsl"
 #include "lattice/lattice_kernel.glsl"
-#include "simulation/step_parameters.glsl"
+#include "neuro/brain_kernel.glsl"
 #include "simulation/agent_layout.glsl"
+#include "simulation/step_parameters.glsl"
 
 // The decide half of a step: every agent senses the lattice as it stands, runs
 // its brain, and bids for the cell it wants. Nothing moves here. An agent that
@@ -15,37 +15,103 @@
 // Mirrors the "decide" loop of vkexp::stepLatticeCpu.
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-layout(std430, set = 0, binding = 0) readonly buffer InputAgents {
-    Agent inputAgents[];
-};
-layout(std430, set = 0, binding = 1) writeonly buffer OutputAgents {
-    Agent outputAgents[];
-};
-layout(std430, set = 0, binding = 2) readonly buffer GenomeWeights {
-    float weights[];
-};
+layout(std430, set = 0, binding = 0) readonly buffer InputAgents { Agent inputAgents[]; };
+layout(std430, set = 0, binding = 1) writeonly buffer OutputAgents { Agent outputAgents[]; };
+layout(std430, set = 0, binding = 2) readonly buffer GenomeWeights { float weights[]; };
 // The lattice as it stands at the top of the step. Read only here: it is the
 // resolve pass that moves anybody.
-layout(std430, set = 0, binding = 3) readonly buffer Occupancy {
-    int occupancy[];
-};
-layout(std430, set = 0, binding = 4) buffer Claims {
-    int claims[];
-};
+layout(std430, set = 0, binding = 3) readonly buffer Occupancy { int occupancy[]; };
+layout(std430, set = 0, binding = 4) buffer Claims { int claims[]; };
 // Step parameters live in a storage buffer indexed by step rather than in push
 // constants, so a batch of steps is one upload instead of one push per step.
 layout(std430, set = 0, binding = 5) readonly buffer StepParameterBlocks {
     StepParameters stepParameters[];
 };
+layout(std430, set = 0, binding = 6) readonly buffer Structures { int structures[]; };
+layout(std430, set = 0, binding = 7) readonly buffer StructureLevelCounts {
+    uint structureLevelCounts[];
+};
 
-layout(push_constant) uniform StepSelector {
-    uint stepIndex;
-} selector;
+layout(push_constant) uniform StepSelector { uint stepIndex; }
+selector;
 
 // Assigned once at the top of main; every helper below reads it.
 StepParameters params;
 
 #include "neuro/brain_forward.glsl"
+
+bool hasStructure(uint worldBase, int x, int y, int z) {
+    if (!latticeInBounds(x, y, z, params.latticeWidth, params.latticeHeight, params.latticeDepth)) {
+        return false;
+    }
+    const uint cell = latticeCellIndex(x, y, z, params.latticeWidth, params.latticeHeight);
+    return structures[worldBase + cell] != LatticeNoStructure;
+}
+
+// An agent may stand on the floor or a block, and may hang on a vertical face
+// while climbing. Edge and corner contact are deliberately not support.
+bool constructionSupported(uint worldBase, int x, int y, int z) {
+    if (y <= 0 || hasStructure(worldBase, x, y - 1, z)) {
+        return true;
+    }
+    return hasStructure(worldBase, x - 1, y, z) || hasStructure(worldBase, x + 1, y, z) ||
+           hasStructure(worldBase, x, y, z - 1) || hasStructure(worldBase, x, y, z + 1);
+}
+
+// Placement support is stricter than climbing support. Side support is an
+// explicit experiment switch and only a shared face on x/z counts; a diagonal
+// edge or corner never does.
+bool constructionBlockSupported(uint worldBase, int x, int y, int z) {
+    if (y <= 0 || hasStructure(worldBase, x, y - 1, z)) {
+        return true;
+    }
+    return params.allowSideSupportedBlocks != 0u &&
+           (hasStructure(worldBase, x - 1, y, z) || hasStructure(worldBase, x + 1, y, z) ||
+            hasStructure(worldBase, x, y, z - 1) || hasStructure(worldBase, x, y, z + 1));
+}
+
+int constructionLandingY(uint worldBase, int x, int y, int z) {
+    int landing = clamp(y, 0, int(params.latticeHeight) - 1);
+    while (landing > 0 && !constructionSupported(worldBase, x, landing, z)) {
+        --landing;
+    }
+    return landing;
+}
+
+// A remembered diagonal heading still names one unambiguous face: x wins the
+// tie. Building therefore extends a cardinal column, never a diagonal support.
+void constructionFacing(Agent agent, out int faceX, out int faceZ) {
+    faceX = 0;
+    faceZ = 0;
+    const uint heading = uint(agent.cell.w);
+    if (heading >= BrainNeighborCount) {
+        return;
+    }
+    const int headingX = latticeNeighborX(heading);
+    const int headingZ = latticeNeighborZ(heading);
+    if (headingX != 0) {
+        faceX = headingX;
+    } else if (headingZ != 0) {
+        faceZ = headingZ;
+    }
+}
+
+// Only consecutive sufficiently broad courses lift the construction frontier.
+// A handful of tall columns therefore cannot finance still taller columns.
+uint constructionFoundationHeight(uint world) {
+    const uint courseArea = params.latticeWidth * params.latticeDepth;
+    const uint required =
+        max(uint(ceil(float(courseArea) * clamp(params.constructionCourseFill, 0.0, 1.0))), 1u);
+    const uint base = world * params.latticeHeight;
+    uint foundation = 0u;
+    for (uint y = 0u; y < params.latticeHeight; ++y) {
+        if (structureLevelCounts[base + y] < required) {
+            break;
+        }
+        ++foundation;
+    }
+    return foundation;
+}
 
 // Mirrors vkexp::sampleAgentInputs. `worldBase` is where this agent's own
 // world's cells begin: a sensor that could address another world's cells is a
@@ -73,10 +139,12 @@ void senseLattice(Agent agent, uint worldBase, out float sensed[BrainInputCapaci
             // move rule below.
             blocked = 1.0;
         } else {
-            const uint cell =
-                latticeCellIndex(x, y, z, params.latticeWidth, params.latticeHeight);
+            const uint cell = latticeCellIndex(x, y, z, params.latticeWidth, params.latticeHeight);
             const int occupant = occupancy[worldBase + cell];
-            if (occupant != LatticeNoOccupant) {
+            if (params.worldMode == LatticeWorldConstruction &&
+                structures[worldBase + cell] != LatticeNoStructure) {
+                blocked = 1.0;
+            } else if (occupant != LatticeNoOccupant) {
                 occupied = 1.0;
                 signal = clamp(inputAgents[uint(occupant)].signal.x, 0.0, 1.0);
             }
@@ -86,15 +154,24 @@ void senseLattice(Agent agent, uint worldBase, out float sensed[BrainInputCapaci
         sensed[brainNeighborChannelIndex(neighbor, LatticeNeighborSignal)] = signal;
     }
 
-    const int deltaX = agent.beacon.x - agent.cell.x;
-    const int deltaY = agent.beacon.y - agent.cell.y;
-    const int deltaZ = agent.beacon.z - agent.cell.z;
-    const float distanceToBeacon = latticeVectorLength(deltaX, deltaY, deltaZ);
-    const uint steps = latticeStepDistance(params.neighborhood, deltaX, deltaY, deltaZ);
-    sensed[brainBeaconInputIndex(0u)] = latticeDirectionComponent(deltaX, distanceToBeacon);
-    sensed[brainBeaconInputIndex(1u)] = latticeDirectionComponent(deltaY, distanceToBeacon);
-    sensed[brainBeaconInputIndex(2u)] = latticeDirectionComponent(deltaZ, distanceToBeacon);
-    sensed[brainBeaconInputIndex(3u)] = latticeNearness(steps, params.maximumDistance);
+    if (params.worldMode == LatticeWorldConstruction) {
+        sensed[brainBeaconInputIndex(0u)] =
+            float(agent.cell.y) / float(max(params.latticeHeight - 1u, 1u));
+        sensed[brainBeaconInputIndex(1u)] = agent.signal.z <= 0.0 ? 1.0 : 0.0;
+        sensed[brainBeaconInputIndex(2u)] = clamp(agent.signal.w, 0.0, 1.0);
+        sensed[brainBeaconInputIndex(3u)] =
+            constructionSupported(worldBase, agent.cell.x, agent.cell.y, agent.cell.z) ? 1.0 : 0.0;
+    } else {
+        const int deltaX = agent.beacon.x - agent.cell.x;
+        const int deltaY = agent.beacon.y - agent.cell.y;
+        const int deltaZ = agent.beacon.z - agent.cell.z;
+        const float distanceToBeacon = latticeVectorLength(deltaX, deltaY, deltaZ);
+        const uint steps = latticeStepDistance(params.neighborhood, deltaX, deltaY, deltaZ);
+        sensed[brainBeaconInputIndex(0u)] = latticeDirectionComponent(deltaX, distanceToBeacon);
+        sensed[brainBeaconInputIndex(1u)] = latticeDirectionComponent(deltaY, distanceToBeacon);
+        sensed[brainBeaconInputIndex(2u)] = latticeDirectionComponent(deltaZ, distanceToBeacon);
+        sensed[brainBeaconInputIndex(3u)] = latticeNearness(steps, params.maximumDistance);
+    }
 
     // The heading, as the unit step it last took. An agent that has not moved
     // reads zero on all three, which is a distinguishable state and not a
@@ -139,6 +216,9 @@ void main() {
                  params.deltaTime, produced);
 
     agent.signal.x = clamp(produced[BrainSignalIntensityOutput], 0.0, 1.0);
+    agent.signal.y = produced[BrainBuildOutput];
+    agent.signal.z = max(agent.signal.z - 1.0, 0.0);
+    agent.signal.w = 0.0;
     if (outputCount >= BrainOutputCapacity) {
         agent.memory.x = produced[BrainRecurrentOutputOffset];
         agent.memory.y = produced[BrainRecurrentOutputOffset + 1u];
@@ -158,7 +238,112 @@ void main() {
         latticeMoveComponent(params.neighborhood, 2u, driveX, driveY, driveZ, params.moveThreshold);
 
     agent.intent = ivec4(agent.cell.xyz, 0);
-    if (stepX != 0 || stepY != 0 || stepZ != 0) {
+    if (params.worldMode == LatticeWorldConstruction) {
+        int wantedX = agent.cell.x;
+        int wantedY = agent.cell.y;
+        int wantedZ = agent.cell.z;
+        const bool horizontal = stepX != 0 || stepZ != 0;
+        bool attempted = horizontal || stepY != 0;
+
+        if (horizontal) {
+            wantedX += stepX;
+            wantedZ += stepZ;
+            if (!latticeInBounds(wantedX, wantedY, wantedZ, params.latticeWidth,
+                                 params.latticeHeight, params.latticeDepth)) {
+                agent.intent.w = 1;
+                attempted = false;
+            } else if (hasStructure(worldBase, wantedX, wantedY, wantedZ)) {
+                // Walking into a one-cell ledge steps onto it. A taller face is
+                // climbed with the vertical drive while remaining beside it.
+                ++wantedY;
+                if (!latticeInBounds(wantedX, wantedY, wantedZ, params.latticeWidth,
+                                     params.latticeHeight, params.latticeDepth) ||
+                    hasStructure(worldBase, wantedX, wantedY, wantedZ)) {
+                    attempted = false; // structure contact is not penalised
+                }
+            } else {
+                wantedY = constructionLandingY(worldBase, wantedX, wantedY, wantedZ);
+            }
+        } else if (stepY > 0) {
+            int faceX;
+            int faceZ;
+            constructionFacing(agent, faceX, faceZ);
+            const bool hasFace = (faceX != 0 || faceZ != 0) &&
+                                 (hasStructure(worldBase, agent.cell.x + faceX, agent.cell.y,
+                                               agent.cell.z + faceZ) ||
+                                  hasStructure(worldBase, agent.cell.x + faceX, agent.cell.y + 1,
+                                               agent.cell.z + faceZ));
+            ++wantedY;
+            if (!hasFace ||
+                !latticeInBounds(wantedX, wantedY, wantedZ, params.latticeWidth,
+                                 params.latticeHeight, params.latticeDepth) ||
+                hasStructure(worldBase, wantedX, wantedY, wantedZ)) {
+                attempted = false;
+            }
+        } else if (stepY < 0) {
+            wantedY = constructionLandingY(worldBase, wantedX, wantedY - 1, wantedZ);
+        } else if (!constructionSupported(worldBase, wantedX, wantedY, wantedZ)) {
+            wantedY = constructionLandingY(worldBase, wantedX, wantedY - 1, wantedZ);
+            attempted = true;
+        }
+
+        // A failed climb cannot leave the agent suspended above the end of a
+        // face. With neither a wall to hold nor a block underfoot, gravity wins
+        // this tick just as it does when no movement was requested.
+        if (!attempted && agent.intent.w == 0 &&
+            !constructionSupported(worldBase, agent.cell.x, agent.cell.y, agent.cell.z)) {
+            wantedX = agent.cell.x;
+            wantedY = constructionLandingY(worldBase, agent.cell.x, agent.cell.y - 1, agent.cell.z);
+            wantedZ = agent.cell.z;
+            attempted = true;
+        }
+
+        if (attempted && agent.intent.w == 0 &&
+            (wantedX != agent.cell.x || wantedY != agent.cell.y || wantedZ != agent.cell.z)) {
+            const uint wanted = latticeCellIndex(wantedX, wantedY, wantedZ, params.latticeWidth,
+                                                 params.latticeHeight);
+            if (occupancy[worldBase + wanted] == LatticeNoOccupant &&
+                structures[worldBase + wanted] == LatticeNoStructure) {
+                agent.intent = ivec4(wantedX, wantedY, wantedZ, 0);
+                atomicMin(claims[worldBase + wanted], int(id));
+            } else if (structures[worldBase + wanted] == LatticeNoStructure) {
+                agent.intent.w = 1; // another agent, not a wall
+            }
+        }
+
+        agent.beacon.xyz = ivec3(-1);
+        if (agent.signal.z <= 0.0 && agent.signal.y > params.buildThreshold) {
+            int faceX;
+            int faceZ;
+            constructionFacing(agent, faceX, faceZ);
+            const int buildX = agent.cell.x + faceX;
+            const int buildZ = agent.cell.z + faceZ;
+            if ((faceX != 0 || faceZ != 0) && buildX >= 0 && buildZ >= 0 &&
+                buildX < int(params.latticeWidth) && buildZ < int(params.latticeDepth)) {
+                // Normal placement is at the agent's height. With side support
+                // enabled, an unsupported target falls back one level to the
+                // front of its feet: this is how an agent standing on a column
+                // starts a face-connected bridge and then extends it.
+                int buildY = agent.cell.y;
+                bool supported = constructionBlockSupported(worldBase, buildX, buildY, buildZ);
+                if (!supported && params.allowSideSupportedBlocks != 0u && buildY > 0) {
+                    --buildY;
+                    supported = constructionBlockSupported(worldBase, buildX, buildY, buildZ);
+                }
+                const uint target = latticeCellIndex(buildX, buildY, buildZ, params.latticeWidth,
+                                                     params.latticeHeight);
+                const bool empty = structures[worldBase + target] == LatticeNoStructure;
+                const uint foundation = constructionFoundationHeight(world);
+                const bool belowFrontier =
+                    uint(buildY) < foundation + max(params.constructionHeightLead, 1u);
+                if (empty && supported && belowFrontier &&
+                    occupancy[worldBase + target] == LatticeNoOccupant) {
+                    agent.beacon.xyz = ivec3(buildX, buildY, buildZ);
+                    atomicMin(claims[worldBase + target], latticeBuildClaim(id, params.agentCount));
+                }
+            }
+        }
+    } else if (stepX != 0 || stepY != 0 || stepZ != 0) {
         const int wantedX = agent.cell.x + stepX;
         const int wantedY = agent.cell.y + stepY;
         const int wantedZ = agent.cell.z + stepZ;

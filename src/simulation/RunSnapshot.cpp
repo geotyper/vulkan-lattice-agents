@@ -2,9 +2,11 @@
 
 #include "vkexp/neuro/NeuralNetwork.hpp"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <fstream>
+#include <span>
 #include <string>
 
 namespace vkexp {
@@ -48,15 +50,18 @@ template <typename Visit> void visitSettings(SimulationStep& settings, Visit&& v
     visit(settings.fitness.refusalPenalty);
     visit(settings.fitness.signalCostFactor);
     visit(settings.fitness.groupSharing);
+    visit(settings.fitness.boundaryPenalty);
+    visit(settings.buildThreshold);
+    visit(settings.constructionCourseFill);
 }
 
-constexpr std::uint32_t settingsFloatCount = 8;
+constexpr std::uint32_t settingsFloatCount = 11;
 
 // visitSettings and SettingsIntegers together have to name every field of
 // SimulationStep, and this is what notices when a new tunable is added and
 // quietly not saved. If it fires: add the field to one of the two lists above,
 // bump runSnapshotVersion, then update this number.
-static_assert(sizeof(SimulationStep) == 72,
+static_assert(sizeof(SimulationStep) == 100,
               "SimulationStep changed shape -- update the run snapshot field lists");
 
 // The fields that are not floats, kept apart so the float list above stays a
@@ -72,9 +77,13 @@ struct SettingsIntegers {
     std::uint32_t secondHiddenLayer{};
     std::uint32_t thirdHiddenLayer{};
     std::uint32_t neuronModel{};
+    std::uint32_t worldMode{};
+    std::uint32_t buildIntervalTicks{};
+    std::uint32_t constructionHeightLead{};
+    std::uint32_t allowSideSupportedBlocks{};
 };
 
-static_assert(sizeof(SettingsIntegers) == 40);
+static_assert(sizeof(SettingsIntegers) == 56);
 
 void readExactly(std::ifstream& stream, void* destination, const std::size_t bytes,
                  const std::filesystem::path& path) {
@@ -134,7 +143,11 @@ void saveRunSnapshot(const std::filesystem::path& path, const RunSnapshot& snaps
                                     settings.hiddenLayers[0],
                                     settings.hiddenLayers[1],
                                     settings.hiddenLayers[2],
-                                    static_cast<std::uint32_t>(settings.neuronModel)};
+                                    static_cast<std::uint32_t>(settings.neuronModel),
+                                    static_cast<std::uint32_t>(settings.worldMode),
+                                    settings.buildIntervalTicks,
+                                    settings.constructionHeightLead,
+                                    settings.allowSideSupportedBlocks};
     stream.write(reinterpret_cast<const char*>(&integers), sizeof(integers));
 
     for (const Genome& genome : snapshot.genomes) {
@@ -143,6 +156,29 @@ void saveRunSnapshot(const std::filesystem::path& path, const RunSnapshot& snaps
     }
     stream.write(reinterpret_cast<const char*>(snapshot.agents.data()),
                  static_cast<std::streamsize>(snapshot.agents.size() * sizeof(AgentState)));
+    const std::uint32_t floorCapacity =
+        snapshot.settings.latticeWidth * snapshot.settings.latticeDepth;
+    const std::uint32_t requestedAgents =
+        snapshot.settings.worldMode == WorldMode::Construction
+            ? std::min(snapshot.requestedAgentsPerWorld, floorCapacity)
+            : snapshot.requestedAgentsPerWorld;
+    const std::uint32_t agentsPerWorld =
+        clampAgentsPerWorld(static_cast<std::uint32_t>(snapshot.genomes.size()), requestedAgents);
+    const std::uint32_t worlds =
+        logicalWorldCount(static_cast<std::uint32_t>(snapshot.genomes.size()), agentsPerWorld,
+                          snapshot.trialsPerGenome);
+    const std::size_t structureCount =
+        static_cast<std::size_t>(latticeCellsPerWorld(snapshot.settings)) * worlds;
+    std::vector<std::int32_t> emptyStructures;
+    std::span<const std::int32_t> structures = snapshot.structures;
+    if (structures.empty()) {
+        emptyStructures.assign(structureCount, lattice::kernel::LatticeNoStructure);
+        structures = emptyStructures;
+    } else if (structures.size() != structureCount) {
+        throw RunSnapshotError("Run snapshot construction field has the wrong size");
+    }
+    stream.write(reinterpret_cast<const char*>(structures.data()),
+                 static_cast<std::streamsize>(structures.size() * sizeof(std::int32_t)));
     stream.flush();
     if (!stream) {
         throw RunSnapshotError("Failed while writing run snapshot: " + path.string());
@@ -207,6 +243,13 @@ RunSnapshot loadRunSnapshot(const std::filesystem::path& path) {
                                std::to_string(integers.neuronModel) +
                                ", which this build has no rule for: " + path.string());
     }
+    if (integers.worldMode >= worldModeCount) {
+        throw RunSnapshotError("Run snapshot names a world mode this build does not have: " +
+                               path.string());
+    }
+    if (integers.allowSideSupportedBlocks > 1U) {
+        throw RunSnapshotError("Run snapshot has an invalid side-support switch: " + path.string());
+    }
     // A lattice outside the range this build allocates is refused rather than
     // clamped: resuming into a differently sized box would put every agent's
     // recorded cell somewhere else, which is a different experiment reported
@@ -229,6 +272,10 @@ RunSnapshot loadRunSnapshot(const std::filesystem::path& path) {
     snapshot.settings.hiddenLayers = {integers.firstHiddenLayer, integers.secondHiddenLayer,
                                       integers.thirdHiddenLayer};
     snapshot.settings.neuronModel = static_cast<NeuronModel>(integers.neuronModel);
+    snapshot.settings.worldMode = static_cast<WorldMode>(integers.worldMode);
+    snapshot.settings.buildIntervalTicks = integers.buildIntervalTicks;
+    snapshot.settings.constructionHeightLead = integers.constructionHeightLead;
+    snapshot.settings.allowSideSupportedBlocks = integers.allowSideSupportedBlocks;
 
     snapshot.genomes.assign(header.genomeCount, Genome{neuro::Weights(header.weightCount, 0.0F)});
     for (Genome& genome : snapshot.genomes) {
@@ -236,6 +283,19 @@ RunSnapshot loadRunSnapshot(const std::filesystem::path& path) {
     }
     snapshot.agents.resize(header.agentCount);
     readExactly(stream, snapshot.agents.data(), snapshot.agents.size() * sizeof(AgentState), path);
+    const std::uint32_t floorCapacity =
+        snapshot.settings.latticeWidth * snapshot.settings.latticeDepth;
+    const std::uint32_t requestedAgents =
+        snapshot.settings.worldMode == WorldMode::Construction
+            ? std::min(snapshot.requestedAgentsPerWorld, floorCapacity)
+            : snapshot.requestedAgentsPerWorld;
+    const std::uint32_t agentsPerWorld = clampAgentsPerWorld(header.genomeCount, requestedAgents);
+    const std::uint32_t worlds =
+        logicalWorldCount(header.genomeCount, agentsPerWorld, snapshot.trialsPerGenome);
+    snapshot.structures.resize(static_cast<std::size_t>(latticeCellsPerWorld(snapshot.settings)) *
+                               worlds);
+    readExactly(stream, snapshot.structures.data(),
+                snapshot.structures.size() * sizeof(std::int32_t), path);
     return snapshot;
 }
 

@@ -20,7 +20,8 @@ struct Agent {
     ivec4 intent; // desired x, y, z, and whether the last move was refused
     ivec4 beacon; // this world's beacon x, y, z, and which world that is
     vec4 signal;  // broadcast level in .x, three lanes spare
-    vec4 metrics; // best nearness, contacts, effort, refusals
+    // Construction reuses .x/.y/.w for height, blocks placed and x/z-edge ticks.
+    vec4 metrics; // best nearness, contacts, effort, refusals in beacon mode
     vec4 memory;  // the two recurrent cells in .xy, two lanes spare
     // Continuous-time state of every hidden neuron, carried between steps. Zero
     // at the start of a generation, which is the whole of the reset semantics:

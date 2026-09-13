@@ -90,7 +90,8 @@ void SimulationDriver::createResources(const VkPhysicalDevice physicalDevice,
 // brain plan; resizeGenomeBuffer is how it changes, and it deliberately leaves
 // the others alone.
 //
-// The two lattice grids are allocated at the budget and never reallocated, which
+// The full-cell lattice fields are allocated at the budget and never
+// reallocated, which
 // is the lesson the trail field taught in the 2D build: every resize there was a
 // lifetime bug rather than a capacity one -- a descriptor somewhere still named
 // the buffer that had just been freed. A fixed allocation makes the whole class
@@ -119,6 +120,12 @@ void SimulationDriver::createStepResources() {
     occupancy_.create(physicalDevice_, device_,
                       {budget, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
     claims_.create(physicalDevice_, device_, {budget, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT});
+    structures_.create(physicalDevice_, device_,
+                       {budget, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
+    const VkDeviceSize levelCountBytes =
+        static_cast<VkDeviceSize>(agentCount) * latticeMaximumExtent * sizeof(std::uint32_t);
+    structureLevelCounts_.create(physicalDevice_, device_,
+                                 {levelCountBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
     const VkDeviceSize trailHistoryBytes =
         static_cast<VkDeviceSize>(agentCount) * trailHistoryCapacity * sizeof(Int4);
     trailHistory_.create(
@@ -128,11 +135,11 @@ void SimulationDriver::createStepResources() {
     updateWorldLayout();
     refreshLattice();
 
-    createStorageLayout(device_, 6, stepDescriptorSetLayout_);
-    createStorageLayout(device_, 4, resolveDescriptorSetLayout_);
+    createStorageLayout(device_, 8, stepDescriptorSetLayout_);
+    createStorageLayout(device_, 6, resolveDescriptorSetLayout_);
     createStorageLayout(device_, 2, clearDescriptorSetLayout_);
     createStorageLayout(device_, 2, trailCaptureDescriptorSetLayout_);
-    descriptorAllocator_.create(device_, {10, {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 32}}});
+    descriptorAllocator_.create(device_, {10, {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 40}}});
 
     for (std::uint32_t readIndex = 0; readIndex < 2; ++readIndex) {
         const VkBuffer readBuffer =
@@ -151,6 +158,10 @@ void SimulationDriver::createStepResources() {
             .writeBuffer(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, claims_.buffer(), 0, claims_.size())
             .writeBuffer(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stepParameterBuffer_.buffer(), 0,
                          stepParameterBuffer_.size())
+            .writeBuffer(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, structures_.buffer(), 0,
+                         structures_.size())
+            .writeBuffer(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, structureLevelCounts_.buffer(), 0,
+                         structureLevelCounts_.size())
             .update(device_, stepDescriptorSets_[readIndex]);
 
         // Reads and writes the record the step pass has just produced: this pass
@@ -164,6 +175,10 @@ void SimulationDriver::createStepResources() {
             .writeBuffer(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, claims_.buffer(), 0, claims_.size())
             .writeBuffer(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stepParameterBuffer_.buffer(), 0,
                          stepParameterBuffer_.size())
+            .writeBuffer(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, structures_.buffer(), 0,
+                         structures_.size())
+            .writeBuffer(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, structureLevelCounts_.buffer(), 0,
+                         structureLevelCounts_.size())
             .update(device_, resolveDescriptorSets_[readIndex]);
 
         // `writeBuffer` is the resolved buffer for this read index. The agent
@@ -214,6 +229,7 @@ void SimulationDriver::createStepResources() {
                      config_.trialsPerGenome,
                      0};
     state_.trails = {trailHistory_.buffer(), trailHistory_.size(), trailHistoryCapacity};
+    state_.structures = {structures_.buffer(), structures_.size()};
 }
 
 VkDeviceSize SimulationDriver::genomeBufferBytes() const {
@@ -256,6 +272,7 @@ void SimulationDriver::resizeGenomeBuffer() {
 void SimulationDriver::destroyResources() {
     state_.agents = {};
     state_.lattice = {};
+    state_.structures = {};
     state_.trails = {};
     trailCapturePipeline_ = {};
     clearPipeline_ = {};
@@ -271,6 +288,8 @@ void SimulationDriver::destroyResources() {
     resolveDescriptorSets_ = {};
     stepDescriptorSets_ = {};
     trailHistory_.reset();
+    structureLevelCounts_.reset();
+    structures_.reset();
     claims_.reset();
     occupancy_.reset();
     stepParameterBuffer_.reset();
@@ -280,7 +299,7 @@ void SimulationDriver::destroyResources() {
     physicalDevice_ = VK_NULL_HANDLE;
 }
 
-void SimulationDriver::uploadPopulation() {
+void SimulationDriver::uploadPopulation(const bool preserveStructures) {
     std::vector<float> flattened;
     flattened.reserve(evolution_.population().size() * evolution_.settings().weightCount);
     for (const Genome& genome : evolution_.population()) {
@@ -298,6 +317,31 @@ void SimulationDriver::uploadPopulation() {
                              lattice::kernel::LatticeNoOccupant);
     lattice::buildOccupancy(agents_, state_.settings, populationLayout(), occupancyStaging_);
     occupancy_.write(occupancyStaging_.data(), occupancyStaging_.size() * sizeof(std::int32_t));
+    if (!preserveStructures) {
+        structureStaging_.assign(occupancyStaging_.size(), lattice::kernel::LatticeNoStructure);
+    }
+    if (!structureStaging_.empty()) {
+        structures_.write(structureStaging_.data(),
+                          structureStaging_.size() * sizeof(std::int32_t));
+    }
+    structureLevelCountStaging_.assign(
+        static_cast<std::size_t>(state_.worlds.worldCount) * state_.settings.latticeHeight, 0U);
+    for (std::size_t absolute = 0; absolute < structureStaging_.size(); ++absolute) {
+        if (structureStaging_[absolute] == lattice::kernel::LatticeNoStructure) {
+            continue;
+        }
+        const std::uint32_t world =
+            static_cast<std::uint32_t>(absolute / state_.lattice.cellsPerWorld);
+        const std::uint32_t local =
+            static_cast<std::uint32_t>(absolute % state_.lattice.cellsPerWorld);
+        const std::uint32_t y =
+            (local / state_.settings.latticeWidth) % state_.settings.latticeHeight;
+        ++structureLevelCountStaging_[static_cast<std::size_t>(world) *
+                                          state_.settings.latticeHeight +
+                                      y];
+    }
+    structureLevelCounts_.write(structureLevelCountStaging_.data(),
+                                structureLevelCountStaging_.size() * sizeof(std::uint32_t));
     hostUploadPending_ = true;
     // Histories are derived pictures, not snapshot state. A fresh generation or
     // a restored population starts with no breadcrumbs and fills them from its
@@ -355,6 +399,10 @@ RunSnapshot SimulationDriver::snapshot() {
     result.settings = state_.settings;
     result.genomes.assign(evolution_.population().begin(), evolution_.population().end());
     result.agents = agents_;
+    const std::size_t activeCells =
+        static_cast<std::size_t>(state_.lattice.cellsPerWorld) * state_.worlds.worldCount;
+    result.structures.resize(activeCells);
+    structures_.read(result.structures.data(), result.structures.size() * sizeof(std::int32_t));
     result.generation = evolution_.generation();
     result.step = state_.statistics.step;
     result.stepsPerGeneration = state_.controls.stepsPerGeneration;
@@ -412,8 +460,14 @@ void SimulationDriver::restoreSnapshot(const RunSnapshot& snapshot) {
     }
 
     agents_ = snapshot.agents;
+    const std::size_t activeCells =
+        static_cast<std::size_t>(state_.lattice.cellsPerWorld) * state_.worlds.worldCount;
+    if (snapshot.structures.size() != activeCells) {
+        throw RunSnapshotError("Snapshot construction field does not match its lattice layout");
+    }
+    structureStaging_ = snapshot.structures;
     state_.statistics.step = std::min(snapshot.step, snapshot.stepsPerGeneration);
-    uploadPopulation();
+    uploadPopulation(true);
     state_.statistics.generation = snapshot.generation;
     state_.agents.generation = snapshot.generation;
     state_.agents.currentIndex = agentBuffers_.readIndex();
@@ -427,13 +481,65 @@ GenerationSummary SimulationDriver::finishGeneration() {
     agentBuffers_.read().read(agents_.data(), agents_.size() * sizeof(AgentState));
     std::vector<float> fitness(evolution_.population().size());
     std::size_t arrived = 0;
-    for (std::size_t genome = 0; genome < fitness.size(); ++genome) {
-        for (std::size_t trial = 0; trial < config_.trialsPerGenome; ++trial) {
-            const AgentState& agent = agents_[genome * config_.trialsPerGenome + trial];
-            fitness[genome] += agentFitness(agent, state_.settings.fitness);
-            arrived += agent.metrics.y > 0.0F ? 1 : 0;
+    float objectiveRatio = 0.0F;
+    if (state_.settings.worldMode == WorldMode::Construction) {
+        const std::size_t activeCells =
+            static_cast<std::size_t>(state_.lattice.cellsPerWorld) * state_.worlds.worldCount;
+        structureStaging_.resize(activeCells);
+        structures_.read(structureStaging_.data(), structureStaging_.size() * sizeof(std::int32_t));
+        std::vector<float> weightedBlocks(state_.worlds.worldCount, 0.0F);
+        std::vector<float> perimeterTicks(state_.worlds.worldCount, 0.0F);
+        const std::uint32_t width = state_.settings.latticeWidth;
+        const std::uint32_t latticeHeight = state_.settings.latticeHeight;
+        for (std::size_t absolute = 0; absolute < structureStaging_.size(); ++absolute) {
+            if (structureStaging_[absolute] == lattice::kernel::LatticeNoStructure) {
+                continue;
+            }
+            const std::uint32_t world =
+                static_cast<std::uint32_t>(absolute / state_.lattice.cellsPerWorld);
+            const std::uint32_t local =
+                static_cast<std::uint32_t>(absolute % state_.lattice.cellsPerWorld);
+            const std::uint32_t y = (local / width) % latticeHeight;
+            // Every block matters, while upper courses matter more. Dividing by
+            // block count would make a useful foundation lower the mean and
+            // restore the one-thin-column loophole of tallest-only fitness.
+            weightedBlocks[world] += static_cast<float>(y + 1U);
         }
-        fitness[genome] /= static_cast<float>(config_.trialsPerGenome);
+        for (std::size_t agent = 0; agent < agents_.size(); ++agent) {
+            const std::uint32_t world =
+                logicalWorldForAgent(static_cast<std::uint32_t>(agent),
+                                     state_.worlds.agentsPerWorld, config_.trialsPerGenome);
+            perimeterTicks[world] += agents_[agent].metrics.w;
+        }
+        for (std::size_t genome = 0; genome < fitness.size(); ++genome) {
+            const std::uint32_t group =
+                static_cast<std::uint32_t>(genome) / state_.worlds.agentsPerWorld;
+            for (std::uint32_t trial = 0; trial < config_.trialsPerGenome; ++trial) {
+                const std::uint32_t world = group * config_.trialsPerGenome + trial;
+                fitness[genome] += weightedBlocks[world] -
+                                   state_.settings.fitness.boundaryPenalty * perimeterTicks[world];
+            }
+            fitness[genome] /= static_cast<float>(config_.trialsPerGenome);
+        }
+        const float totalWeighted =
+            std::accumulate(weightedBlocks.begin(), weightedBlocks.end(), 0.0F);
+        const float maximumPerWorld =
+            static_cast<float>(state_.settings.latticeWidth * state_.settings.latticeDepth) *
+            (static_cast<float>(latticeHeight) * static_cast<float>(latticeHeight + 1U) * 0.5F);
+        objectiveRatio =
+            totalWeighted / (static_cast<float>(std::max<std::size_t>(weightedBlocks.size(), 1)) *
+                             std::max(maximumPerWorld, 1.0F));
+    } else {
+        for (std::size_t genome = 0; genome < fitness.size(); ++genome) {
+            for (std::size_t trial = 0; trial < config_.trialsPerGenome; ++trial) {
+                const AgentState& agent = agents_[genome * config_.trialsPerGenome + trial];
+                fitness[genome] += agentFitness(agent, state_.settings.fitness);
+                arrived += agent.metrics.y > 0.0F ? 1 : 0;
+            }
+            fitness[genome] /= static_cast<float>(config_.trialsPerGenome);
+        }
+        objectiveRatio = static_cast<float>(arrived) /
+                         static_cast<float>(std::max<std::size_t>(agents_.size(), 1));
     }
     // Selection may see a different number than the run reports. Sharing blends
     // each genome's score with its world's average, which is the point -- it
@@ -468,8 +574,7 @@ GenerationSummary SimulationDriver::finishGeneration() {
     state_.statistics.bestFitness = summary.bestFitness;
     state_.statistics.meanFitness = summary.meanFitness;
     state_.statistics.medianFitness = summary.medianFitness;
-    state_.statistics.arrivalRatio =
-        static_cast<float>(arrived) / static_cast<float>(std::max<std::size_t>(agents_.size(), 1));
+    state_.statistics.arrivalRatio = objectiveRatio;
     // Counted here rather than taken from the history length, which stops
     // growing at maximumSamples, and rather than from the generation number,
     // which stands still under replay. A sweep stage restarts the run, and
@@ -519,7 +624,7 @@ void SimulationDriver::beginSweep() {
 
 void SimulationDriver::endSweep() { stopSweep(state_.sweep); }
 
-// The budget the two grids must each fit, capped against what the device has.
+// The budget the full-cell grids must each fit, capped against what the device has.
 std::uint64_t SimulationDriver::latticeBudget() const {
     std::uint64_t deviceLocalBytes = 0;
     if (physicalDevice_ != VK_NULL_HANDLE) {
@@ -574,8 +679,12 @@ void SimulationDriver::refreshLattice() {
 
 void SimulationDriver::updateWorldLayout() {
     const auto genomeCount = static_cast<std::uint32_t>(evolution_.population().size());
-    state_.worlds.agentsPerWorld =
-        clampAgentsPerWorld(genomeCount, state_.worlds.requestedAgentsPerWorld);
+    const std::uint32_t floorCapacity = state_.settings.latticeWidth * state_.settings.latticeDepth;
+    const std::uint32_t requested =
+        state_.settings.worldMode == WorldMode::Construction
+            ? std::min(state_.worlds.requestedAgentsPerWorld, floorCapacity)
+            : state_.worlds.requestedAgentsPerWorld;
+    state_.worlds.agentsPerWorld = clampAgentsPerWorld(genomeCount, requested);
     state_.worlds.requestedAgentsPerWorld = state_.worlds.agentsPerWorld;
     state_.worlds.groupCount = worldGroupCount(genomeCount, state_.worlds.agentsPerWorld);
     state_.worlds.worldCount =
@@ -639,6 +748,14 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
                          VK_ACCESS_2_HOST_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                          VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
                              VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        cmdBufferBarrier(commands, structures_.buffer(), VK_PIPELINE_STAGE_2_HOST_BIT,
+                         VK_ACCESS_2_HOST_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                         VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        cmdBufferBarrier(commands, structureLevelCounts_.buffer(), VK_PIPELINE_STAGE_2_HOST_BIT,
+                         VK_ACCESS_2_HOST_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                         VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
         hostUploadPending_ = false;
     }
     if (trailClearPending_) {
@@ -653,17 +770,20 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
     const std::array<VkDeviceSize, 2> clearRanges{claims_.size(), stepParameterBuffer_.size()};
     const DispatchSize clearGroups = checkedDispatchSize(
         physicalDevice_, {{cellCount, 1, 1}, {256, 1, 1}, sizeof(std::uint32_t), clearRanges});
-    const std::array<VkDeviceSize, 6> stepRanges{agentBuffers_.read().size(),
+    const std::array<VkDeviceSize, 8> stepRanges{agentBuffers_.read().size(),
                                                  agentBuffers_.write().size(),
                                                  genomeBuffer_.size(),
                                                  occupancy_.size(),
                                                  claims_.size(),
-                                                 stepParameterBuffer_.size()};
+                                                 stepParameterBuffer_.size(),
+                                                 structures_.size(),
+                                                 structureLevelCounts_.size()};
     const DispatchSize stepGroups = checkedDispatchSize(
         physicalDevice_,
         {{state_.agents.agentCount, 1, 1}, {64, 1, 1}, sizeof(std::uint32_t), stepRanges});
-    const std::array<VkDeviceSize, 4> resolveRanges{agentBuffers_.write().size(), occupancy_.size(),
-                                                    claims_.size(), stepParameterBuffer_.size()};
+    const std::array<VkDeviceSize, 6> resolveRanges{
+        agentBuffers_.write().size(), occupancy_.size(),  claims_.size(),
+        stepParameterBuffer_.size(),  structures_.size(), structureLevelCounts_.size()};
     const DispatchSize resolveGroups = checkedDispatchSize(
         physicalDevice_,
         {{state_.agents.agentCount, 1, 1}, {64, 1, 1}, sizeof(std::uint32_t), resolveRanges});
@@ -715,6 +835,8 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
         vkCmdDispatch(commands, resolveGroups.x, 1, 1);
         cmdComputeWriteToComputeRead(commands, agentBuffers_.write().buffer());
         cmdComputeWriteToComputeRead(commands, occupancy_.buffer());
+        cmdComputeWriteToComputeRead(commands, structures_.buffer());
+        cmdComputeWriteToComputeRead(commands, structureLevelCounts_.buffer());
 
         agentBuffers_.swap();
         state_.agents.currentIndex = agentBuffers_.readIndex();
@@ -752,6 +874,10 @@ std::uint32_t SimulationDriver::recordSteps(const VkCommandBuffer commands,
                      VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_HOST_BIT,
                      VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_HOST_READ_BIT);
     cmdBufferBarrier(commands, occupancy_.buffer(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                     VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                     VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_HOST_BIT,
+                     VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_HOST_READ_BIT);
+    cmdBufferBarrier(commands, structures_.buffer(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                      VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                      VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_HOST_BIT,
                      VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_HOST_READ_BIT);

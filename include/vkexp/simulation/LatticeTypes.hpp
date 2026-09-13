@@ -31,6 +31,13 @@ enum class Neighborhood : std::uint32_t {
 
 inline constexpr std::size_t neighborhoodCount = lattice::kernel::LatticeNeighborhoodCount;
 
+enum class WorldMode : std::uint32_t {
+    Beacon = lattice::kernel::LatticeWorldBeacon,
+    Construction = lattice::kernel::LatticeWorldConstruction,
+};
+
+inline constexpr std::size_t worldModeCount = lattice::kernel::LatticeWorldCount;
+
 // The brain's neighbourhood block has to be as wide as the lattice's
 // neighbourhood. The two constants live in different kernels because they
 // compile into different namespaces in C++ and into one flat scope in GLSL; this
@@ -167,6 +174,9 @@ struct alignas(16) AgentState {
     Float4 signal;
     // best nearness reached, steps in contact, effort spent, moves refused.
     // What each is worth is a weight; see latticeTrialFitness.
+    // Construction reuses .x for best relative height, .y for blocks placed
+    // and .w for horizontal-perimeter ticks. Scoring interprets the shared
+    // record according to worldMode.
     Float4 metrics;
     // The two output-layer recurrent cells, fed back as inputs next step, and
     // two spare lanes. Kept even though every hidden neuron now carries its own
@@ -262,6 +272,12 @@ struct FitnessWeights {
     // other weights act on an agent during the step, this one acts on a
     // population at the generation boundary and has nothing to say to a shader.
     float groupSharing{0.0F};
+
+    // Construction-only group charge for every agent-tick spent on the
+    // horizontal perimeter. The ceiling is intentionally excluded: reaching
+    // upward is the objective, while camping at x/z edges is not.
+    // Scoring-time only; the shader merely accumulates perimeter ticks.
+    float boundaryPenalty{0.002F};
 };
 
 // Seconds are still the unit the neuron time constants are expressed in, so the
@@ -291,6 +307,23 @@ struct SimulationStep {
     // a genome is scored on several placements rather than on one it could
     // memorise.
     std::uint32_t beaconSeed{0x5EEDU};
+
+    WorldMode worldMode{WorldMode::Beacon};
+
+    // A successful placement starts this many ticks of cooldown. Direct
+    // support from below is always valid; cardinal side support is an opt-in
+    // construction experiment below.
+    std::uint32_t buildIntervalTicks{12};
+    float buildThreshold{0.55F};
+    // A course advances the shared foundation height after this fraction of
+    // its x/z area is occupied. Courses count consecutively from the floor, so
+    // sparse blocks high above an unfinished course cannot raise the frontier.
+    float constructionCourseFill{0.25F};
+    // The highest legal target is this many courses above that foundation.
+    std::uint32_t constructionHeightLead{5};
+    // Opt-in cantilevers: a block may use a cardinal x/z face as support. Edge
+    // and corner contact remain insufficient.
+    std::uint32_t allowSideSupportedBlocks{};
 
     Neighborhood neighborhood{Neighborhood::Moore};
 
@@ -372,16 +405,19 @@ struct alignas(16) GpuStepParameters {
     // numbers.
     std::uint32_t brainHiddenLayers{};
     std::uint32_t brainGenomeStride{};
-    std::uint32_t reserved0{};
-    std::uint32_t reserved1{};
-    std::uint32_t reserved2{};
+    std::uint32_t worldMode{};
+    std::uint32_t buildIntervalTicks{};
+    float buildThreshold{};
+    float constructionCourseFill{};
+    std::uint32_t constructionHeightLead{};
+    std::uint32_t allowSideSupportedBlocks{};
     GpuFitnessWeights fitness;
 };
 
-static_assert(sizeof(GpuStepParameters) == 112);
+static_assert(sizeof(GpuStepParameters) == 128);
 static_assert(offsetof(GpuStepParameters, latticeWidth) == 28);
 static_assert(offsetof(GpuStepParameters, neuronModel) == 56);
-static_assert(offsetof(GpuStepParameters, fitness) == 80);
+static_assert(offsetof(GpuStepParameters, fitness) == 96);
 
 // The network this run actually builds. The two ends are the lattice's own: how
 // many cells surround one, and how many drives a move needs. Only the hidden

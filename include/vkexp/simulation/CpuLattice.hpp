@@ -29,6 +29,8 @@ struct LatticePopulation {
     std::uint32_t genomeStride{};
     std::uint32_t agentsPerWorld{1};
     std::uint32_t trialsPerGenome{1};
+    // Construction blocks, zero for empty. Empty in beacon-only references.
+    std::span<std::int32_t> structures;
 };
 
 // One step of a whole population: sense, decide and bid; then resolve and move.

@@ -45,7 +45,9 @@ const uint BrainRecurrentCount = 2u; // memory cells, fed back as inputs
 // step.
 const uint BrainMoveOutputCount = 3u;
 const uint BrainSignalOutputCount = 1u;
-const uint BrainActuatorOutputCount = BrainMoveOutputCount + BrainSignalOutputCount;
+const uint BrainBuildOutputCount = 1u;
+const uint BrainActuatorOutputCount =
+    BrainMoveOutputCount + BrainSignalOutputCount + BrainBuildOutputCount;
 
 // Hidden neurons in total, across however many layers there are, and how many
 // layers there may be. Both are compile-time because both size arrays: the
@@ -82,6 +84,7 @@ const uint BrainInputCapacity = BrainRecurrentInputOffset + BrainRecurrentCount;
 
 const uint BrainMoveOutput = 0u; // three consecutive channels, x then y then z
 const uint BrainSignalIntensityOutput = BrainMoveOutputCount;
+const uint BrainBuildOutput = BrainSignalIntensityOutput + BrainSignalOutputCount;
 const uint BrainRecurrentOutputOffset = BrainActuatorOutputCount;
 const uint BrainOutputCapacity = BrainActuatorOutputCount + BrainRecurrentCount;
 

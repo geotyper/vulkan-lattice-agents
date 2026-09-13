@@ -1,7 +1,7 @@
 #ifndef VKEXP_STEP_PARAMETERS_GLSL
 #define VKEXP_STEP_PARAMETERS_GLSL
 
-// std430 mirror of vkexp::GpuStepParameters (112 bytes). Shared because all
+// std430 mirror of vkexp::GpuStepParameters (128 bytes). Shared because all
 // three passes of a step index the same per-step block; the C++ side pins the
 // size and the offsets with static_assert.
 
@@ -36,9 +36,12 @@ struct StepParameters {
     // which outgrew the twelve bits it used to share with the layout word.
     uint brainHiddenLayers;
     uint brainGenomeStride;
-    uint reserved0;
-    uint reserved1;
-    uint reserved2;
+    uint worldMode;
+    uint buildIntervalTicks;
+    float buildThreshold;
+    float constructionCourseFill;
+    uint constructionHeightLead;
+    uint allowSideSupportedBlocks;
     FitnessWeights fitness;
 };
 

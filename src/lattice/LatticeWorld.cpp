@@ -26,11 +26,12 @@ namespace kern = ::vkexp::lattice::kernel;
 }
 
 [[nodiscard]] Int4 cellFromHash(const SimulationStep& settings, const std::uint32_t hash) {
-    return Int4{static_cast<std::int32_t>(hash % settings.latticeWidth),
-                static_cast<std::int32_t>((hash / settings.latticeWidth) % settings.latticeHeight),
-                static_cast<std::int32_t>((hash / (settings.latticeWidth * settings.latticeHeight)) %
-                                          settings.latticeDepth),
-                0};
+    return Int4{
+        static_cast<std::int32_t>(hash % settings.latticeWidth),
+        static_cast<std::int32_t>((hash / settings.latticeWidth) % settings.latticeHeight),
+        static_cast<std::int32_t>((hash / (settings.latticeWidth * settings.latticeHeight)) %
+                                  settings.latticeDepth),
+        0};
 }
 
 [[nodiscard]] std::uint32_t cellIndex(const SimulationStep& settings, const Int4& cell) {
@@ -43,6 +44,11 @@ namespace kern = ::vkexp::lattice::kernel;
     return Int4{static_cast<std::int32_t>(index % settings.latticeWidth),
                 static_cast<std::int32_t>((index % plane) / settings.latticeWidth),
                 static_cast<std::int32_t>(index / plane), 0};
+}
+
+[[nodiscard]] Int4 floorCellFromIndex(const SimulationStep& settings, const std::uint32_t index) {
+    return Int4{static_cast<std::int32_t>(index % settings.latticeWidth), 0,
+                static_cast<std::int32_t>(index / settings.latticeWidth), 0};
 }
 
 } // namespace
@@ -74,10 +80,14 @@ std::vector<AgentState> makeInitialAgents(const SimulationStep& settings,
 
     for (std::uint32_t index = 0; index < agents.size(); ++index) {
         const std::uint32_t genome = index / layout.trialsPerGenome;
-        const std::uint32_t world =
-            logicalWorldForAgent(index, groupSize, layout.trialsPerGenome);
+        const std::uint32_t world = logicalWorldForAgent(index, groupSize, layout.trialsPerGenome);
         const std::uint32_t slot = genome % groupSize;
-        const Int4 beacon = beaconCell(settings, world);
+        Int4 beacon = beaconCell(settings, world);
+        if (settings.worldMode == WorldMode::Construction) {
+            // xyz becomes the per-step build intent in construction mode. Only
+            // w is permanent: it keeps naming the logical world.
+            beacon = Int4{-1, -1, -1, static_cast<std::int32_t>(world)};
+        }
 
         AgentState& agent = agents[index];
         agent.beacon = beacon;
@@ -94,31 +104,40 @@ std::vector<AgentState> makeInitialAgents(const SimulationStep& settings,
         // loop has no bound when a world is nearly full, and a world that is
         // nearly full is exactly the configuration worth being able to run.
         const std::uint32_t start = mix(settings.beaconSeed ^ 0x5CA1EDU, world * 1021U + slot);
-        const std::uint32_t base = cellIndex(settings, cellFromHash(settings, start));
+        const bool construction = settings.worldMode == WorldMode::Construction;
+        const std::uint32_t candidateCount =
+            construction ? settings.latticeWidth * settings.latticeDepth : cells;
+        const std::uint32_t base = construction
+                                       ? start % candidateCount
+                                       : cellIndex(settings, cellFromHash(settings, start));
         const std::size_t worldBase = static_cast<std::size_t>(world) * cells;
-        for (std::uint32_t probe = 0; probe < cells; ++probe) {
-            const std::uint32_t candidate = (base + probe) % cells;
-            Int4 cell = cellFromIndex(settings, candidate);
+        for (std::uint32_t probe = 0; probe < candidateCount; ++probe) {
+            const std::uint32_t candidate = (base + probe) % candidateCount;
+            Int4 cell = construction ? floorCellFromIndex(settings, candidate)
+                                     : cellFromIndex(settings, candidate);
+            const std::uint32_t candidateCell = cellIndex(settings, cell);
             // Never on the beacon: an agent that starts on the objective has
             // solved the world before the first step, which would make the
             // shaping unreadable for the whole group it is scored beside.
-            if (cell.x == beacon.x && cell.y == beacon.y && cell.z == beacon.z) {
+            if (!construction && cell.x == beacon.x && cell.y == beacon.y && cell.z == beacon.z) {
                 continue;
             }
-            if (occupancy[worldBase + candidate] != kern::LatticeNoOccupant) {
+            if (occupancy[worldBase + candidateCell] != kern::LatticeNoOccupant) {
                 continue;
             }
-            occupancy[worldBase + candidate] = static_cast<std::int32_t>(index);
+            occupancy[worldBase + candidateCell] = static_cast<std::int32_t>(index);
             cell.w = agent.cell.w;
             agent.cell = cell;
             agent.intent = Int4{cell.x, cell.y, cell.z, 0};
             break;
         }
 
-        const std::uint32_t distance = kern::latticeStepDistance(
-            static_cast<std::uint32_t>(settings.neighborhood), beacon.x - agent.cell.x,
-            beacon.y - agent.cell.y, beacon.z - agent.cell.z);
-        agent.metrics.x = kern::latticeNearness(distance, latticeMaximumDistance(settings));
+        if (!construction) {
+            const std::uint32_t distance = kern::latticeStepDistance(
+                static_cast<std::uint32_t>(settings.neighborhood), beacon.x - agent.cell.x,
+                beacon.y - agent.cell.y, beacon.z - agent.cell.z);
+            agent.metrics.x = kern::latticeNearness(distance, latticeMaximumDistance(settings));
+        }
     }
     return agents;
 }
@@ -133,8 +152,7 @@ void buildOccupancy(const std::span<const AgentState> agents, const SimulationSt
     const std::uint32_t groupSize = layout.groupSize();
     for (std::uint32_t index = 0; index < agents.size(); ++index) {
         const AgentState& agent = agents[index];
-        const std::uint32_t world =
-            logicalWorldForAgent(index, groupSize, layout.trialsPerGenome);
+        const std::uint32_t world = logicalWorldForAgent(index, groupSize, layout.trialsPerGenome);
         if (!kern::latticeInBounds(agent.cell.x, agent.cell.y, agent.cell.z, settings.latticeWidth,
                                    settings.latticeHeight, settings.latticeDepth)) {
             continue;

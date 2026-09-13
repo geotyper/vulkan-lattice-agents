@@ -104,9 +104,8 @@ public:
     explicit Reader(const std::string_view text) : text_(text) {}
 
     void skipSpace() {
-        while (position_ < text_.size() &&
-               (text_[position_] == ' ' || text_[position_] == '\n' || text_[position_] == '\r' ||
-                text_[position_] == '\t')) {
+        while (position_ < text_.size() && (text_[position_] == ' ' || text_[position_] == '\n' ||
+                                            text_[position_] == '\r' || text_[position_] == '\t')) {
             ++position_;
         }
     }
@@ -180,8 +179,7 @@ public:
         }
         std::uint32_t value{};
         const char* const begin = text_.data() + start;
-        const auto [ignored, error] =
-            std::from_chars(begin, text_.data() + position_, value);
+        const auto [ignored, error] = std::from_chars(begin, text_.data() + position_, value);
         (void)ignored;
         if (error != std::errc{}) {
             fail("number out of range");
@@ -332,13 +330,12 @@ BrainDescription describeBrain(const BrainShape shape, const std::string_view ne
         if (offset >= inputCount) {
             return;
         }
-        description.inputs.push_back(
-            vectorBlock(std::move(name), offset, std::min(count, inputCount - offset), rows,
-                        columns));
+        description.inputs.push_back(vectorBlock(
+            std::move(name), offset, std::min(count, inputCount - offset), rows, columns));
     };
     addInput("neighbourhood", bk::brainNeighborChannelIndex(0u, 0u), bk::BrainNeighborBlockSize,
              bk::BrainNeighborCount, bk::BrainNeighborChannels);
-    addInput("beacon", bk::brainBeaconInputIndex(0u), bk::BrainBeaconInputCount, 0, 0);
+    addInput("task", bk::brainBeaconInputIndex(0u), bk::BrainBeaconInputCount, 0, 0);
     addInput("self", bk::BrainSelfOffset, bk::BrainSelfInputCount, 0, 0);
     addInput("memory_in", bk::BrainRecurrentInputOffset, bk::BrainRecurrentCount, 0, 0);
 
@@ -351,6 +348,7 @@ BrainDescription describeBrain(const BrainShape shape, const std::string_view ne
     };
     addOutput("move", bk::BrainMoveOutput, bk::BrainMoveOutputCount);
     addOutput("signal", bk::BrainSignalIntensityOutput, bk::BrainSignalOutputCount);
+    addOutput("build", bk::BrainBuildOutput, bk::BrainBuildOutputCount);
     addOutput("memory_out", bk::BrainRecurrentOutputOffset, bk::BrainRecurrentCount);
 
     // The genome, block by block, in the order it is laid out. Offsets come from
@@ -368,32 +366,34 @@ BrainDescription describeBrain(const BrainShape shape, const std::string_view ne
     for (uint layer = 0; layer < layerCount; ++layer) {
         const uint width = bk::brainHiddenLayerSize(layers, layer);
         const uint sourceCount = bk::brainLayerSourceCount(inputCount, layers, layer);
-        const std::string source = layer == 0 ? std::string{"inputs"} : layerName("hidden", layer - 1, "");
+        const std::string source =
+            layer == 0 ? std::string{"inputs"} : layerName("hidden", layer - 1, "");
         const std::string target = layerName("hidden", layer, "");
-        description.weights.push_back(weightBlock(
-            layerName("hidden", layer, "_weights"), source, target,
-            bk::brainLayerWeightIndex(base, inputCount, layers, layer, 0u, 0u), width * sourceCount,
-            width, sourceCount));
-        description.weights.push_back(weightBlock(
-            layerName("hidden", layer, "_bias"), "", target,
-            bk::brainLayerBiasIndex(base, inputCount, layers, layer, 0u), width));
+        description.weights.push_back(
+            weightBlock(layerName("hidden", layer, "_weights"), source, target,
+                        bk::brainLayerWeightIndex(base, inputCount, layers, layer, 0u, 0u),
+                        width * sourceCount, width, sourceCount));
+        description.weights.push_back(
+            weightBlock(layerName("hidden", layer, "_bias"), "", target,
+                        bk::brainLayerBiasIndex(base, inputCount, layers, layer, 0u), width));
     }
     const uint lastHidden = bk::brainLastHiddenSize(layers);
-    description.weights.push_back(weightBlock(
-        "output_weights", layerName("hidden", layerCount - 1u, ""), "outputs",
-        bk::brainOutputWeightIndex(base, inputCount, layers, 0u, 0u), lastHidden * outputCount,
-        outputCount, lastHidden));
+    description.weights.push_back(
+        weightBlock("output_weights", layerName("hidden", layerCount - 1u, ""), "outputs",
+                    bk::brainOutputWeightIndex(base, inputCount, layers, 0u, 0u),
+                    lastHidden * outputCount, outputCount, lastHidden));
     description.weights.push_back(weightBlock(
         "output_bias", "", "outputs",
         bk::brainOutputBiasIndex(base, inputCount, layers, outputCount, 0u), outputCount));
-    description.weights.push_back(weightBlock(
-        "time_constants", "", "hidden",
-        bk::brainTimeConstantGeneIndex(base, inputCount, layers, outputCount, 0u),
-        bk::brainHiddenNeuronCount(layers)));
+    description.weights.push_back(
+        weightBlock("time_constants", "", "hidden",
+                    bk::brainTimeConstantGeneIndex(base, inputCount, layers, outputCount, 0u),
+                    bk::brainHiddenNeuronCount(layers)));
     for (uint layer = 0; layer < layerCount; ++layer) {
         const uint width = bk::brainHiddenLayerSize(layers, layer);
         const uint sourceCount = bk::brainLayerSourceCount(inputCount, layers, layer);
-        const std::string source = layer == 0 ? std::string{"inputs"} : layerName("hidden", layer - 1, "");
+        const std::string source =
+            layer == 0 ? std::string{"inputs"} : layerName("hidden", layer - 1, "");
         const std::string target = layerName("hidden", layer, "_rate");
         description.weights.push_back(weightBlock(
             layerName("gate", layer, "_weights"), source, target,

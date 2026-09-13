@@ -34,6 +34,15 @@ const uint LatticeNeighborhoodFaces = 0u;
 const uint LatticeNeighborhoodMoore = 1u;
 const uint LatticeNeighborhoodCount = 2u;
 
+// Two tasks share the lattice machinery. The navigation baseline follows a
+// beacon; construction replaces it with a persistent field of supported blocks
+// and constrains agents to surfaces and climbable faces.
+const uint LatticeWorldBeacon = 0u;
+const uint LatticeWorldConstruction = 1u;
+const uint LatticeWorldCount = 2u;
+
+const int LatticeNoStructure = 0;
+
 // An empty cell, and a cell nobody has bid for. Two sentinels and not one: the
 // occupancy grid stores agent indices and -1 for empty, while the bid grid is
 // resolved by a minimum, so its empty value has to be larger than every agent
@@ -205,6 +214,13 @@ VKEXP_LATTICE_MATH_FN int latticeMoveComponent(uint neighborhood, uint axis, flo
 // is as arbitrary as any other.
 VKEXP_LATTICE_FN int latticeBetterClaim(int standing, int bid) {
     return bid < standing ? bid : standing;
+}
+
+// Building and walking can target the same cell in one decision pass. Build
+// claims are negative, so a block wins over a body independent of invocation
+// order; lower-numbered builders still win ties, as movers do.
+VKEXP_LATTICE_FN int latticeBuildClaim(uint agent, uint agentCount) {
+    return int(agent) - int(agentCount) - 1;
 }
 
 // A cell may be entered only if it was empty when the step began. So a queue of

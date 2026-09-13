@@ -24,9 +24,12 @@ GpuStepParameters packStepParameters(const SimulationStep& settings,
             static_cast<std::uint32_t>(settings.neuronModel),
             brain.packedLayers(),
             static_cast<std::uint32_t>(brain.weightCount()),
-            0U,
-            0U,
-            0U,
+            static_cast<std::uint32_t>(settings.worldMode),
+            settings.buildIntervalTicks,
+            settings.buildThreshold,
+            settings.constructionCourseFill,
+            settings.constructionHeightLead,
+            settings.allowSideSupportedBlocks,
             packFitnessWeights(settings.fitness)};
 }
 

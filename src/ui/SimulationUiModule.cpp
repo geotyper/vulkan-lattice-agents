@@ -115,7 +115,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
 
     ImGui::Checkbox("Paused", &state_.controls.paused);
     int stepsPerFrame = static_cast<int>(state_.controls.stepsPerFrame);
-    if (ImGui::SliderInt("Steps / frame", &stepsPerFrame, 1, 64)) {
+    if (ImGui::SliderInt("Simulation steps / frame", &stepsPerFrame, 1, 64)) {
         state_.controls.stepsPerFrame = static_cast<std::uint32_t>(stepsPerFrame);
     }
     ImGui::SetItemTooltip("How much simulation one displayed frame advances. It changes how fast "
@@ -133,8 +133,23 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                         static_cast<double>(state_.settings.deltaTime * 1000.0F));
 
     ImGui::SeparatorText("The lattice");
+    int worldMode = static_cast<int>(state_.settings.worldMode);
+    constexpr const char* worldModes[] = {"Beacon", "Construction"};
+    static_assert(std::size(worldModes) == worldModeCount);
+    if (ImGui::Combo("World", &worldMode, worldModes, static_cast<int>(worldModeCount))) {
+        state_.settings.worldMode = static_cast<WorldMode>(worldMode);
+        state_.controls.resetRequested = true;
+    }
+    ImGui::SetItemTooltip("Construction starts every agent on the floor, enables supported blocks, "
+                          "climbing and falling, and scores every genome in a world by the same "
+                          "height. Beacon keeps the navigation task.");
+
     int requestedAgentsPerWorld = static_cast<int>(state_.worlds.requestedAgentsPerWorld);
-    const int populationSize = static_cast<int>(std::max(state_.agents.genomeCount, 1U));
+    const std::uint32_t floorCapacity = state_.settings.latticeWidth * state_.settings.latticeDepth;
+    const int populationSize =
+        static_cast<int>(std::max(1U, state_.settings.worldMode == WorldMode::Construction
+                                          ? std::min(state_.agents.genomeCount, floorCapacity)
+                                          : state_.agents.genomeCount));
     requestedAgentsPerWorld = std::clamp(requestedAgentsPerWorld, 1, populationSize);
     if (ImGui::SliderInt("Agents / world", &requestedAgentsPerWorld, 1, populationSize)) {
         state_.worlds.requestedAgentsPerWorld = static_cast<std::uint32_t>(requestedAgentsPerWorld);
@@ -205,55 +220,65 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                           "of the decision to stand still: at zero an agent moves every step "
                           "whatever it thinks, and near one it has to commit.");
 
-    int contactRadius = static_cast<int>(state_.settings.beaconContactRadius);
-    if (ImGui::SliderInt("Contact radius", &contactRadius, 0, 6)) {
-        state_.settings.beaconContactRadius = static_cast<std::uint32_t>(contactRadius);
-    }
-    ImGui::SetItemTooltip("How near the beacon counts as having reached it. A cell holds one "
-                          "agent, so at zero eleven of twelve lose the objective however well "
-                          "they steered -- which measures the arbitration rule rather than the "
-                          "policy. Widen it to let a group crowd the beacon.");
-    if (state_.settings.beaconContactRadius == 0) {
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4{0.95F, 0.75F, 0.25F, 1.0F}, "one winner per world");
-    }
-    ImGui::TextDisabled("beacon seed %u, redrawn every generation", state_.settings.beaconSeed);
+    if (state_.settings.worldMode == WorldMode::Construction) {
+        int buildInterval = static_cast<int>(state_.settings.buildIntervalTicks);
+        if (ImGui::SliderInt("Build interval", &buildInterval, 1, 120, "%d ticks")) {
+            state_.settings.buildIntervalTicks = static_cast<std::uint32_t>(buildInterval);
+        }
+        ImGui::SliderFloat("Build threshold", &state_.settings.buildThreshold, 0.0F, 0.95F, "%.2f");
+        float courseFillPercent = state_.settings.constructionCourseFill * 100.0F;
+        if (ImGui::SliderFloat("Course fill", &courseFillPercent, 5.0F, 100.0F, "%.0f%%",
+                               ImGuiSliderFlags_AlwaysClamp)) {
+            state_.settings.constructionCourseFill = courseFillPercent * 0.01F;
+        }
+        ImGui::SetItemTooltip("Each course must fill this fraction of the x/z floor before it "
+                              "raises the shared construction frontier.");
+        int heightLead = static_cast<int>(state_.settings.constructionHeightLead);
+        if (ImGui::SliderInt("Height above foundation", &heightLead, 1, 16, "%d levels")) {
+            state_.settings.constructionHeightLead = static_cast<std::uint32_t>(heightLead);
+        }
+        ImGui::SetItemTooltip("A block cannot be placed above this many levels beyond the "
+                              "consecutive sufficiently filled courses.");
+        bool allowSideSupport = state_.settings.allowSideSupportedBlocks != 0U;
+        if (ImGui::Checkbox("Side-supported bridges", &allowSideSupport)) {
+            state_.settings.allowSideSupportedBlocks = allowSideSupport ? 1U : 0U;
+        }
+        ImGui::SetItemTooltip("Allow a block to hang from a cardinal x/z face. Diagonal edge or "
+                              "corner contact never supports it.");
+        ImGui::SliderFloat("Boundary penalty", &state_.settings.fitness.boundaryPenalty, 0.0F,
+                           0.05F, "%.4f");
+        ImGui::SetItemTooltip("Group charge per agent and tick spent on the x/z perimeter. The "
+                              "height ceiling is not penalised.");
+        ImGui::TextWrapped("Fitness is the sum of block levels minus boundary dwell. A course "
+                           "must be broad enough to lift the %u-level construction frontier; "
+                           "every genome in the world receives the same total.",
+                           state_.settings.constructionHeightLead);
+        ImGui::TextDisabled(state_.settings.allowSideSupportedBlocks != 0U
+                                ? "Blocks may use a floor, lower block or cardinal side face."
+                                : "Blocks need floor or a block directly below; walls climb.");
+    } else {
+        int contactRadius = static_cast<int>(state_.settings.beaconContactRadius);
+        if (ImGui::SliderInt("Contact radius", &contactRadius, 0, 6)) {
+            state_.settings.beaconContactRadius = static_cast<std::uint32_t>(contactRadius);
+        }
+        ImGui::TextDisabled("beacon seed %u, redrawn every generation", state_.settings.beaconSeed);
 
-    ImGui::SeparatorText("Fitness shaping");
-    ImGui::SliderFloat("Tracking reward", &state_.settings.fitness.trackingReward, 0.0F, 4.0F,
-                       "%.2f");
-    ImGui::SetItemTooltip("What closing the distance is worth, scored once at the end against "
-                          "the nearest the agent ever got. Shaping and not the objective: an "
-                          "agent pushed off the beacon keeps this.");
-    ImGui::SliderFloat("Objective bonus", &state_.settings.fitness.objectiveBonus, 0.0F, 0.5F,
-                       "%.3f");
-    ImGui::SetItemTooltip("Score per step spent within the contact radius. Per step rather than "
-                          "per arrival, for the reason the contact radius exists.");
-    ImGui::SliderFloat("Motor cost", &state_.settings.fitness.motorCostWeight, 0.0F, 0.05F, "%.4f");
-    ImGui::SliderFloat("Refusal penalty", &state_.settings.fitness.refusalPenalty, 0.0F, 0.1F,
-                       "%.4f");
-    ImGui::SetItemTooltip("Charged per move that could not happen -- into a wall, into a "
-                          "neighbour, or lost to a lower-numbered agent. This is the whole of "
-                          "the pressure toward not crowding, so it wants to be larger than the "
-                          "cost of a move that worked.");
-    if (state_.settings.fitness.refusalPenalty < state_.settings.fitness.motorCostWeight) {
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4{0.95F, 0.75F, 0.25F, 1.0F}, "cheaper than moving");
+        ImGui::SeparatorText("Fitness shaping");
+        ImGui::SliderFloat("Tracking reward", &state_.settings.fitness.trackingReward, 0.0F, 4.0F,
+                           "%.2f");
+        ImGui::SliderFloat("Objective bonus", &state_.settings.fitness.objectiveBonus, 0.0F, 0.5F,
+                           "%.3f");
+        ImGui::SliderFloat("Motor cost", &state_.settings.fitness.motorCostWeight, 0.0F, 0.05F,
+                           "%.4f");
+        ImGui::SliderFloat("Refusal penalty", &state_.settings.fitness.refusalPenalty, 0.0F, 0.1F,
+                           "%.4f");
+        ImGui::SliderFloat("Signal cost", &state_.settings.fitness.signalCostFactor, 0.0F, 2.0F,
+                           "%.2f");
+        if (ImGui::SliderFloat("Group fitness sharing", &state_.settings.fitness.groupSharing, 0.0F,
+                               1.0F, "%.2f")) {
+            state_.controls.resetRequested = true;
+        }
     }
-    ImGui::SliderFloat("Signal cost", &state_.settings.fitness.signalCostFactor, 0.0F, 2.0F,
-                       "%.2f");
-    ImGui::SetItemTooltip("What broadcasting costs, relative to moving. Signalling is free to a "
-                          "sender otherwise, and a channel nobody pays for is one every genome "
-                          "saturates.");
-    if (ImGui::SliderFloat("Group fitness sharing", &state_.settings.fitness.groupSharing, 0.0F,
-                           1.0F, "%.2f")) {
-        state_.controls.resetRequested = true;
-    }
-    ImGui::SetItemTooltip("0 is pure individual selection; 1 gives every genome sharing a lattice "
-                          "the same score, so selection acts on the group and a broadcast that "
-                          "only helps a neighbour finally pays its sender back. The plotted "
-                          "fitness stays individual either way, so runs at different settings "
-                          "stay comparable.");
 
     // A snapshot is the fast way back to a run worth looking at, so it sits with
     // the run controls rather than in an export menu. Everything except the
@@ -381,9 +406,9 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::TextDisabled("time constants %.0f ms .. %.1f s",
                         static_cast<double>(neuro::kernel::BrainTimeConstantMinimum * 1000.0F),
                         static_cast<double>(neuro::kernel::BrainTimeConstantMaximum));
-    ImGui::TextDisabled("%u cells x %u channels, beacon, heading and memory",
+    ImGui::TextDisabled("%u cells x %u channels, task state, heading and memory",
                         neuro::kernel::BrainNeighborCount, neuro::kernel::BrainNeighborChannels);
-    ImGui::TextDisabled("three move drives, a broadcast and memory updates");
+    ImGui::TextDisabled("three move drives, broadcast, build and memory updates");
     ImGui::End();
 
     drawBrainWindow(brain);
@@ -401,7 +426,11 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::Text("Best fitness:   %.4f", state_.statistics.bestFitness);
     ImGui::Text("Median fitness: %.4f", state_.statistics.medianFitness);
     ImGui::Text("Mean fitness:   %.4f", state_.statistics.meanFitness);
-    ImGui::Text("Reached the beacon: %.1f%%", state_.statistics.arrivalRatio * 100.0F);
+    if (state_.settings.worldMode == WorldMode::Construction) {
+        ImGui::Text("Mean weighted fill: %.2f%%", state_.statistics.arrivalRatio * 100.0F);
+    } else {
+        ImGui::Text("Reached the beacon: %.1f%%", state_.statistics.arrivalRatio * 100.0F);
+    }
     ImGui::SeparatorText("Fitness history");
     // Say so when the plots are a window onto a longer run, rather than letting
     // a curve that has stopped extending read as a run that has stopped.
@@ -413,7 +442,9 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     plotHistory("Best", state_.history.bestFitness);
     plotHistory("Median", state_.history.medianFitness);
     plotHistory("Mean", state_.history.meanFitness);
-    plotHistory("Reached the beacon", state_.history.arrivalRatio, 0.0F, 1.0F);
+    plotHistory(state_.settings.worldMode == WorldMode::Construction ? "Weighted block fill"
+                                                                     : "Reached the beacon",
+                state_.history.arrivalRatio, 0.0F, 1.0F);
     ImGui::SeparatorText("Evolution parameters");
     ImGui::Text("Population: %zu", state_.evolution.populationSize);
     ImGui::Text("Elites: %zu   Tournament: %zu", state_.evolution.eliteCount,
@@ -598,7 +629,11 @@ void SimulationUiModule::drawViewControls() {
     ImGui::SameLine();
     ImGui::Checkbox("Trails", &display.trails);
     ImGui::SameLine();
-    ImGui::Checkbox("Beacon", &display.beacons);
+    if (state_.settings.worldMode == WorldMode::Construction) {
+        ImGui::Checkbox("Blocks", &display.structures);
+    } else {
+        ImGui::Checkbox("Beacon", &display.beacons);
+    }
     ImGui::SameLine();
     ImGui::Checkbox("Box", &display.bounds);
     ImGui::SliderFloat("Background", &display.backgroundBrightness, 0.0F, 1.0F, "%.2f");
@@ -659,12 +694,17 @@ void SimulationUiModule::drawViewControls() {
     ImGui::SliderFloat("rad/s", &camera.spinRate, 0.02F, 1.20F, "%.2f");
     ImGui::EndDisabled();
     if (ImGui::SmallButton("Reset view")) {
-        camera = LatticeCamera{};
+        camera = latticeHomeCamera(state_.settings);
     }
     ImGui::SameLine();
     ImGui::TextDisabled("drag to orbit, wheel to zoom");
     // The colours carry the three things a still frame cannot say by itself.
-    ImGui::TextDisabled("agents: blue far / warm near / red refused; trails: colour per genome");
+    if (state_.settings.worldMode == WorldMode::Construction) {
+        ImGui::TextDisabled("blocks: clay low / sunlit high; trails: colour per genome");
+    } else {
+        ImGui::TextDisabled(
+            "agents: blue far / warm near / red refused; trails: colour per genome");
+    }
 }
 
 void SimulationUiModule::drawBrainWindow(const neuro::BrainShape& brain) {

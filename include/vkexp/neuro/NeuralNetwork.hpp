@@ -3,10 +3,10 @@
 #include "vkexp/neuro/BrainKernel.hpp"
 
 #include <array>
-#include <vector>
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <vector>
 
 namespace vkexp::neuro {
 
@@ -47,6 +47,7 @@ struct Topology {
     static constexpr std::size_t selfOffset = kernel::BrainSelfOffset;
     static constexpr std::size_t recurrentInputOffset = kernel::BrainRecurrentInputOffset;
     static constexpr std::size_t signalIntensityOutput = kernel::BrainSignalIntensityOutput;
+    static constexpr std::size_t buildOutput = kernel::BrainBuildOutput;
     static constexpr std::size_t recurrentOutputOffset = kernel::BrainRecurrentOutputOffset;
 };
 // A world selects an active network inside the fixed-capacity genome. Keeping
@@ -196,14 +197,14 @@ using HiddenState = std::array<float, Topology::hiddenNeuronCapacity>;
 // chooses where the time constant comes from; the integrator is the same one in
 // every case, which is what makes switching models an ablation rather than a
 // swap between two networks. `model` is a kernel::NeuronModel* value.
-[[nodiscard]] Outputs evaluate(std::span<const float> weights,
-                               const Inputs& inputs, HiddenState& state, float deltaTime,
-                               kernel::uint model, BrainShape shape = maximumBrainShape);
+[[nodiscard]] Outputs evaluate(std::span<const float> weights, const Inputs& inputs,
+                               HiddenState& state, float deltaTime, kernel::uint model,
+                               BrainShape shape = maximumBrainShape);
 
 // Stateless convenience for the tests and inspections that ask what a brain does
 // to one input vector with no history. Defined in terms of the above with a
 // fresh state and the reactive model, so there is one evaluator and not two.
-[[nodiscard]] Outputs evaluate(std::span<const float> weights,
-                               const Inputs& inputs, BrainShape shape = maximumBrainShape);
+[[nodiscard]] Outputs evaluate(std::span<const float> weights, const Inputs& inputs,
+                               BrainShape shape = maximumBrainShape);
 
 } // namespace vkexp::neuro

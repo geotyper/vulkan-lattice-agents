@@ -28,6 +28,9 @@ struct RunSnapshot {
     SimulationStep settings{};
     std::vector<Genome> genomes;
     std::vector<AgentState> agents;
+    // Unlike agent occupancy, construction is not derivable from agent cells.
+    // It is the work the group has already done and must survive a resume.
+    std::vector<std::int32_t> structures;
     std::uint64_t generation{};
     std::uint32_t step{};
     std::uint32_t stepsPerGeneration{};
@@ -36,12 +39,11 @@ struct RunSnapshot {
     std::uint32_t seed{};
 };
 
-// Version 1. Not a continuation of the 2D build's fourteen: the agent record,
-// the settings block and the world itself all changed at once, so there is no
-// reading under which a file from that format describes a lattice. The magic
-// changed with it, so such a file is rejected as "not a run snapshot" rather
-// than as a version mismatch, which is the truer thing to say about it.
-inline constexpr std::uint32_t runSnapshotVersion = 1;
+// Version 5 adds optional cardinal side support. The per-course counters
+// introduced with version 4 are derived from the stored structure field.
+// It is not a continuation of the old 2D format: the agent record, settings and
+// world all changed at once, and that format has different magic.
+inline constexpr std::uint32_t runSnapshotVersion = 5;
 
 // Versioned and little-endian, like the genome archive, and just as strict: a
 // file from another brain topology or another agent layout is rejected rather

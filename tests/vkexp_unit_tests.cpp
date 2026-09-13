@@ -241,9 +241,10 @@ void testNeuralNetworkContract() {
     check(vkexp::neuro::Topology::outputCount ==
               kernel::BrainActuatorOutputCount + kernel::BrainRecurrentCount,
           "Output capacity is actuators plus recurrent cells");
-    check(kernel::BrainActuatorOutputCount ==
-              kernel::BrainMoveOutputCount + kernel::BrainSignalOutputCount,
-          "Actuators are the three move drives plus the broadcast");
+    check(kernel::BrainActuatorOutputCount == kernel::BrainMoveOutputCount +
+                                                  kernel::BrainSignalOutputCount +
+                                                  kernel::BrainBuildOutputCount,
+          "Actuators are the three move drives, broadcast and build impulse");
     check(vkexp::neuro::Topology::maximumWeightCount ==
               vkexp::neuro::maximumBrainShape.weightCount(),
           "Genome capacity matches the widest brain shape");
@@ -726,12 +727,13 @@ void testBrainDescription() {
             inside("neighbourhood", bk::brainNeighborChannelIndex(bk::BrainNeighborCount - 1u,
                                                                   bk::BrainNeighborChannels - 1u)),
         "The neighbourhood block covers every cell channel");
-    check(inside("beacon", bk::brainBeaconInputIndex(0u)) &&
-              inside("beacon", bk::brainBeaconInputIndex(bk::BrainBeaconInputCount - 1u)),
-          "The beacon block covers every beacon channel");
+    check(inside("task", bk::brainBeaconInputIndex(0u)) &&
+              inside("task", bk::brainBeaconInputIndex(bk::BrainBeaconInputCount - 1u)),
+          "The task block covers every task-specific channel");
     check(inside("move", bk::BrainMoveOutput) &&
               inside("move", bk::BrainMoveOutput + bk::BrainMoveOutputCount - 1u) &&
               inside("signal", bk::BrainSignalIntensityOutput) &&
+              inside("build", bk::BrainBuildOutput) &&
               inside("memory_out", bk::BrainRecurrentOutputOffset),
           "Every named output slot falls in the block that claims it");
 

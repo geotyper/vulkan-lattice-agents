@@ -11,6 +11,9 @@ layout(std430, set = 0, binding = 0) readonly buffer Agents {
 layout(std430, set = 0, binding = 1) readonly buffer TrailHistory {
     ivec4 trailSamples[];
 };
+layout(std430, set = 0, binding = 2) readonly buffer Structures {
+    int structures[];
+};
 
 layout(location = 0) out vec3 fragNormal;
 layout(location = 1) out vec3 fragWorld;
@@ -77,6 +80,25 @@ void main() {
         // Not on the nearness ramp: the beacon is what nearness is measured
         // against, so giving it a place on that scale would be circular.
         colour = vec4(0.96, 0.34, 0.52, 1.0);
+    } else if (mode == LatticeViewModeStructure) {
+        const uint local = uint(gl_InstanceIndex);
+        const uint cellsPerWorld = uint(view.lattice.x * view.lattice.y * view.lattice.z);
+        const int builder = structures[uint(view.beacon.w) * cellsPerWorld + local];
+        if (builder == 0) {
+            hide();
+            return;
+        }
+        const uint width = uint(view.lattice.x);
+        const uint height = uint(view.lattice.y);
+        cell = ivec3(int(local % width), int((local / width) % height),
+                     int(local / (width * height)));
+        const float elevation = float(cell.y + 1) / float(max(view.lattice.y, 1));
+        const float maker = fract(float(builder) * 0.61803398875);
+        const vec3 clay = vec3(0.46, 0.16, 0.07);
+        const vec3 sun = vec3(1.00, 0.66, 0.20);
+        vec3 block = mix(clay, sun, pow(elevation, 0.55));
+        block *= 0.90 + 0.16 * maker;
+        colour = vec4(block, 1.0);
     } else {
         const uint agentIndex =
             uint(view.beacon.w) + uint(gl_InstanceIndex) * latticeViewAgentStride();

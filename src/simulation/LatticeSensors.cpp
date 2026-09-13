@@ -4,6 +4,7 @@
 #include "vkexp/neuro/BrainKernel.hpp"
 
 #include <algorithm>
+#include <array>
 
 namespace vkexp {
 namespace {
@@ -15,7 +16,8 @@ namespace kern = lattice::kernel;
 
 neuro::Inputs sampleAgentInputs(const AgentState& agent, const std::span<const float> signals,
                                 const std::span<const std::int32_t> occupancy,
-                                const SimulationStep& settings) {
+                                const SimulationStep& settings,
+                                const std::span<const std::int32_t> structures) {
     neuro::Inputs inputs{};
 
     // All twenty-six under both movement settings. See LatticeKernel.inl for why
@@ -37,32 +39,61 @@ neuro::Inputs sampleAgentInputs(const AgentState& agent, const std::span<const f
             // move rule, not in a containment pass after the fact.
             blocked = 1.0F;
         } else {
-            const std::uint32_t index = kern::latticeCellIndex(
-                x, y, z, settings.latticeWidth, settings.latticeHeight);
+            const std::uint32_t index =
+                kern::latticeCellIndex(x, y, z, settings.latticeWidth, settings.latticeHeight);
             const std::int32_t occupant =
                 index < occupancy.size() ? occupancy[index] : kern::LatticeNoOccupant;
-            if (occupant != kern::LatticeNoOccupant &&
-                static_cast<std::size_t>(occupant) < signals.size()) {
+            if (settings.worldMode == WorldMode::Construction && index < structures.size() &&
+                structures[index] != kern::LatticeNoStructure) {
+                blocked = 1.0F;
+            } else if (occupant != kern::LatticeNoOccupant &&
+                       static_cast<std::size_t>(occupant) < signals.size()) {
                 occupied = 1.0F;
                 signal = std::clamp(signals[static_cast<std::size_t>(occupant)], 0.0F, 1.0F);
             }
         }
-        inputs[brain::brainNeighborChannelIndex(neighbor, kern::LatticeNeighborOccupied)] = occupied;
+        inputs[brain::brainNeighborChannelIndex(neighbor, kern::LatticeNeighborOccupied)] =
+            occupied;
         inputs[brain::brainNeighborChannelIndex(neighbor, kern::LatticeNeighborBlocked)] = blocked;
         inputs[brain::brainNeighborChannelIndex(neighbor, kern::LatticeNeighborSignal)] = signal;
     }
 
-    const int deltaX = agent.beacon.x - agent.cell.x;
-    const int deltaY = agent.beacon.y - agent.cell.y;
-    const int deltaZ = agent.beacon.z - agent.cell.z;
-    const float length = kern::latticeVectorLength(deltaX, deltaY, deltaZ);
-    const std::uint32_t distance = kern::latticeStepDistance(
-        static_cast<std::uint32_t>(settings.neighborhood), deltaX, deltaY, deltaZ);
-    inputs[brain::brainBeaconInputIndex(0)] = kern::latticeDirectionComponent(deltaX, length);
-    inputs[brain::brainBeaconInputIndex(1)] = kern::latticeDirectionComponent(deltaY, length);
-    inputs[brain::brainBeaconInputIndex(2)] = kern::latticeDirectionComponent(deltaZ, length);
-    inputs[brain::brainBeaconInputIndex(3)] =
-        kern::latticeNearness(distance, latticeMaximumDistance(settings));
+    if (settings.worldMode == WorldMode::Construction) {
+        inputs[brain::brainBeaconInputIndex(0)] =
+            static_cast<float>(agent.cell.y) /
+            static_cast<float>(std::max(settings.latticeHeight - 1U, 1U));
+        inputs[brain::brainBeaconInputIndex(1)] = agent.signal.z <= 0.0F ? 1.0F : 0.0F;
+        inputs[brain::brainBeaconInputIndex(2)] = std::clamp(agent.signal.w, 0.0F, 1.0F);
+
+        bool supported = agent.cell.y <= 0;
+        constexpr std::array<std::array<int, 3>, 5> supportOffsets{
+            {{{0, -1, 0}}, {{-1, 0, 0}}, {{1, 0, 0}}, {{0, 0, -1}}, {{0, 0, 1}}}};
+        for (const auto& offset : supportOffsets) {
+            const int x = agent.cell.x + offset[0];
+            const int y = agent.cell.y + offset[1];
+            const int z = agent.cell.z + offset[2];
+            if (kern::latticeInBounds(x, y, z, settings.latticeWidth, settings.latticeHeight,
+                                      settings.latticeDepth)) {
+                const std::uint32_t cell =
+                    kern::latticeCellIndex(x, y, z, settings.latticeWidth, settings.latticeHeight);
+                supported |=
+                    cell < structures.size() && structures[cell] != kern::LatticeNoStructure;
+            }
+        }
+        inputs[brain::brainBeaconInputIndex(3)] = supported ? 1.0F : 0.0F;
+    } else {
+        const int deltaX = agent.beacon.x - agent.cell.x;
+        const int deltaY = agent.beacon.y - agent.cell.y;
+        const int deltaZ = agent.beacon.z - agent.cell.z;
+        const float length = kern::latticeVectorLength(deltaX, deltaY, deltaZ);
+        const std::uint32_t distance = kern::latticeStepDistance(
+            static_cast<std::uint32_t>(settings.neighborhood), deltaX, deltaY, deltaZ);
+        inputs[brain::brainBeaconInputIndex(0)] = kern::latticeDirectionComponent(deltaX, length);
+        inputs[brain::brainBeaconInputIndex(1)] = kern::latticeDirectionComponent(deltaY, length);
+        inputs[brain::brainBeaconInputIndex(2)] = kern::latticeDirectionComponent(deltaZ, length);
+        inputs[brain::brainBeaconInputIndex(3)] =
+            kern::latticeNearness(distance, latticeMaximumDistance(settings));
+    }
 
     // The heading, as the unit step it last took. An agent that has not moved
     // reads zero on all three, which is a distinguishable state and not a
@@ -73,8 +104,7 @@ neuro::Inputs sampleAgentInputs(const AgentState& agent, const std::span<const f
         const int headingY = kern::latticeNeighborY(heading);
         const int headingZ = kern::latticeNeighborZ(heading);
         const float headingLength = kern::latticeVectorLength(headingX, headingY, headingZ);
-        inputs[brain::BrainSelfOffset] =
-            kern::latticeDirectionComponent(headingX, headingLength);
+        inputs[brain::BrainSelfOffset] = kern::latticeDirectionComponent(headingX, headingLength);
         inputs[brain::BrainSelfOffset + 1] =
             kern::latticeDirectionComponent(headingY, headingLength);
         inputs[brain::BrainSelfOffset + 2] =

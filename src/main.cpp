@@ -40,6 +40,10 @@ int main(const int argc, char** argv) {
         }
 
         vkexp::SimulationState state;
+        // This branch's interactive experiment opens on the construction task;
+        // the domain default remains the beacon baseline for headless runs and
+        // existing archives that choose no world explicitly.
+        state.settings.worldMode = vkexp::WorldMode::Construction;
         vkexp::Application app{vkexp::ApplicationConfig{
             1440,
             900,

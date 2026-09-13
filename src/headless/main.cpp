@@ -42,6 +42,12 @@ struct Options {
     std::optional<float> moveThreshold;
     std::optional<std::uint32_t> contactRadius;
     vkexp::Neighborhood neighborhood{vkexp::Neighborhood::Moore};
+    vkexp::WorldMode worldMode{vkexp::WorldMode::Beacon};
+    std::uint32_t buildIntervalTicks{12};
+    float buildThreshold{0.55F};
+    float constructionCourseFill{0.25F};
+    std::uint32_t constructionHeightLead{5};
+    bool allowSideSupportedBlocks{};
 
     vkexp::FitnessWeights fitness{};
     vkexp::NeuronModel neuronModel{vkexp::NeuronModel::TimeConstant};
@@ -70,6 +76,7 @@ void printHelp(const char* executable) {
                  "  --seed <n>               genetic algorithm seed (default 12648430)\n"
                  "  --steps-per-batch <n>    steps recorded per submission (default 128)\n\n"
                  "The lattice:\n"
+                 "  --world <name>          beacon|construction (default beacon)\n"
                  "  --lattice <WxHxD>        cells per world (default 32x32x16). Each world\n"
                  "                           costs W*H*D*4 bytes twice over, and there is one\n"
                  "                           world per group per trial, so a large box and a\n"
@@ -81,7 +88,13 @@ void printHelp(const char* executable) {
                  "                           0..1 (default 0.25). 0 means never standing still\n"
                  "  --contact-radius <n>     cells from the beacon that count as reaching it\n"
                  "                           (default 1). 0 means one agent per world can\n"
-                 "                           score at a time\n\n"
+                 "                           score at a time\n"
+                 "  --build-interval <n>     ticks between successful block placements (12)\n"
+                 "  --build-threshold <x>    construction output required to place (0.55)\n"
+                 "  --course-fill <x>        fraction needed to advance a course (0.25)\n"
+                 "  --height-lead <n>        build levels allowed above foundation (5)\n"
+                 "  --side-support           allow cardinal face-supported bridge blocks\n"
+                 "  --boundary-penalty <x>   charged per agent-tick on the x/z edge (0.002)\n\n"
                  "Ablations:\n"
                  "  --neuron-model <name>    reactive|time|gated|spiking: where a hidden\n"
                  "                           neuron's time constant comes from. reactive pins\n"
@@ -156,8 +169,9 @@ void parseLatticeExtents(const std::string_view text, Options& options) {
     std::size_t start = 0;
     while (start <= text.size()) {
         const std::size_t separator = text.find('x', start);
-        const std::string_view piece = text.substr(
-            start, separator == std::string_view::npos ? std::string_view::npos : separator - start);
+        const std::string_view piece =
+            text.substr(start, separator == std::string_view::npos ? std::string_view::npos
+                                                                   : separator - start);
         if (piece.empty()) {
             fail("Empty extent in '" + std::string{text} + "'");
         }
@@ -192,6 +206,16 @@ void parseLatticeExtents(const std::string_view text, Options& options) {
         return vkexp::Neighborhood::Moore;
     }
     fail("Unknown neighbourhood '" + std::string{name} + "'; expected faces or moore");
+}
+
+[[nodiscard]] vkexp::WorldMode parseWorldMode(const std::string_view name) {
+    if (name == "beacon") {
+        return vkexp::WorldMode::Beacon;
+    }
+    if (name == "construction" || name == "build") {
+        return vkexp::WorldMode::Construction;
+    }
+    fail("Unknown world '" + std::string{name} + "'; expected beacon or construction");
 }
 
 [[nodiscard]] const char* neighborhoodName(const vkexp::Neighborhood neighborhood) {
@@ -261,7 +285,8 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
         } else if (argument == "--generations") {
             options.generations = parseNumber<std::uint64_t>(next(index, argument), argument);
         } else if (argument == "--steps") {
-            options.stepsPerGeneration = parseNumber<std::uint32_t>(next(index, argument), argument);
+            options.stepsPerGeneration =
+                parseNumber<std::uint32_t>(next(index, argument), argument);
         } else if (argument == "--steps-per-batch") {
             options.stepsPerBatch = parseNumber<std::uint32_t>(next(index, argument), argument);
         } else if (argument == "--population") {
@@ -272,12 +297,28 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.seed = parseNumber<std::uint32_t>(next(index, argument), argument);
         } else if (argument == "--lattice") {
             parseLatticeExtents(next(index, argument), options);
+        } else if (argument == "--world") {
+            options.worldMode = parseWorldMode(next(index, argument));
         } else if (argument == "--neighbourhood" || argument == "--neighborhood") {
             options.neighborhood = parseNeighborhood(next(index, argument));
         } else if (argument == "--move-threshold") {
             options.moveThreshold = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--contact-radius") {
             options.contactRadius = parseNumber<std::uint32_t>(next(index, argument), argument);
+        } else if (argument == "--build-interval") {
+            options.buildIntervalTicks =
+                parseNumber<std::uint32_t>(next(index, argument), argument);
+        } else if (argument == "--build-threshold") {
+            options.buildThreshold = parseNumber<float>(next(index, argument), argument);
+        } else if (argument == "--course-fill") {
+            options.constructionCourseFill = parseNumber<float>(next(index, argument), argument);
+        } else if (argument == "--height-lead") {
+            options.constructionHeightLead =
+                parseNumber<std::uint32_t>(next(index, argument), argument);
+        } else if (argument == "--side-support") {
+            options.allowSideSupportedBlocks = true;
+        } else if (argument == "--boundary-penalty") {
+            options.fitness.boundaryPenalty = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--tracking-reward") {
             options.fitness.trackingReward = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--objective-bonus") {
@@ -314,7 +355,7 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             fail("Unknown argument: " + std::string{argument});
         }
     }
-    if (options.generations == 0 || options.stepsPerBatch == 0) {
+    if (options.generations == 0 || options.stepsPerBatch == 0 || options.buildIntervalTicks == 0) {
         fail("Generations, steps and steps-per-batch must all be non-zero");
     }
     return options;
@@ -356,6 +397,13 @@ int run(const Options& options) {
         state.settings.latticeDepth = *options.latticeDepth;
     }
     state.settings.neighborhood = options.neighborhood;
+    state.settings.worldMode = options.worldMode;
+    state.settings.buildIntervalTicks = options.buildIntervalTicks;
+    state.settings.buildThreshold = std::clamp(options.buildThreshold, 0.0F, 1.0F);
+    state.settings.constructionCourseFill = std::clamp(options.constructionCourseFill, 0.0F, 1.0F);
+    state.settings.constructionHeightLead =
+        std::clamp(options.constructionHeightLead, 1U, vkexp::latticeMaximumExtent);
+    state.settings.allowSideSupportedBlocks = options.allowSideSupportedBlocks ? 1U : 0U;
     if (options.moveThreshold) {
         state.settings.moveThreshold = std::clamp(*options.moveThreshold, 0.0F, 1.0F);
     }
@@ -453,19 +501,39 @@ int run(const Options& options) {
                   << "Population: " << driver.evolution().population().size() << " genomes x "
                   << driver.config().trialsPerGenome << " trials = " << state.agents.agentCount
                   << " agents in " << state.worlds.worldCount << " lattices\n"
+                  << "World:      "
+                  << (state.settings.worldMode == vkexp::WorldMode::Construction ? "construction"
+                                                                                 : "beacon")
+                  << '\n'
                   << "Movement:   threshold " << std::fixed << std::setprecision(2)
-                  << state.settings.moveThreshold << ", beacon reached within "
-                  << std::defaultfloat << std::setprecision(6)
-                  << state.settings.beaconContactRadius << " cell(s)\n"
-                  << "Neurons:    " << neuronModelName(state.settings.neuronModel) << '\n';
+                  << state.settings.moveThreshold;
+        if (state.settings.worldMode == vkexp::WorldMode::Construction) {
+            std::cout << '\n'
+                      << "Construction: one supported block every "
+                      << state.settings.buildIntervalTicks << " ticks, output > "
+                      << state.settings.buildThreshold << ", boundary penalty "
+                      << state.settings.fitness.boundaryPenalty << " per agent-tick\n"
+                      << "Frontier:   " << state.settings.constructionCourseFill * 100.0F
+                      << "% per consecutive course, " << state.settings.constructionHeightLead
+                      << " levels of headroom, side support "
+                      << (state.settings.allowSideSupportedBlocks != 0U ? "on" : "off") << '\n';
+        } else {
+            std::cout << ", beacon reached within " << std::defaultfloat << std::setprecision(6)
+                      << state.settings.beaconContactRadius << " cell(s)\n";
+        }
+        std::cout << "Neurons:    " << neuronModelName(state.settings.neuronModel) << '\n';
         // Only when it is on, so a default run's output stays comparable with
         // every run recorded before the option existed.
-        if (state.settings.fitness.groupSharing > 0.0F) {
+        if (state.settings.worldMode == vkexp::WorldMode::Beacon &&
+            state.settings.fitness.groupSharing > 0.0F) {
             std::cout << "Selection:  group fitness sharing " << std::fixed << std::setprecision(2)
                       << state.settings.fitness.groupSharing << std::defaultfloat
                       << std::setprecision(6) << " (plotted fitness stays individual)\n";
         }
-        std::cout << '\n' << "  gen        best      median        mean   arrival\n";
+        std::cout << '\n'
+                  << (state.settings.worldMode == vkexp::WorldMode::Construction
+                          ? "  gen    weighted      median        mean weighted.fill\n"
+                          : "  gen        best      median        mean   arrival\n");
     }
 
     const std::uint64_t firstGeneration = driver.evolution().generation();
