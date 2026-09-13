@@ -146,6 +146,7 @@ add_library(vklat_domain STATIC
     src/simulation/RunSnapshot.cpp
     src/simulation/ExperimentSweep.cpp
     src/simulation/StepParameters.cpp
+    src/simulation/StructureShape.cpp
 )
 target_include_directories(vklat_domain PUBLIC include)
 vkexp_enable_warnings(vklat_domain)

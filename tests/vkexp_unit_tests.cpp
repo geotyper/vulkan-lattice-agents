@@ -16,6 +16,7 @@
 #include "vkexp/simulation/RunSnapshot.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
 #include "vkexp/simulation/StepParameters.hpp"
+#include "vkexp/simulation/StructureShape.hpp"
 #include "vkexp/simulation/Units.hpp"
 
 #include <algorithm>
@@ -1712,6 +1713,88 @@ void testLatticeSpawnCapacity() {
     check(occupied == agents.size(), "The occupancy grid holds exactly one cell per agent");
 }
 
+void testStructureShape() {
+    vkexp::SimulationStep settings{};
+    settings.worldMode = vkexp::WorldMode::Construction;
+    settings.latticeWidth = 4;
+    settings.latticeHeight = 4;
+    settings.latticeDepth = 4;
+    const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
+
+    const auto place = [&](std::vector<std::int32_t>& field, const int x, const int y,
+                           const int z) {
+        field[vkexp::lattice::kernel::latticeCellIndex(x, y, z, settings.latticeWidth,
+                                                       settings.latticeHeight)] = 1;
+    };
+
+    // A field of the wrong length is a layout mistake, not a smaller world.
+    std::vector<std::int32_t> truncated(cells - 1, 0);
+    check(vkexp::measureStructureShape(truncated, settings).blocks == 0,
+          "A field that is not one world long measures as nothing");
+
+    std::vector<std::int32_t> empty(cells, 0);
+    const vkexp::StructureShape nothing = vkexp::measureStructureShape(empty, settings);
+    check(nothing.blocks == 0 && nothing.footprint == 0 && nothing.peak == 0,
+          "An empty world has built nothing");
+    check(nothing.compactness == 0.0F && nothing.heightSpread == 0.0F,
+          "Nothing has no shape either, rather than a divide by zero");
+
+    // One four-high column in a corner: a spire.
+    std::vector<std::int32_t> spire(cells, 0);
+    for (int y = 0; y < 4; ++y) {
+        place(spire, 1, y, 2);
+    }
+    const vkexp::StructureShape tall = vkexp::measureStructureShape(spire, settings);
+    check(tall.blocks == 4 && tall.footprint == 1 && tall.peak == 4,
+          "A single column is four blocks standing on one square");
+    check(tall.meanHeight == 4.0F && tall.heightSpread == 0.0F,
+          "One column is its own mean and has no spread");
+    check(tall.compactness == 1.0F, "One column fills its own bounding rectangle");
+    check(tall.overhangs == 0 && tall.enclosed == 0, "A solid column floats nothing and roofs nothing");
+
+    // The whole floor: the same block count as four spires, a different shape.
+    std::vector<std::int32_t> slab(cells, 0);
+    for (int z = 0; z < 4; ++z) {
+        for (int x = 0; x < 4; ++x) {
+            place(slab, x, 0, z);
+        }
+    }
+    const vkexp::StructureShape flat = vkexp::measureStructureShape(slab, settings);
+    check(flat.blocks == 16 && flat.footprint == 16 && flat.peak == 1,
+          "A full course is one block on every square");
+    check(flat.meanHeight == 1.0F && flat.heightSpread == 0.0F && flat.compactness == 1.0F,
+          "A full course is flat, even and solid in plan");
+
+    // Four corner piers with a lintel across one pair: an overhang and a room.
+    std::vector<std::int32_t> gate(cells, 0);
+    place(gate, 0, 0, 0);
+    place(gate, 2, 0, 0);
+    place(gate, 0, 1, 0);
+    place(gate, 2, 1, 0);
+    place(gate, 1, 1, 0); // nothing beneath it
+    const vkexp::StructureShape arch = vkexp::measureStructureShape(gate, settings);
+    check(arch.blocks == 5 && arch.footprint == 3, "The arch stands on three squares");
+    check(arch.overhangs == 1, "Exactly one block of the arch stands on empty space");
+    check(arch.enclosed == 1, "And exactly one empty cell is roofed by it");
+    check(arch.peak == 2 && arch.meanHeight == 2.0F,
+          "Every column of the arch reaches the same height");
+    check(std::abs(arch.compactness - 1.0F) < 1.0e-6F,
+          "Three squares in a row of three fill their bounding rectangle");
+
+    // Shape is not mass: the spire and a four-square course have the same
+    // block count and must not measure the same.
+    std::vector<std::int32_t> spread(cells, 0);
+    for (int x = 0; x < 4; ++x) {
+        place(spread, x, 0, 3);
+    }
+    const vkexp::StructureShape row = vkexp::measureStructureShape(spread, settings);
+    check(row.blocks == tall.blocks, "The row and the spire cost the same number of blocks");
+    check(row.peak != tall.peak && row.footprint != tall.footprint,
+          "But they are not the same shape, which is the whole point of measuring");
+    check(std::abs(row.compactness - 1.0F) < 1.0e-6F,
+          "A row of four is its own bounding rectangle, not a quarter of the floor");
+}
+
 void testLatticeAddressing() {
     constexpr std::uint32_t width = 7;
     constexpr std::uint32_t height = 5;
@@ -2096,6 +2179,7 @@ int main() {
     testLatticeCameraSlide();
     testTransparencyWeight();
     testLatticeSpawnCapacity();
+    testStructureShape();
     testLatticeAddressing();
     testLatticeNeighbourhood();
     testLatticeMoveRule();
