@@ -194,6 +194,10 @@ void require(const bool condition, const std::string& message) {
 // test to pass while the driver is broken.
 class LatticeHarness {
 public:
+    // See the note beside the buffer: more than one, so the step index the
+    // shaders are pushed is not the one index a layout mistake survives.
+    static constexpr std::uint32_t parameterSlots = 2;
+
     LatticeHarness(vkexp::HeadlessComputeContext& context, const vkexp::SimulationStep& settings,
                    const vkexp::lattice::PopulationLayout& layout,
                    const std::span<const float> weights)
@@ -211,9 +215,22 @@ public:
                           {gridBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
         claims_.create(context.physicalDevice(), context.device(),
                        {gridBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
+        structures_.create(context.physicalDevice(), context.device(),
+                           {gridBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
+        const VkDeviceSize levelBytes = static_cast<VkDeviceSize>(layout.worldCount()) *
+                                        vkexp::latticeMaximumExtent * sizeof(std::uint32_t);
+        structureLevelCounts_.create(context.physicalDevice(), context.device(),
+                                     {levelBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
+        // Two slots, and every dispatch below reads the second one. A driver
+        // batches many steps into one submission and indexes this buffer by the
+        // step, so slot zero is the only slot a harness that records one step
+        // would ever touch -- and slot zero is exactly where a stride that
+        // disagrees between C++ and std430 still very nearly works. Reading
+        // slot one makes the disagreement a failed parity case instead of a
+        // run that quietly gets better the fewer steps it batches.
         parameters_.create(context.physicalDevice(), context.device(),
-                           {sizeof(vkexp::GpuStepParameters), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                            hostMemory});
+                           {sizeof(vkexp::GpuStepParameters) * parameterSlots,
+                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
         genome_.write(weights.data(), weights.size_bytes());
 
         const vkexp::GpuStepParameters packed = vkexp::packStepParameters(
@@ -221,12 +238,13 @@ public:
                        .trialsPerGenome = layout.trialsPerGenome,
                        .agentsPerWorld = layout.groupSize(),
                        .worldCount = layout.worldCount()});
-        parameters_.write(&packed, sizeof(packed));
+        const std::array<vkexp::GpuStepParameters, parameterSlots> slots{packed, packed};
+        parameters_.write(slots.data(), sizeof(slots));
 
-        createLayout(6, stepLayout_);
-        createLayout(4, resolveLayout_);
+        createLayout(8, stepLayout_);
+        createLayout(6, resolveLayout_);
         createLayout(2, clearLayout_);
-        descriptors_.create(context.device(), {6, {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 20}}});
+        descriptors_.create(context.device(), {6, {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 36}}});
 
         for (std::uint32_t readIndex = 0; readIndex < 2; ++readIndex) {
             const VkBuffer readBuffer =
@@ -245,6 +263,10 @@ public:
                              claims_.size())
                 .writeBuffer(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, parameters_.buffer(), 0,
                              parameters_.size())
+                .writeBuffer(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, structures_.buffer(), 0,
+                             structures_.size())
+                .writeBuffer(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             structureLevelCounts_.buffer(), 0, structureLevelCounts_.size())
                 .update(context.device(), stepSets_[readIndex]);
 
             resolveSets_[readIndex] = descriptors_.allocate(resolveLayout_.get());
@@ -256,6 +278,10 @@ public:
                              claims_.size())
                 .writeBuffer(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, parameters_.buffer(), 0,
                              parameters_.size())
+                .writeBuffer(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, structures_.buffer(), 0,
+                             structures_.size())
+                .writeBuffer(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             structureLevelCounts_.buffer(), 0, structureLevelCounts_.size())
                 .update(context.device(), resolveSets_[readIndex]);
         }
         clearSet_ = descriptors_.allocate(clearLayout_.get());
@@ -289,12 +315,17 @@ public:
         agents_.read().write(agents.data(), agents.size_bytes());
         agents_.write().write(agents.data(), agents.size_bytes());
         occupancy_.write(occupancy.data(), occupancy.size_bytes());
+        const std::vector<std::int32_t> empty(cellCount_, vkexp::lattice::kernel::LatticeNoStructure);
+        structures_.write(empty.data(), empty.size() * sizeof(std::int32_t));
+        const std::vector<std::uint32_t> levels(
+            static_cast<std::size_t>(layout_.worldCount()) * vkexp::latticeMaximumExtent, 0U);
+        structureLevelCounts_.write(levels.data(), levels.size() * sizeof(std::uint32_t));
     }
 
     void step() {
         context_.immediate().execute([&](const VkCommandBuffer commands) {
             const std::uint32_t readIndex = agents_.readIndex();
-            const std::uint32_t stepIndex = 0;
+            const std::uint32_t stepIndex = parameterSlots - 1;
             const std::array<VkDeviceSize, 2> clearRanges{claims_.size(), parameters_.size()};
             const vkexp::DispatchSize clearGroups = vkexp::checkedDispatchSize(
                 context_.physicalDevice(),
@@ -377,6 +408,12 @@ private:
     vkexp::BufferResource genome_;
     vkexp::BufferResource occupancy_;
     vkexp::BufferResource claims_;
+    // Bound even in the beacon world, where no pass reads them. A descriptor the
+    // shader declares and the harness leaves unbound is undefined behaviour
+    // rather than an unused slot, and the parity case that follows would be
+    // measuring whatever the last test left in memory.
+    vkexp::BufferResource structures_;
+    vkexp::BufferResource structureLevelCounts_;
     vkexp::BufferResource parameters_;
     vkexp::UniqueDescriptorSetLayout stepLayout_;
     vkexp::UniqueDescriptorSetLayout resolveLayout_;
@@ -629,7 +666,12 @@ void runFullLatticeProbe(vkexp::HeadlessComputeContext& context) {
     settings.latticeWidth = 2;
     settings.latticeHeight = 2;
     settings.latticeDepth = 2;
-    const vkexp::lattice::PopulationLayout layout{8, 8, 1};
+    // Seven agents in eight cells, and that is as full as a world gets: spawn
+    // refuses to stand anybody on the beacon, so the beacon cell is the one cell
+    // left. An eighth agent would find nowhere to go and stay at its default
+    // corner on top of somebody else -- which is a fixture that tests nothing
+    // rather than a crowd.
+    const vkexp::lattice::PopulationLayout layout{7, 7, 1};
     const vkexp::neuro::BrainShape brain = vkexp::resolvedBrain(settings);
     const std::vector<float> weights = makeWeights(brain, layout.genomeCount, 0x1234U);
 
@@ -642,7 +684,27 @@ void runFullLatticeProbe(vkexp::HeadlessComputeContext& context) {
     LatticeHarness harness{context, settings, layout, weights};
     harness.upload(expected, occupancy);
 
-    const std::vector<std::int32_t> before = occupancy;
+    // What "full" is allowed to mean: the same seven cells are occupied by the
+    // same seven agents at every step, whichever of them happens to be standing
+    // where. A cell that held two agents, or a count that changed, would be a
+    // move into a cell that was not empty at the top of the step -- which is the
+    // one rule the whole arbitration exists to keep.
+    const auto occupiedCells = [&](const std::vector<std::int32_t>& grid, const char* what) {
+        std::vector<std::int32_t> occupants;
+        for (const std::int32_t owner : grid) {
+            if (owner != vkexp::lattice::kernel::LatticeNoOccupant) {
+                occupants.push_back(owner);
+            }
+        }
+        std::sort(occupants.begin(), occupants.end());
+        require(std::adjacent_find(occupants.begin(), occupants.end()) == occupants.end(),
+                std::string{what} + ": one agent is standing in two cells");
+        require(occupants.size() == expected.size(),
+                std::string{what} + ": the number of occupied cells changed");
+    };
+    occupiedCells(occupancy, "Full lattice at spawn");
+
+    bool everRefused = false;
     for (std::uint32_t step = 0; step < 8; ++step) {
         harness.upload(expected, occupancy);
         harness.step();
@@ -654,11 +716,15 @@ void runFullLatticeProbe(vkexp::HeadlessComputeContext& context) {
         for (std::size_t index = 0; index < expected.size(); ++index) {
             compareAgents(expected[index], actual[index],
                           "Full lattice agent " + std::to_string(index), 2.0e-3F);
+            everRefused = everRefused || expected[index].metrics.w > 0.0F;
         }
+        occupiedCells(occupancy, "Full lattice");
+        occupiedCells(harness.readOccupancy(), "Full lattice on the device");
     }
-    require(occupancy == before, "Full lattice: somebody moved in a world with no free cell");
-    require(harness.readOccupancy() == before,
-            "Full lattice: the device moved somebody in a world with no free cell");
+    // Without this the probe could pass on a population that never tried to
+    // move, which is the one outcome it must not accept: the point is the
+    // refusal path, not the empty one.
+    require(everRefused, "Full lattice: nobody was ever refused a cell in a world with one free");
 }
 
 // Every agent of a world addressing its own genome. The base offset is

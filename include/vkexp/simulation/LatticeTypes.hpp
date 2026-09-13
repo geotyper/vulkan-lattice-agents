@@ -416,6 +416,13 @@ struct alignas(16) GpuStepParameters {
 
 static_assert(sizeof(GpuStepParameters) == 128);
 static_assert(offsetof(GpuStepParameters, latticeWidth) == 28);
+// The one offset the GLSL mirror cannot derive for itself. Twenty-three scalars
+// come to 92 bytes and `alignas(16)` pushes this block to 96; the shader only
+// lands on the same number because its copy of the block is declared as vec4s,
+// which std430 aligns to 16 as well. Eight floats there would align to 4, and
+// the two strides would differ by one word -- which is invisible at step index
+// zero and total nonsense at every index after it.
+static_assert(offsetof(GpuStepParameters, fitness) == 96);
 static_assert(offsetof(GpuStepParameters, neuronModel) == 56);
 static_assert(offsetof(GpuStepParameters, fitness) == 96);
 

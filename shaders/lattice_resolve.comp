@@ -103,7 +103,7 @@ void main() {
         }
     }
 
-    agent.metrics.z += (moved ? 1.0 : 0.0) + params.fitness.signalCostFactor * agent.signal.x;
+    agent.metrics.z += (moved ? 1.0 : 0.0) + fitnessSignalCostFactor(params.fitness) * agent.signal.x;
     if (params.worldMode == LatticeWorldConstruction) {
         const bool onHorizontalPerimeter =
             agent.cell.x == 0 || agent.cell.z == 0 ||

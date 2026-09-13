@@ -781,7 +781,7 @@ void testGenomeArchiveRoundTrip() {
     const std::filesystem::path path =
         std::filesystem::temp_directory_path() / "vkexp_archive_test" / "population.vkng";
     std::vector<vkexp::Genome> genomes(
-        3, vkexp::Genome{vkexp::neuro::makeWeights(vkexp::neuro::BrainShape{70, 20, 4})});
+        3, vkexp::Genome{vkexp::neuro::makeWeights(vkexp::neuro::BrainShape{70, 20, 5})});
     for (std::size_t index = 0; index < genomes.size(); ++index) {
         for (std::size_t weight = 0; weight < genomes[index].weights.size(); ++weight) {
             genomes[index].weights[weight] =
@@ -789,10 +789,21 @@ void testGenomeArchiveRoundTrip() {
         }
     }
     // A trimmed shape rather than the default one, so the file has something to
-    // say that the build would not have assumed.
-    const vkexp::neuro::BrainShape archivePlan{70, 20, 4};
+    // say that the build would not have assumed. Trimmed down to the actuators
+    // and no further: an output vector shorter than the actuators names a brain
+    // that cannot drive the world, and the loader refuses it.
+    const vkexp::neuro::BrainShape archivePlan{70, 20,
+                                               vkexp::neuro::Topology::actuatorOutputCount};
     const vkexp::GenomeArchiveMetadata metadata{
-        42, 4, 0xC0FFEEU, 1.5F, 0.25F, 70, 20, 4, archivePlan.packedLayers()};
+        42,
+        4,
+        0xC0FFEEU,
+        1.5F,
+        0.25F,
+        70,
+        20,
+        static_cast<std::uint32_t>(vkexp::neuro::Topology::actuatorOutputCount),
+        archivePlan.packedLayers()};
     vkexp::saveGenomeArchive(path, genomes, metadata);
 
     const vkexp::GenomeArchive loaded = vkexp::loadGenomeArchive(path);
@@ -801,7 +812,8 @@ void testGenomeArchiveRoundTrip() {
     check(loaded.metadata.beaconSeed == 4, "Archive beacon seed round-trip");
     check(loaded.metadata.seed == 0xC0FFEEU, "Archive seed round-trip");
     check(closeTo(loaded.metadata.bestFitness, 1.5F), "Archive best fitness round-trip");
-    check(loaded.metadata.brainOutputCount == 4, "Archive brain shape round-trip");
+    check(loaded.metadata.brainOutputCount == vkexp::neuro::Topology::actuatorOutputCount,
+          "Archive brain shape round-trip");
     bool identical = true;
     for (std::size_t index = 0; index < genomes.size(); ++index) {
         identical = identical && loaded.genomes[index].weights == genomes[index].weights;
@@ -809,7 +821,7 @@ void testGenomeArchiveRoundTrip() {
     check(identical, "Archive weights round-trip bit-exactly");
     check(loaded.describedStructure, "An archive states the structure its weights are laid out in");
     check(loaded.description.inputCount == 70 && loaded.description.hiddenCount == 20 &&
-              loaded.description.outputCount == 4,
+              loaded.description.outputCount == vkexp::neuro::Topology::actuatorOutputCount,
           "and states it for the shape the run actually used");
 
     // The whole reason the structure is in the file: a file whose weights mean
