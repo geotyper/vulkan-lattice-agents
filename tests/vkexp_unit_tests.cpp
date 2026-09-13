@@ -1514,6 +1514,67 @@ struct ShaderBindings {
 // constant is what the driver and the parity harness both build from, and a
 // disagreement between them is undefined behaviour rather than an error the
 // loader reports.
+// The camera's basis, checked against what it is supposed to be.
+//
+// Sliding is written as closed-form trigonometry rather than as a cross
+// product, which is cheaper and easier to get subtly wrong -- a sign that only
+// shows up at one heading looks like a control that "feels odd" rather than
+// like a bug. So the two claims that make a slide a slide are asserted
+// directly: the movement is perpendicular to where the camera is looking, and
+// its length is what was asked for.
+void testLatticeCameraSlide() {
+    const auto eyeDirection = [](const vkexp::LatticeCamera& camera) {
+        return std::array<float, 3>{std::cos(camera.pitch) * std::sin(camera.yaw),
+                                    std::sin(camera.pitch),
+                                    std::cos(camera.pitch) * std::cos(camera.yaw)};
+    };
+    const auto dot = [](const std::array<float, 3>& left, const std::array<float, 3>& right) {
+        return left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
+    };
+
+    // Straight on, the basis is the screen's own: right is +x and up is +y.
+    vkexp::LatticeCamera straight{};
+    straight.yaw = 0.0F;
+    straight.pitch = 0.0F;
+    straight.slide(2.0F, 3.0F);
+    check(closeTo(straight.targetX, 2.0F) && closeTo(straight.targetY, 3.0F) &&
+              closeTo(straight.targetZ, 0.0F),
+          "Looking down the z axis, a slide moves the target across x and y");
+
+    for (const float yaw : {0.0F, 0.7F, 2.1F, -1.3F}) {
+        for (const float pitch : {0.0F, 0.6F, -0.9F}) {
+            vkexp::LatticeCamera camera{};
+            camera.yaw = yaw;
+            camera.pitch = pitch;
+            const std::array<float, 3> direction = eyeDirection(camera);
+
+            camera.slide(1.0F, 0.0F);
+            const std::array<float, 3> right{camera.targetX, camera.targetY, camera.targetZ};
+            check(closeTo(std::sqrt(dot(right, right)), 1.0F, 1.0e-4F),
+                  "A slide of one moves the target by one");
+            check(std::abs(dot(right, direction)) < 1.0e-4F,
+                  "Sliding right moves across the view, never along it");
+            // Sideways is sideways: a right slide never changes the height,
+            // which is what makes the two axes independent controls.
+            check(closeTo(right[1], 0.0F, 1.0e-4F), "Sliding right does not change the height");
+
+            vkexp::LatticeCamera raised{};
+            raised.yaw = yaw;
+            raised.pitch = pitch;
+            raised.slide(0.0F, 1.0F);
+            const std::array<float, 3> up{raised.targetX, raised.targetY, raised.targetZ};
+            check(closeTo(std::sqrt(dot(up, up)), 1.0F, 1.0e-4F),
+                  "A slide of one upward moves the target by one");
+            check(std::abs(dot(up, direction)) < 1.0e-4F,
+                  "Sliding up moves across the view, never along it");
+            check(std::abs(dot(up, right)) < 1.0e-4F, "The two slide axes are perpendicular");
+            // Up is up. Pitching the camera changes how much of the movement is
+            // vertical, never whether it is.
+            check(up[1] > 0.0F, "Sliding up raises the target whatever the pitch");
+        }
+    }
+}
+
 void testShaderBindingContract() {
     struct Case {
         const char* shader;
@@ -1973,6 +2034,7 @@ int main() {
     testLogicalWorldPartition();
     testPingPongState();
     testShaderBindingContract();
+    testLatticeCameraSlide();
     testLatticeSpawnCapacity();
     testLatticeAddressing();
     testLatticeNeighbourhood();

@@ -583,12 +583,39 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
             ImGui::SetCursorScreenPos(origin);
             ImGui::InvisibleButton("##orbit", available,
                                    ImGuiButtonFlags_MouseButtonLeft |
-                                       ImGuiButtonFlags_MouseButtonRight);
+                                       ImGuiButtonFlags_MouseButtonRight |
+                                       ImGuiButtonFlags_MouseButtonMiddle);
             LatticeCamera& camera = state_.display.camera;
             if (ImGui::IsItemActive()) {
                 const ImVec2 drag = ImGui::GetIO().MouseDelta;
-                camera.yaw -= drag.x * 0.008F;
-                camera.pitch = std::clamp(camera.pitch + drag.y * 0.008F, -1.53F, 1.53F);
+                const bool sliding = ImGui::IsMouseDown(ImGuiMouseButton_Right) ||
+                                     ImGui::IsMouseDown(ImGuiMouseButton_Middle);
+                if (sliding) {
+                    // One dragged pixel moves the box by one pixel's worth of
+                    // the world, so a slide feels the same however far away the
+                    // camera is and whichever projection is on: both frame the
+                    // same height at the same distance, which is what makes the
+                    // two comparable at all.
+                    const float halfDiagonal =
+                        0.5F * std::sqrt(
+                                   static_cast<float>(state_.settings.latticeWidth) *
+                                       static_cast<float>(state_.settings.latticeWidth) +
+                                   static_cast<float>(state_.settings.latticeHeight) *
+                                       static_cast<float>(state_.settings.latticeHeight) +
+                                   static_cast<float>(state_.settings.latticeDepth) *
+                                       static_cast<float>(state_.settings.latticeDepth));
+                    const float radius = std::max(camera.distance * halfDiagonal, 0.2F);
+                    const float perPixel =
+                        2.0F * radius * std::tan(latticeCameraFieldOfView * 0.5F) /
+                        std::max(available.y, 1.0F);
+                    // Dragging right carries the box right, so the camera goes
+                    // left. A slide that moved the box the other way would be a
+                    // camera control rather than a handle on the thing itself.
+                    camera.slide(-drag.x * perPixel, drag.y * perPixel);
+                } else {
+                    camera.yaw -= drag.x * 0.008F;
+                    camera.pitch = std::clamp(camera.pitch + drag.y * 0.008F, -1.53F, 1.53F);
+                }
             }
             if (ImGui::IsItemHovered()) {
                 const float wheel = ImGui::GetIO().MouseWheel;
@@ -698,7 +725,16 @@ void SimulationUiModule::drawViewControls() {
         camera = latticeHomeCamera(state_.settings);
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("drag to orbit, wheel to zoom");
+    // Undoes a slide without undoing the angle it was made from, which is
+    // usually what is wanted: the view was turned to something deliberately and
+    // then pushed off centre while looking at it.
+    if (ImGui::SmallButton("Centre")) {
+        camera.targetX = 0.0F;
+        camera.targetY = 0.0F;
+        camera.targetZ = 0.0F;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("drag to orbit, right-drag to slide, wheel to zoom");
     // The colours carry the three things a still frame cannot say by itself.
     if (state_.settings.worldMode == WorldMode::Construction) {
         ImGui::TextDisabled("blocks: clay low / sunlit high; trails: colour per genome");

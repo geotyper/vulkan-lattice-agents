@@ -453,6 +453,20 @@ void LatticeRenderer::onUpdate(AppContext& context, const FrameInfo& frame) {
     camera.yaw = std::fmod(camera.yaw, tau);
     camera.pitch = std::clamp(camera.pitch, -1.53F, 1.53F);
     camera.distance = std::clamp(camera.distance, 0.35F, 12.0F);
+    // The box can be pushed off to the side but not lost: a target beyond its
+    // own diagonal would leave an empty viewport and no way back but the reset
+    // button, and a control that can strand the view is a control people stop
+    // using.
+    const float reach =
+        std::sqrt(static_cast<float>(state_.settings.latticeWidth) *
+                      static_cast<float>(state_.settings.latticeWidth) +
+                  static_cast<float>(state_.settings.latticeHeight) *
+                      static_cast<float>(state_.settings.latticeHeight) +
+                  static_cast<float>(state_.settings.latticeDepth) *
+                      static_cast<float>(state_.settings.latticeDepth));
+    camera.targetX = std::clamp(camera.targetX, -reach, reach);
+    camera.targetY = std::clamp(camera.targetY, -reach, reach);
+    camera.targetZ = std::clamp(camera.targetZ, -reach, reach);
 
     const VkExtent2D requested{std::clamp(state_.viewport.requestedWidth, 64U, 4096U),
                                std::clamp(state_.viewport.requestedHeight, 64U, 4096U)};
@@ -491,21 +505,26 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
     const float halfDiagonal = 0.5F * std::sqrt(width * width + height * height + depth * depth);
     const LatticeCamera& camera = display.camera;
     const float radius = std::max(camera.distance * halfDiagonal, 0.2F);
-    const Vec3 eye{radius * std::cos(camera.pitch) * std::sin(camera.yaw),
-                   radius * std::sin(camera.pitch),
-                   radius * std::cos(camera.pitch) * std::cos(camera.yaw)};
+    // The orbit is around whatever the camera is looking at, which is the middle
+    // of the box until somebody drags it somewhere else.
+    const Vec3 target{camera.targetX, camera.targetY, camera.targetZ};
+    const Vec3 eye{target.x + radius * std::cos(camera.pitch) * std::sin(camera.yaw),
+                   target.y + radius * std::sin(camera.pitch),
+                   target.z + radius * std::cos(camera.pitch) * std::cos(camera.yaw)};
     const float aspect = static_cast<float>(state_.viewport.extent.width) /
                          static_cast<float>(state_.viewport.extent.height);
-    constexpr float verticalFieldOfView = 0.87F;
+    constexpr float verticalFieldOfView = latticeCameraFieldOfView;
     const float nearPlane = std::max(0.05F, halfDiagonal * 0.01F);
-    const float farPlane = radius + halfDiagonal * 4.0F;
+    // Far enough to still hold the whole box once the target has been dragged
+    // to a corner of it, which is as far as the clamp in onUpdate allows.
+    const float farPlane = radius + halfDiagonal * 6.0F;
     const Mat4 projection =
         camera.projection == CameraProjection::Orthographic
             ? orthographic(std::max(radius * std::tan(verticalFieldOfView * 0.5F), 0.1F), aspect,
                            nearPlane, farPlane)
             : perspective(verticalFieldOfView, aspect, nearPlane, farPlane);
     const Mat4 viewProjection =
-        multiply(projection, lookAt(eye, Vec3{0.0F, 0.0F, 0.0F}, Vec3{0.0F, 1.0F, 0.0F}));
+        multiply(projection, lookAt(eye, target, Vec3{0.0F, 1.0F, 0.0F}));
 
     const std::uint32_t sliceAxis = std::min(display.sliceAxis, 2U);
     const std::array<std::uint32_t, 3> extents{settings.latticeWidth, settings.latticeHeight,

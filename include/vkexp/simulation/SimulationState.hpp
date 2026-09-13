@@ -7,6 +7,7 @@
 #include <vulkan/vulkan.h>
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -107,6 +108,12 @@ enum class CameraProjection : std::uint32_t {
 // camera: the thing being looked at is a box with a known centre, and every
 // control that cannot lose the box is one fewer way to end up staring at
 // nothing.
+// The vertical angle the view covers, in radians. Declared here rather than in
+// the renderer because the panel needs it too: how far one dragged pixel moves
+// the box is a question about the projection, and two places computing it from
+// two constants is two places that drift.
+inline constexpr float latticeCameraFieldOfView = 0.87F;
+
 struct LatticeCamera {
     // Start exactly side-on. The default box is wider on x, so the eye begins
     // on +z and sees that widest horizontal edge across the viewport.
@@ -118,6 +125,32 @@ struct LatticeCamera {
     CameraProjection projection{CameraProjection::Perspective};
     bool spin{};
     float spinRate{0.15F}; // radians per second while spinning
+
+    // What the camera looks at, in cells from the centre of the box. An orbit
+    // alone keeps this at zero and can only ever study the middle of a lattice;
+    // with it, a corner of a 32x32x16 box can be brought to the middle of the
+    // viewport and examined at a distance that would otherwise frame the whole
+    // thing.
+    float targetX{};
+    float targetY{};
+    float targetZ{};
+
+    // Slide that point across the screen. The arguments are world units along
+    // the camera's own right and up axes, so a caller converts pixels to world
+    // units once and never has to know how yaw and pitch become a basis --
+    // which is written here, once.
+    void slide(const float right, const float up) {
+        const float cosPitch = std::cos(pitch);
+        const float sinPitch = std::sin(pitch);
+        const float cosYaw = std::cos(yaw);
+        const float sinYaw = std::sin(yaw);
+        // right = (cos yaw, 0, -sin yaw); up = (-sin pitch sin yaw, cos pitch,
+        // -sin pitch cos yaw). Both fall out of the eye direction and world up,
+        // and both are already unit length, so there is nothing to normalise.
+        targetX += right * cosYaw - up * sinPitch * sinYaw;
+        targetY += up * cosPitch;
+        targetZ += -right * sinYaw - up * sinPitch * cosYaw;
+    }
 };
 
 // Face the broader horizontal side: look along the shorter of x/z so the
