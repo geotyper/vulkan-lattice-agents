@@ -31,12 +31,33 @@ struct LatticePopulation {
     std::uint32_t trialsPerGenome{1};
     // Construction blocks, zero for empty. Empty in beacon-only references.
     std::span<std::int32_t> structures;
+    // worldCount * LatticeBuildOutcomeCount, accumulated rather than cleared.
+    // Optional: leave it empty and the step records nothing, which is what every
+    // caller that is not diagnosing the builders wants.
+    std::span<std::uint32_t> buildOutcomes;
 };
 
 // One step of a whole population: sense, decide and bid; then resolve and move.
 // The same order, the same arbitration and the same accumulators as the three
 // compute dispatches, which is what the parity test checks step for step.
 void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& settings);
+
+// How much foundation stands under one build site: the highest level below
+// `buildY` at which `constructionCourseFill` of the cells within
+// `constructionSupportRadius` of the column are occupied, plus one, or zero if
+// no level qualifies. The height lead is then measured from there.
+//
+// The question used to be asked of the world's whole floor area, which made the
+// frontier a global synchroniser and a layer cake the only buildable shape. A
+// radius that spans the floor asks the old question again, so the old rule is
+// still reachable rather than deleted.
+//
+// `worldStructures` is one world's slice of the block field. Mirrored by
+// constructionLocalFoundation in lattice_step.comp; the parity test is what
+// keeps the two honest.
+[[nodiscard]] std::uint32_t constructionLocalFoundation(
+    std::span<const std::int32_t> worldStructures, const SimulationStep& settings, int x,
+    int buildY, int z);
 
 // Scores a finished trial from what the steps accumulated. Pure arithmetic on
 // the record, so it is the same function whether the steps ran here or on the

@@ -232,14 +232,22 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                                ImGuiSliderFlags_AlwaysClamp)) {
             state_.settings.constructionCourseFill = courseFillPercent * 0.01F;
         }
-        ImGui::SetItemTooltip("Each course must fill this fraction of the x/z floor before it "
-                              "raises the shared construction frontier.");
+        ImGui::SetItemTooltip("How full a level must be, around a build site, before it counts "
+                              "as something to stand on.");
+        int supportRadius = static_cast<int>(state_.settings.constructionSupportRadius);
+        if (ImGui::SliderInt("Support radius", &supportRadius, 0, 16, "%d cells")) {
+            state_.settings.constructionSupportRadius = static_cast<std::uint32_t>(supportRadius);
+        }
+        ImGui::SetItemTooltip("How wide the fill question is asked. Zero asks only about the "
+                              "column itself; a radius that spans the floor asks about the whole "
+                              "world, which is the old global course frontier. In between, one "
+                              "corner of a world may run ahead of another.");
         int heightLead = static_cast<int>(state_.settings.constructionHeightLead);
         if (ImGui::SliderInt("Height above foundation", &heightLead, 1, 16, "%d levels")) {
             state_.settings.constructionHeightLead = static_cast<std::uint32_t>(heightLead);
         }
-        ImGui::SetItemTooltip("A block cannot be placed above this many levels beyond the "
-                              "consecutive sufficiently filled courses.");
+        ImGui::SetItemTooltip("A block cannot be placed more than this many levels above the "
+                              "nearest level below it that is filled enough to stand on.");
         bool allowSideSupport = state_.settings.allowSideSupportedBlocks != 0U;
         if (ImGui::Checkbox("Side-supported bridges", &allowSideSupport)) {
             state_.settings.allowSideSupportedBlocks = allowSideSupport ? 1U : 0U;
@@ -250,9 +258,9 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                            0.05F, "%.4f");
         ImGui::SetItemTooltip("Group charge per agent and tick spent on the x/z perimeter. The "
                               "height ceiling is not penalised.");
-        ImGui::TextWrapped("Fitness is the sum of block levels minus boundary dwell. A course "
-                           "must be broad enough to lift the %u-level construction frontier; "
-                           "every genome in the world receives the same total.",
+        ImGui::TextWrapped("Fitness is the sum of block levels minus boundary dwell. A block may "
+                           "stand up to %u levels above the nearest level below it that is filled "
+                           "enough locally; every genome in the world receives the same total.",
                            state_.settings.constructionHeightLead);
         ImGui::TextDisabled(state_.settings.allowSideSupportedBlocks != 0U
                                 ? "Blocks may use a floor, lower block or cardinal side face."
@@ -429,6 +437,8 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::Text("Mean fitness:   %.4f", state_.statistics.meanFitness);
     if (state_.settings.worldMode == WorldMode::Construction) {
         ImGui::Text("Mean weighted fill: %.2f%%", state_.statistics.arrivalRatio * 100.0F);
+        drawStructureShapes();
+        drawBuildOutcomes();
     } else {
         ImGui::Text("Reached the beacon: %.1f%%", state_.statistics.arrivalRatio * 100.0F);
     }
@@ -628,6 +638,119 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     }
     ImGui::End();
     profilerPanel_.draw(context.profiler);
+}
+
+// What the last generation actually built, as opposed to what it scored. The
+// score is mass weighted by height and cannot tell a slab from a spire; these
+// can. Nothing here is fed back into fitness -- see StructureShape.hpp.
+void SimulationUiModule::drawStructureShapes() {
+    if (state_.statistics.worldShapes.empty()) {
+        return;
+    }
+    const std::size_t worlds = state_.statistics.worldShapes.size();
+    const std::size_t visible = std::min<std::size_t>(state_.worlds.selectedWorld, worlds - 1);
+    const std::size_t best = std::min<std::size_t>(state_.statistics.bestWorld, worlds - 1);
+
+    ImGui::SeparatorText("Shape of the last building");
+    if (ImGui::SmallButton("Look at the best world")) {
+        state_.worlds.selectedWorld = static_cast<std::uint32_t>(best);
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("world %zu", best + 1);
+
+    if (!ImGui::BeginTable("structure shape", 3,
+                           ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+        return;
+    }
+    ImGui::TableSetupColumn("");
+    ImGui::TableSetupColumn("visible");
+    ImGui::TableSetupColumn("best");
+    ImGui::TableHeadersRow();
+    const auto row = [&](const char* label, const char* tooltip, const char* format,
+                         const auto visibleValue, const auto bestValue) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(label);
+        ImGui::SetItemTooltip("%s", tooltip);
+        ImGui::TableNextColumn();
+        ImGui::Text(format, visibleValue);
+        ImGui::TableNextColumn();
+        ImGui::Text(format, bestValue);
+    };
+    const StructureShape& here = state_.statistics.worldShapes[visible];
+    const StructureShape& top = state_.statistics.worldShapes[best];
+    row("Blocks", "Blocks placed in the world.", "%u", here.blocks, top.blocks);
+    row("Footprint", "Floor squares carrying at least one block.", "%u", here.footprint,
+        top.footprint);
+    row("Peak", "Height of the tallest column, in cells.", "%u", here.peak, top.peak);
+    row("Mean height", "Mean height over the columns that carry anything. A slab and a spire of "
+                       "equal mass differ here first.",
+        "%.2f", here.meanHeight, top.meanHeight);
+    row("Height spread", "Standard deviation of those heights. Zero means every column is the "
+                         "same height, which is what a flat course looks like.",
+        "%.2f", here.heightSpread, top.heightSpread);
+    row("Compactness", "Occupied squares as a fraction of their own bounding rectangle. One is a "
+                       "solid plan; lower is a ring, a cross or scattered piers.",
+        "%.2f", here.compactness, top.compactness);
+    row("Overhangs", "Blocks standing on empty space. Only reachable with side support enabled.",
+        "%u", here.overhangs, top.overhangs);
+    row("Roofed", "Empty cells with a block above them in the same column. A tower of solid "
+                  "courses has none.",
+        "%u", here.enclosed, top.enclosed);
+    ImGui::EndTable();
+}
+
+// Why the build attempts ended. Exactly one reason is recorded per agent per
+// step, so these sum to agents times steps and read as a funnel: everything
+// that did not become a block was stopped somewhere, and this says where.
+void SimulationUiModule::drawBuildOutcomes() {
+    const auto count = static_cast<std::size_t>(vkexp::lattice::kernel::LatticeBuildOutcomeCount);
+    if (state_.statistics.buildOutcomes.size() < count) {
+        return;
+    }
+    const std::size_t worlds = state_.statistics.buildOutcomes.size() / count;
+    const std::size_t visible = std::min<std::size_t>(state_.worlds.selectedWorld, worlds - 1);
+
+    ImGui::SeparatorText("Why the builders stopped");
+    static constexpr std::array<const char*, 9> names{
+        "Cooling",  "Unwilling",      "No facing", "Off the lattice", "Blocked",
+        "No support", "Above frontier", "In the way", "Claimed"};
+    std::array<std::uint64_t, 9> total{};
+    std::uint64_t attempts = 0;
+    for (std::size_t world = 0; world < worlds; ++world) {
+        for (std::size_t reason = 0; reason < count; ++reason) {
+            total[reason] += state_.statistics.buildOutcomes[world * count + reason];
+        }
+    }
+    for (const std::uint64_t reason : total) {
+        attempts += reason;
+    }
+    if (attempts == 0) {
+        ImGui::TextDisabled("no build attempts recorded");
+        return;
+    }
+
+    if (!ImGui::BeginTable("build outcomes", 3,
+                           ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+        return;
+    }
+    ImGui::TableSetupColumn("");
+    ImGui::TableSetupColumn("visible");
+    ImGui::TableSetupColumn("all worlds");
+    ImGui::TableHeadersRow();
+    for (std::size_t reason = 0; reason < count; ++reason) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(names[reason]);
+        ImGui::TableNextColumn();
+        ImGui::Text("%u", state_.statistics.buildOutcomes[visible * count + reason]);
+        ImGui::TableNextColumn();
+        ImGui::Text("%llu  %.1f%%", static_cast<unsigned long long>(total[reason]),
+                    100.0 * static_cast<double>(total[reason]) / static_cast<double>(attempts));
+    }
+    ImGui::EndTable();
+    ImGui::TextDisabled("one reason per agent and tick, %llu in all",
+                        static_cast<unsigned long long>(attempts));
 }
 
 void SimulationUiModule::drawViewControls() {

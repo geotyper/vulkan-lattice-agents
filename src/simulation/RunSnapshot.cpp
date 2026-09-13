@@ -61,7 +61,7 @@ constexpr std::uint32_t settingsFloatCount = 11;
 // SimulationStep, and this is what notices when a new tunable is added and
 // quietly not saved. If it fires: add the field to one of the two lists above,
 // bump runSnapshotVersion, then update this number.
-static_assert(sizeof(SimulationStep) == 100,
+static_assert(sizeof(SimulationStep) == 104,
               "SimulationStep changed shape -- update the run snapshot field lists");
 
 // The fields that are not floats, kept apart so the float list above stays a
@@ -81,9 +81,10 @@ struct SettingsIntegers {
     std::uint32_t buildIntervalTicks{};
     std::uint32_t constructionHeightLead{};
     std::uint32_t allowSideSupportedBlocks{};
+    std::uint32_t constructionSupportRadius{};
 };
 
-static_assert(sizeof(SettingsIntegers) == 56);
+static_assert(sizeof(SettingsIntegers) == 60);
 
 void readExactly(std::ifstream& stream, void* destination, const std::size_t bytes,
                  const std::filesystem::path& path) {
@@ -147,7 +148,8 @@ void saveRunSnapshot(const std::filesystem::path& path, const RunSnapshot& snaps
                                     static_cast<std::uint32_t>(settings.worldMode),
                                     settings.buildIntervalTicks,
                                     settings.constructionHeightLead,
-                                    settings.allowSideSupportedBlocks};
+                                    settings.allowSideSupportedBlocks,
+                                    settings.constructionSupportRadius};
     stream.write(reinterpret_cast<const char*>(&integers), sizeof(integers));
 
     for (const Genome& genome : snapshot.genomes) {
@@ -275,6 +277,7 @@ RunSnapshot loadRunSnapshot(const std::filesystem::path& path) {
     snapshot.settings.worldMode = static_cast<WorldMode>(integers.worldMode);
     snapshot.settings.buildIntervalTicks = integers.buildIntervalTicks;
     snapshot.settings.constructionHeightLead = integers.constructionHeightLead;
+    snapshot.settings.constructionSupportRadius = integers.constructionSupportRadius;
     snapshot.settings.allowSideSupportedBlocks = integers.allowSideSupportedBlocks;
 
     snapshot.genomes.assign(header.genomeCount, Genome{neuro::Weights(header.weightCount, 0.0F)});

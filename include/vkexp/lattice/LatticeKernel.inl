@@ -43,6 +43,26 @@ const uint LatticeWorldCount = 2u;
 
 const int LatticeNoStructure = 0;
 
+// Why a build attempt did or did not become a block, counted per world over a
+// generation. Exactly one of these is recorded per agent per step in the
+// construction world, so the nine of them sum to agents times steps and the
+// shape of that sum says what is actually stopping the builders -- which the
+// block count alone cannot, since it only ever says "few".
+//
+// The order is the order the decide pass tests them in, and it matters: an
+// attempt that fails two tests is filed under the first. Reading the list top
+// to bottom is reading the sequence an agent has to get through.
+const uint LatticeBuildCooling = 0u;    // still inside the build interval
+const uint LatticeBuildUnwilling = 1u;  // the build output was under threshold
+const uint LatticeBuildNoFacing = 2u;   // no cardinal heading to build against
+const uint LatticeBuildOffLattice = 3u; // the face points out of the world
+const uint LatticeBuildBlocked = 4u;    // a block already stands there
+const uint LatticeBuildUnsupported = 5u; // nothing under it, and no side support
+const uint LatticeBuildAboveFrontier = 6u; // too far above the local foundation
+const uint LatticeBuildInTheWay = 7u;   // an agent is standing in the cell
+const uint LatticeBuildClaimed = 8u;    // bid placed; contention may still lose it
+const uint LatticeBuildOutcomeCount = 9u;
+
 // An empty cell, and a cell nobody has bid for. Two sentinels and not one: the
 // occupancy grid stores agent indices and -1 for empty, while the bid grid is
 // resolved by a minimum, so its empty value has to be larger than every agent
@@ -181,6 +201,53 @@ VKEXP_LATTICE_MATH_FN uint latticeDominantAxis(float driveX, float driveY, float
     return magnitudeY >= magnitudeZ ? 1u : 2u;
 }
 
+// Which cardinal face an agent is turned towards, one axis at a time. The two
+// aim drives are read the way a move drive is -- dead zone, dominant axis, sign
+// -- so a policy that has learned to steer has already learned to aim.
+//
+// Below the dead zone the agent faces nothing, and this used to fall back to the
+// way it last moved. That fallback was a compatibility patch and it let the old
+// failure back in through the side door: a parked agent with no opinion kept
+// aiming at whatever it had walked into, forever. Aim is a decision now, and not
+// deciding is not building.
+//
+// Never diagonal: one of the two axes wins, and a block goes against a face.
+VKEXP_LATTICE_MATH_FN int latticeAimComponent(uint axis, float driveX, float driveZ,
+                                              float threshold) {
+    const int stepX = latticeAxisStep(driveX, threshold);
+    const int stepZ = latticeAxisStep(driveZ, threshold);
+    if (stepX == 0 && stepZ == 0) {
+        return 0;
+    }
+    // A vertical drive of zero can never be the loudest of the three here,
+    // because reaching this point means one of the other two cleared the dead
+    // zone -- so the shared tie-break decides between x and z alone.
+    const uint dominant = latticeDominantAxis(driveX, 0.0f, driveZ);
+    if (axis == 0u) {
+        return dominant == 0u ? stepX : 0;
+    }
+    return dominant == 0u ? 0 : stepZ;
+}
+
+// How long an agent has to stand still before the stillness input saturates.
+//
+// A ramp and not a flag, which is the whole point of it. A deterministic policy
+// in an unchanging neighbourhood produces the same output forever -- that is why
+// an agent that parks itself stays parked for the rest of the generation -- and
+// a flag that reads 1 for the entire stall is just as unchanging as the
+// neighbourhood is. It would move the fixed point, not remove it. A count that
+// rises every tick is an input that is never twice the same, so the output is
+// never twice the same either, and a policy that has learned any threshold at
+// all eventually crosses it and does something else.
+//
+// Distinct from the refusal flag beside it: refusal means a move was asked for
+// and denied, and says nothing about an agent that never asked.
+const float LatticeStillnessSpan = 48.0f;
+
+VKEXP_LATTICE_MATH_FN float latticeStillness(float stillTicks) {
+    return clamp(stillTicks / LatticeStillnessSpan, 0.0f, 1.0f);
+}
+
 // The move one axis contributes, given all three drives and the neighbourhood.
 // Written as one function of an axis index rather than three near-copies so the
 // face-only reduction cannot be applied to two axes and forgotten on the third.
@@ -233,14 +300,20 @@ VKEXP_LATTICE_FN bool latticeCellEnterable(int occupant) { return occupant == La
 
 // --- what the brain is told about a cell -------------------------------------
 
-// Three channels per neighbour: something is standing there, the lattice ends
-// there, and how loudly its occupant is signalling. The third is the whole of
-// agent-to-agent perception -- an agent reads its neighbour's broadcast, not its
-// neighbour's state -- which keeps what one agent can learn about another a
-// property of the world rather than of the record layout.
+// Four channels per neighbour: an agent is standing there, the lattice ends
+// there, a block stands there, and how loudly the occupant is signalling. The
+// last is the whole of agent-to-agent perception -- an agent reads its
+// neighbour's broadcast, not its neighbour's state -- which keeps what one
+// agent can learn about another a property of the world rather than of the
+// record layout.
+//
+// The edge and the block are separate channels because they are opposite
+// situations that used to read identically: one can never be built on and the
+// other already has been. See BrainKernel.inl for what conflating them cost.
 const uint LatticeNeighborOccupied = 0u;
-const uint LatticeNeighborBlocked = 1u;
-const uint LatticeNeighborSignal = 2u;
+const uint LatticeNeighborEdge = 1u;
+const uint LatticeNeighborStructure = 2u;
+const uint LatticeNeighborSignal = 3u;
 
 VKEXP_LATTICE_MATH_FN float latticeClamp01(float value) { return clamp(value, 0.0f, 1.0f); }
 

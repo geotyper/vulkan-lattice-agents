@@ -16,6 +16,7 @@
 #include "vkexp/simulation/RunSnapshot.hpp"
 #include "vkexp/simulation/SimulationState.hpp"
 #include "vkexp/simulation/StepParameters.hpp"
+#include "vkexp/simulation/StructureShape.hpp"
 #include "vkexp/simulation/Units.hpp"
 
 #include <algorithm>
@@ -244,10 +245,10 @@ void testNeuralNetworkContract() {
     check(vkexp::neuro::Topology::outputCount ==
               kernel::BrainActuatorOutputCount + kernel::BrainRecurrentCount,
           "Output capacity is actuators plus recurrent cells");
-    check(kernel::BrainActuatorOutputCount == kernel::BrainMoveOutputCount +
-                                                  kernel::BrainSignalOutputCount +
-                                                  kernel::BrainBuildOutputCount,
-          "Actuators are the three move drives, broadcast and build impulse");
+    check(kernel::BrainActuatorOutputCount ==
+              kernel::BrainMoveOutputCount + kernel::BrainSignalOutputCount +
+                  kernel::BrainBuildOutputCount + kernel::BrainFaceOutputCount,
+          "Actuators are the three move drives, broadcast, build impulse and two aim drives");
     check(vkexp::neuro::Topology::maximumWeightCount ==
               vkexp::neuro::maximumBrainShape.weightCount(),
           "Genome capacity matches the widest brain shape");
@@ -260,8 +261,8 @@ void testNeuralNetworkContract() {
     // scenario kernel.
     check(kernel::BrainNeighborCount == vkexp::lattice::kernel::LatticeNeighborCount,
           "The input vector has one slot per cell of the lattice neighbourhood");
-    check(kernel::BrainNeighborChannels == 3,
-          "A neighbour reads as occupied, blocked and broadcasting");
+    check(kernel::BrainNeighborChannels == 4,
+          "A neighbour reads as occupied, a wall, a block and broadcasting");
     check(kernel::BrainMoveOutputCount == 3, "One move drive per lattice axis");
 
     // The sensor blocks must tile the input vector without gaps or overlaps.
@@ -370,12 +371,12 @@ void testBrainForwardPass() {
     // neuron layer and a widening plan are where an off-by-one in a source count
     // shows up as something other than a rounding difference.
     const std::array<Case, 6> cases{{
-        {vkexp::neuro::defaultBrainShape, "the default 61 -> 20 -> 8"},
-        {{57, 20, 6}, "a trimmed 57 -> 20 -> 6"},
-        {{8, 4, 6}, "a small 8 -> 4 -> 6"},
-        {{4, 1, 6}, "a single hidden neuron"},
-        {{8, 4, 6, 3, 2}, "three layers narrowing"},
-        {{8, 2, 6, 5, 7}, "three layers widening"},
+        {vkexp::neuro::defaultBrainShape, "the default 114 -> 20 -> 9"},
+        {{57, 20, 8}, "a trimmed 57 -> 20 -> 8"},
+        {{8, 4, 8}, "a small 8 -> 4 -> 8"},
+        {{4, 1, 8}, "a single hidden neuron"},
+        {{8, 4, 8, 3, 2}, "three layers narrowing"},
+        {{8, 2, 8, 5, 7}, "three layers widening"},
     }};
     for (const Case& item : cases) {
         check(item.shape.fitsCapacity(), std::string{"Test topology fits: "} + item.what);
@@ -409,7 +410,7 @@ void testBrainForwardPass() {
     // reactive model the state *is* the pre-activation, so what comes back is
     // the single weight that was addressed -- and if rows and columns were
     // swapped it would be a different one.
-    const vkexp::neuro::BrainShape wired{6, 3, 6};
+    const vkexp::neuro::BrainShape wired{6, 3, 8};
     const bk::uint layers = wired.packedLayers();
     const auto sources = static_cast<bk::uint>(wired.inputCount);
     const auto weightFor = [](const bk::uint neuron, const bk::uint source) {
@@ -487,7 +488,7 @@ void testBrainForwardPass() {
     // The two are different numbers whenever the state is outside tanh's linear
     // part, which is exactly where a controller spends its time.
     {
-        const vkexp::neuro::BrainShape chain{4, 2, 6, 1, 0};
+        const vkexp::neuro::BrainShape chain{4, 2, 8, 1, 0};
         const bk::uint chainLayers = chain.packedLayers();
         const auto chainInputs = static_cast<bk::uint>(chain.inputCount);
         vkexp::neuro::Weights weights = vkexp::neuro::makeWeights(chain);
@@ -513,7 +514,7 @@ void testBrainForwardPass() {
     // this says the genes reach the neurons they belong to as well as that the
     // sums are right.
     {
-        const vkexp::neuro::BrainShape shape{8, 4, 6, 3, 0};
+        const vkexp::neuro::BrainShape shape{8, 4, 8, 3, 0};
         const float w = 0.05F;
         const float step = 1.0F / 60.0F;
         vkexp::neuro::Weights weights = vkexp::neuro::makeWeights(shape);
@@ -535,8 +536,8 @@ void testBrainForwardPass() {
 
 void testLayeredBrain() {
     namespace bk = vkexp::neuro::kernel;
-    const vkexp::neuro::BrainShape flat{8, 4, 6};
-    const vkexp::neuro::BrainShape deep{8, 4, 6, 3, 2};
+    const vkexp::neuro::BrainShape flat{8, 4, 8};
+    const vkexp::neuro::BrainShape deep{8, 4, 8, 3, 2};
 
     check(flat.hiddenLayerCount() == 1 && flat.hiddenTotal() == 4,
           "One width is one layer, and every scenario that wrote three numbers still means that");
@@ -545,9 +546,9 @@ void testLayeredBrain() {
 
     // A hole is refused rather than closed up: {4, 0, 2} could mean a two-layer
     // plan or a mistake, and guessing between them is worse than saying no.
-    const vkexp::neuro::BrainShape holed{8, 4, 6, 0, 2};
+    const vkexp::neuro::BrainShape holed{8, 4, 8, 0, 2};
     check(!holed.fitsCapacity(), "A plan with a hole in the middle is refused");
-    const vkexp::neuro::BrainShape overspent{8, vkexp::neuro::Topology::hiddenNeuronCapacity, 6,
+    const vkexp::neuro::BrainShape overspent{8, vkexp::neuro::Topology::hiddenNeuronCapacity, 8,
                                              vkexp::neuro::Topology::hiddenNeuronCapacity, 0};
     check(!overspent.fitsCapacity(), "A plan spending more neurons than there are is refused");
     check(deep.fitsCapacity() && flat.fitsCapacity(), "and the plans that do fit are accepted");
@@ -784,7 +785,8 @@ void testGenomeArchiveRoundTrip() {
     const std::filesystem::path path =
         std::filesystem::temp_directory_path() / "vkexp_archive_test" / "population.vkng";
     std::vector<vkexp::Genome> genomes(
-        3, vkexp::Genome{vkexp::neuro::makeWeights(vkexp::neuro::BrainShape{70, 20, 5})});
+        3, vkexp::Genome{vkexp::neuro::makeWeights(vkexp::neuro::BrainShape{
+               70, 20, vkexp::neuro::Topology::actuatorOutputCount})});
     for (std::size_t index = 0; index < genomes.size(); ++index) {
         for (std::size_t weight = 0; weight < genomes[index].weights.size(); ++weight) {
             genomes[index].weights[weight] =
@@ -890,7 +892,7 @@ void testGenomeArchiveRoundTrip() {
     // is what replaced one compiled-in genome length: interchangeability now
     // comes from the file describing itself, so an archive of a three-layer
     // brain is a perfectly good file even in a run set up for a flat one.
-    const vkexp::neuro::BrainShape deepPlan{88, 12, 6, 8, 8};
+    const vkexp::neuro::BrainShape deepPlan{88, 12, 8, 8, 8};
     const std::filesystem::path deepPath = path.parent_path() / "deep.vkng";
     std::vector<vkexp::Genome> deepGenomes(2, vkexp::Genome{vkexp::neuro::makeWeights(deepPlan)});
     deepGenomes.front().weights.front() = 0.5F;
@@ -902,7 +904,7 @@ void testGenomeArchiveRoundTrip() {
         0.25F,
         88,
         static_cast<std::uint32_t>(deepPlan.hiddenTotal()),
-        6,
+        static_cast<std::uint32_t>(deepPlan.outputCount),
         deepPlan.packedLayers()};
     vkexp::saveGenomeArchive(deepPath, deepGenomes, deepMetadata);
     const vkexp::GenomeArchive deepLoaded = vkexp::loadGenomeArchive(deepPath);
@@ -1712,6 +1714,199 @@ void testLatticeSpawnCapacity() {
     check(occupied == agents.size(), "The occupancy grid holds exactly one cell per agent");
 }
 
+void testStructureShape() {
+    vkexp::SimulationStep settings{};
+    settings.worldMode = vkexp::WorldMode::Construction;
+    settings.latticeWidth = 4;
+    settings.latticeHeight = 4;
+    settings.latticeDepth = 4;
+    const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
+
+    const auto place = [&](std::vector<std::int32_t>& field, const int x, const int y,
+                           const int z) {
+        field[vkexp::lattice::kernel::latticeCellIndex(x, y, z, settings.latticeWidth,
+                                                       settings.latticeHeight)] = 1;
+    };
+
+    // A field of the wrong length is a layout mistake, not a smaller world.
+    std::vector<std::int32_t> truncated(cells - 1, 0);
+    check(vkexp::measureStructureShape(truncated, settings).blocks == 0,
+          "A field that is not one world long measures as nothing");
+
+    std::vector<std::int32_t> empty(cells, 0);
+    const vkexp::StructureShape nothing = vkexp::measureStructureShape(empty, settings);
+    check(nothing.blocks == 0 && nothing.footprint == 0 && nothing.peak == 0,
+          "An empty world has built nothing");
+    check(nothing.compactness == 0.0F && nothing.heightSpread == 0.0F,
+          "Nothing has no shape either, rather than a divide by zero");
+
+    // One four-high column in a corner: a spire.
+    std::vector<std::int32_t> spire(cells, 0);
+    for (int y = 0; y < 4; ++y) {
+        place(spire, 1, y, 2);
+    }
+    const vkexp::StructureShape tall = vkexp::measureStructureShape(spire, settings);
+    check(tall.blocks == 4 && tall.footprint == 1 && tall.peak == 4,
+          "A single column is four blocks standing on one square");
+    check(tall.meanHeight == 4.0F && tall.heightSpread == 0.0F,
+          "One column is its own mean and has no spread");
+    check(tall.compactness == 1.0F, "One column fills its own bounding rectangle");
+    check(tall.overhangs == 0 && tall.enclosed == 0, "A solid column floats nothing and roofs nothing");
+
+    // The whole floor: the same block count as four spires, a different shape.
+    std::vector<std::int32_t> slab(cells, 0);
+    for (int z = 0; z < 4; ++z) {
+        for (int x = 0; x < 4; ++x) {
+            place(slab, x, 0, z);
+        }
+    }
+    const vkexp::StructureShape flat = vkexp::measureStructureShape(slab, settings);
+    check(flat.blocks == 16 && flat.footprint == 16 && flat.peak == 1,
+          "A full course is one block on every square");
+    check(flat.meanHeight == 1.0F && flat.heightSpread == 0.0F && flat.compactness == 1.0F,
+          "A full course is flat, even and solid in plan");
+
+    // Four corner piers with a lintel across one pair: an overhang and a room.
+    std::vector<std::int32_t> gate(cells, 0);
+    place(gate, 0, 0, 0);
+    place(gate, 2, 0, 0);
+    place(gate, 0, 1, 0);
+    place(gate, 2, 1, 0);
+    place(gate, 1, 1, 0); // nothing beneath it
+    const vkexp::StructureShape arch = vkexp::measureStructureShape(gate, settings);
+    check(arch.blocks == 5 && arch.footprint == 3, "The arch stands on three squares");
+    check(arch.overhangs == 1, "Exactly one block of the arch stands on empty space");
+    check(arch.enclosed == 1, "And exactly one empty cell is roofed by it");
+    check(arch.peak == 2 && arch.meanHeight == 2.0F,
+          "Every column of the arch reaches the same height");
+    check(std::abs(arch.compactness - 1.0F) < 1.0e-6F,
+          "Three squares in a row of three fill their bounding rectangle");
+
+    // Shape is not mass: the spire and a four-square course have the same
+    // block count and must not measure the same.
+    std::vector<std::int32_t> spread(cells, 0);
+    for (int x = 0; x < 4; ++x) {
+        place(spread, x, 0, 3);
+    }
+    const vkexp::StructureShape row = vkexp::measureStructureShape(spread, settings);
+    check(row.blocks == tall.blocks, "The row and the spire cost the same number of blocks");
+    check(row.peak != tall.peak && row.footprint != tall.footprint,
+          "But they are not the same shape, which is the whole point of measuring");
+    check(std::abs(row.compactness - 1.0F) < 1.0e-6F,
+          "A row of four is its own bounding rectangle, not a quarter of the floor");
+}
+
+void testConstructionLocalFoundation() {
+    vkexp::SimulationStep settings{};
+    settings.worldMode = vkexp::WorldMode::Construction;
+    settings.latticeWidth = 8;
+    settings.latticeHeight = 8;
+    settings.latticeDepth = 8;
+    settings.constructionCourseFill = 0.5F;
+    const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
+    std::vector<std::int32_t> field(cells, 0);
+    const auto place = [&](const int x, const int y, const int z) {
+        field[vkexp::lattice::kernel::latticeCellIndex(x, y, z, settings.latticeWidth,
+                                                       settings.latticeHeight)] = 1;
+    };
+
+    settings.constructionSupportRadius = 1;
+    check(vkexp::constructionLocalFoundation(field, settings, 4, 3, 4) == 0,
+          "Nothing under a site is no foundation at all");
+    check(vkexp::constructionLocalFoundation(field, settings, 4, 0, 4) == 0,
+          "A site on the floor has nothing below it to scan");
+
+    // A solid 3x3 directly under the site: the whole window, so dense at any
+    // fill, and the foundation is the level above it.
+    for (int z = 3; z <= 5; ++z) {
+        for (int x = 3; x <= 5; ++x) {
+            place(x, 2, z);
+        }
+    }
+    check(vkexp::constructionLocalFoundation(field, settings, 4, 3, 4) == 3,
+          "A full window one level down is a foundation of that level plus one");
+    check(vkexp::constructionLocalFoundation(field, settings, 4, 6, 4) == 3,
+          "The scan finds the same platform from higher up: levels need not be consecutive");
+
+    // The radius is what decides. Standing two cells away, a radius of one
+    // cannot see the platform at all and a radius of three can.
+    check(vkexp::constructionLocalFoundation(field, settings, 7, 3, 7) == 0,
+          "A narrow window sees nothing two cells away from the platform");
+    settings.constructionSupportRadius = 3;
+    check(vkexp::constructionLocalFoundation(field, settings, 7, 3, 7) == 0,
+          "A wider window reaches the platform, but four cells of sixteen is under half");
+    settings.constructionCourseFill = 0.25F;
+    check(vkexp::constructionLocalFoundation(field, settings, 7, 3, 7) == 3,
+          "At a lower fill the same reach is enough, which is the trade the two sliders make");
+
+    // Clipping at the wall shrinks the question rather than failing it: a corner
+    // sees fewer cells and needs proportionally fewer of them.
+    settings.constructionSupportRadius = 1;
+    settings.constructionCourseFill = 1.0F;
+    std::fill(field.begin(), field.end(), 0);
+    place(0, 0, 0);
+    place(1, 0, 0);
+    place(0, 0, 1);
+    place(1, 0, 1);
+    check(vkexp::constructionLocalFoundation(field, settings, 0, 1, 0) == 1,
+          "A corner window is four cells, and four blocks fill it completely");
+    check(vkexp::constructionLocalFoundation(field, settings, 2, 1, 2) == 0,
+          "One cell short of full is not full, whatever the window size");
+
+    // A fill of zero still needs one block: an empty level is never something
+    // to stand on, however forgiving the setting.
+    settings.constructionCourseFill = 0.0F;
+    check(vkexp::constructionLocalFoundation(field, settings, 6, 2, 6) == 0,
+          "An empty window is never a foundation, even at zero fill");
+    check(vkexp::constructionLocalFoundation(field, settings, 2, 2, 2) == 1,
+          "At zero fill a single block within reach is enough");
+}
+
+void testLatticeAim() {
+    namespace lk = vkexp::lattice::kernel;
+    constexpr float threshold = 0.25F;
+    const auto aim = [&](const float x, const float z) {
+        return std::array<int, 2>{lk::latticeAimComponent(0U, x, z, threshold),
+                                  lk::latticeAimComponent(1U, x, z, threshold)};
+    };
+
+    check((aim(0.8F, 0.0F) == std::array<int, 2>{1, 0}), "One drive names one face");
+    check((aim(-0.8F, 0.0F) == std::array<int, 2>{-1, 0}), "And its sign is which way");
+
+    // Never diagonal: the louder axis takes the whole aim.
+    check((aim(0.9F, 0.4F) == std::array<int, 2>{1, 0}),
+          "Two drives give one face, not a diagonal");
+    check((aim(0.4F, -0.9F) == std::array<int, 2>{0, -1}),
+          "and the louder of the two is the one that wins");
+    check((aim(0.6F, 0.6F) == std::array<int, 2>{1, 0}),
+          "A tie goes to x, the same way the move rule breaks one");
+
+    // Below the dead zone the agent faces nothing at all. There is deliberately
+    // no fallback to the way it last moved: that fallback is what let a parked
+    // agent keep aiming at whatever it had walked into for the rest of a run.
+    check((aim(0.1F, -0.2F) == std::array<int, 2>{0, 0}),
+          "Below the dead zone the agent faces nothing rather than where it came from");
+    check((aim(0.0F, 0.0F) == std::array<int, 2>{0, 0}), "Asking for nothing is facing nothing");
+    check((lk::latticeAimComponent(0U, threshold, 0.0F, threshold) == 0),
+          "Exactly at the threshold is inside the dead zone, as it is for a move");
+}
+
+void testLatticeStillness() {
+    namespace lk = vkexp::lattice::kernel;
+    // A ramp and not a flag. The point of the input is that it is never twice
+    // the same while an agent is stuck: a constant would move the fixed point a
+    // deterministic policy settles into rather than give it a way out.
+    check(lk::latticeStillness(0.0F) == 0.0F, "An agent that just moved reads nothing");
+    const float oneTick = lk::latticeStillness(1.0F);
+    const float twoTicks = lk::latticeStillness(2.0F);
+    check(oneTick > 0.0F && twoTicks > oneTick,
+          "Standing still reads higher every tick, which is what a flag could not do");
+    check(lk::latticeStillness(lk::LatticeStillnessSpan) == 1.0F,
+          "And saturates at one after the full span");
+    check(lk::latticeStillness(lk::LatticeStillnessSpan * 10.0F) == 1.0F,
+          "Standing still far longer than that is still one, not more");
+}
+
 void testLatticeAddressing() {
     constexpr std::uint32_t width = 7;
     constexpr std::uint32_t height = 5;
@@ -1932,19 +2127,19 @@ void testLatticeSensing() {
         closeTo(middle[bk::brainNeighborChannelIndex(neighborPlusX, lk::LatticeNeighborOccupied)],
                 1.0F) &&
             closeTo(
-                middle[bk::brainNeighborChannelIndex(neighborPlusX, lk::LatticeNeighborBlocked)],
+                middle[bk::brainNeighborChannelIndex(neighborPlusX, lk::LatticeNeighborEdge)],
                 0.0F) &&
             closeTo(middle[bk::brainNeighborChannelIndex(neighborPlusX, lk::LatticeNeighborSignal)],
                     0.75F),
-        "An occupied neighbour reads as occupied, unblocked, and broadcasting what it emits");
+        "An occupied neighbour reads as occupied, not a wall, and broadcasting what it emits");
     const std::uint32_t neighborMinusX = lk::latticeNeighborIndex(-1, 0, 0);
     check(
         closeTo(middle[bk::brainNeighborChannelIndex(neighborMinusX, lk::LatticeNeighborOccupied)],
                 0.0F) &&
             closeTo(
-                middle[bk::brainNeighborChannelIndex(neighborMinusX, lk::LatticeNeighborBlocked)],
+                middle[bk::brainNeighborChannelIndex(neighborMinusX, lk::LatticeNeighborEdge)],
                 0.0F),
-        "An empty neighbour inside the lattice reads as neither occupied nor blocked");
+        "An empty neighbour inside the lattice reads as neither occupied nor a wall");
 
     // The direction to the beacon is a unit vector, and the nearness is what the
     // shaping banks. Two cells along +x in a 5-wide box under Moore is 2 of a
@@ -1959,12 +2154,12 @@ void testLatticeSensing() {
     // no push-out: a lattice ends, and this is the one place that says so.
     agent.cell = {0, 2, 2, agent.cell.w};
     const vkexp::neuro::Inputs edge = vkexp::sampleAgentInputs(agent, signals, occupancy, settings);
-    check(closeTo(edge[bk::brainNeighborChannelIndex(neighborMinusX, lk::LatticeNeighborBlocked)],
+    check(closeTo(edge[bk::brainNeighborChannelIndex(neighborMinusX, lk::LatticeNeighborEdge)],
                   1.0F) &&
               closeTo(
                   edge[bk::brainNeighborChannelIndex(neighborMinusX, lk::LatticeNeighborOccupied)],
                   0.0F),
-          "A neighbour outside the lattice reads as blocked rather than empty");
+          "A neighbour outside the lattice reads as a wall rather than empty");
 
     // An agent that has not moved reads zero on all three heading channels,
     // which is a distinguishable state rather than a direction.
@@ -2096,6 +2291,10 @@ int main() {
     testLatticeCameraSlide();
     testTransparencyWeight();
     testLatticeSpawnCapacity();
+    testStructureShape();
+    testConstructionLocalFoundation();
+    testLatticeAim();
+    testLatticeStillness();
     testLatticeAddressing();
     testLatticeNeighbourhood();
     testLatticeMoveRule();

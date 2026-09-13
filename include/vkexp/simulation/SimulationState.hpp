@@ -3,6 +3,7 @@
 #include "vkexp/evolution/GeneticAlgorithm.hpp"
 #include "vkexp/simulation/ExperimentSweep.hpp"
 #include "vkexp/simulation/LatticeTypes.hpp"
+#include "vkexp/simulation/StructureShape.hpp"
 
 #include <vulkan/vulkan.h>
 
@@ -77,6 +78,16 @@ struct SimulationStatistics {
     // normalised by the theoretical full lattice. The historic name remains
     // part of CSV/sweep storage.
     float arrivalRatio{};
+    // Construction mode: what each world had built when the last generation
+    // ended, and which world earned the top score. Measured and reported, never
+    // scored -- the reason is in StructureShape.hpp. Empty in beacon mode, and
+    // empty until the first generation finishes.
+    std::vector<StructureShape> worldShapes;
+    std::uint32_t bestWorld{};
+    // Construction mode: worldCount * LatticeBuildOutcomeCount counts of why
+    // each build attempt ended, over the generation that just finished. Says
+    // what the block count cannot: not how few blocks, but what refused them.
+    std::vector<std::uint32_t> buildOutcomes;
 };
 
 struct EvolutionHistory {

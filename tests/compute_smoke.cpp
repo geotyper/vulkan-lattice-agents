@@ -219,10 +219,11 @@ public:
                        {gridBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
         structures_.create(context.physicalDevice(), context.device(),
                            {gridBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
-        const VkDeviceSize levelBytes = static_cast<VkDeviceSize>(layout.worldCount()) *
-                                        vkexp::latticeMaximumExtent * sizeof(std::uint32_t);
-        structureLevelCounts_.create(context.physicalDevice(), context.device(),
-                                     {levelBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
+        const VkDeviceSize outcomeBytes =
+            static_cast<VkDeviceSize>(layout.worldCount()) *
+            vkexp::lattice::kernel::LatticeBuildOutcomeCount * sizeof(std::uint32_t);
+        buildOutcomes_.create(context.physicalDevice(), context.device(),
+                              {outcomeBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory});
         // Two slots, and every dispatch below reads the second one. A driver
         // batches many steps into one submission and indexes this buffer by the
         // step, so slot zero is the only slot a harness that records one step
@@ -267,8 +268,8 @@ public:
                              parameters_.size())
                 .writeBuffer(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, structures_.buffer(), 0,
                              structures_.size())
-                .writeBuffer(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             structureLevelCounts_.buffer(), 0, structureLevelCounts_.size())
+                .writeBuffer(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buildOutcomes_.buffer(), 0,
+                             buildOutcomes_.size())
                 .update(context.device(), stepSets_[readIndex]);
 
             resolveSets_[readIndex] = descriptors_.allocate(resolveLayout_.get());
@@ -282,8 +283,6 @@ public:
                              parameters_.size())
                 .writeBuffer(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, structures_.buffer(), 0,
                              structures_.size())
-                .writeBuffer(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                             structureLevelCounts_.buffer(), 0, structureLevelCounts_.size())
                 .update(context.device(), resolveSets_[readIndex]);
         }
         clearSet_ = descriptors_.allocate(clearLayout_.get());
@@ -319,9 +318,11 @@ public:
         occupancy_.write(occupancy.data(), occupancy.size_bytes());
         const std::vector<std::int32_t> empty(cellCount_, vkexp::lattice::kernel::LatticeNoStructure);
         structures_.write(empty.data(), empty.size() * sizeof(std::int32_t));
-        const std::vector<std::uint32_t> levels(
-            static_cast<std::size_t>(layout_.worldCount()) * vkexp::latticeMaximumExtent, 0U);
-        structureLevelCounts_.write(levels.data(), levels.size() * sizeof(std::uint32_t));
+        const std::vector<std::uint32_t> outcomes(
+            static_cast<std::size_t>(layout_.worldCount()) *
+                vkexp::lattice::kernel::LatticeBuildOutcomeCount,
+            0U);
+        buildOutcomes_.write(outcomes.data(), outcomes.size() * sizeof(std::uint32_t));
     }
 
     void step() {
@@ -383,6 +384,26 @@ public:
         return result;
     }
 
+    // Separate from upload(), which always clears the block field: a
+    // construction step is the one case where what the previous step built has
+    // to survive into the next one.
+    void uploadStructures(const std::span<const std::int32_t> structures) {
+        structures_.write(structures.data(), structures.size_bytes());
+    }
+
+    [[nodiscard]] std::vector<std::int32_t> readStructures() {
+        std::vector<std::int32_t> result(cellCount_);
+        structures_.read(result.data(), result.size() * sizeof(std::int32_t));
+        return result;
+    }
+
+    [[nodiscard]] std::vector<std::uint32_t> readBuildOutcomes() {
+        std::vector<std::uint32_t> result(static_cast<std::size_t>(layout_.worldCount()) *
+                                          vkexp::lattice::kernel::LatticeBuildOutcomeCount);
+        buildOutcomes_.read(result.data(), result.size() * sizeof(std::uint32_t));
+        return result;
+    }
+
 private:
     void createLayout(const std::uint32_t bindingCount, vkexp::UniqueDescriptorSetLayout& layout) {
         std::vector<VkDescriptorSetLayoutBinding> bindings(bindingCount);
@@ -415,7 +436,7 @@ private:
     // rather than an unused slot, and the parity case that follows would be
     // measuring whatever the last test left in memory.
     vkexp::BufferResource structures_;
-    vkexp::BufferResource structureLevelCounts_;
+    vkexp::BufferResource buildOutcomes_;
     vkexp::BufferResource parameters_;
     vkexp::UniqueDescriptorSetLayout stepLayout_;
     vkexp::UniqueDescriptorSetLayout resolveLayout_;
@@ -474,6 +495,13 @@ void compareAgents(const vkexp::AgentState& expected, const vkexp::AgentState& a
     same(expected.metrics.y, actual.metrics.y, "contacts");
     same(expected.metrics.z, actual.metrics.z, "effort");
     same(expected.metrics.w, actual.metrics.w, "refusals");
+    // The recurrent cells and the still-tick counter, neither of which was
+    // compared before. The cells drift like any other float; the counter is a
+    // whole number, so any difference at all in it is a difference of logic and
+    // lands far outside the tolerance rather than inside it.
+    same(expected.memory.x, actual.memory.x, "memory cell 1");
+    same(expected.memory.y, actual.memory.y, "memory cell 2");
+    same(expected.memory.z, actual.memory.z, "still ticks");
     for (std::size_t index = 0; index < expected.hidden.size(); ++index) {
         same(expected.hidden[index].x, actual.hidden[index].x, "hidden.x");
         same(expected.hidden[index].y, actual.hidden[index].y, "hidden.y");
@@ -662,6 +690,134 @@ void runContentionProbe(vkexp::HeadlessComputeContext& context) {
 // A run whose lattice is full: every cell of a small world occupied, so no move
 // can ever succeed. The interesting part is that both sides say so in the same
 // way -- every agent refused, nobody moved, and the occupancy grid unchanged.
+// Construction, which the probes above never reach: a different set of move
+// rules, a different fitness and -- the reason this exists now -- a build gate
+// that asks how full the cells around a site are. That question is written
+// twice, once in C++ and once in GLSL, and nothing else in this file would
+// notice the two answers drifting apart.
+void runConstructionParityProbe(vkexp::HeadlessComputeContext& context) {
+    vkexp::SimulationStep settings =
+        paritySettings(vkexp::Neighborhood::Moore, vkexp::NeuronModel::TimeConstant);
+    settings.worldMode = vkexp::WorldMode::Construction;
+    // Build often and on almost any signal: what is being compared is placement,
+    // and a probe where nobody happens to build compares nothing. The final
+    // check below refuses to pass if that is what happened.
+    settings.buildIntervalTicks = 2;
+    settings.buildThreshold = -1.0F;
+    settings.allowSideSupportedBlocks = 1;
+    // A radius of one, a quarter fill and two levels of headroom: small enough
+    // that the gate actually refuses placements in a 4x4x4 box rather than
+    // waving everything through.
+    // A radius of one against a fill of 35% in a 4x4 box: the seeded corner
+    // below fills 4 of the 9 cells a radius of one asks about and 4 of the 16 a
+    // radius of two asks about, so the two radii disagree about whether that
+    // corner is something to stand on. With one level of headroom that
+    // disagreement is the difference between placing a block and being refused,
+    // which is what makes this probe able to see the rule at all.
+    settings.constructionSupportRadius = 1;
+    settings.constructionCourseFill = 0.35F;
+    settings.constructionHeightLead = 1;
+
+    const vkexp::lattice::PopulationLayout layout{4, 4, 1};
+    const vkexp::neuro::BrainShape brain = vkexp::resolvedBrain(settings);
+    const std::vector<float> weights = makeWeights(brain, layout.genomeCount, 0xB10CU);
+
+    std::vector<vkexp::AgentState> expected = vkexp::lattice::makeInitialAgents(settings, layout);
+    const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
+    std::vector<std::int32_t> claims(static_cast<std::size_t>(cells) * layout.worldCount());
+    std::vector<std::int32_t> structures(claims.size(),
+                                         vkexp::lattice::kernel::LatticeNoStructure);
+
+    // Start on a small platform rather than on the bare floor. Spawning on the
+    // floor puts every build attempt at height zero, where the scan below the
+    // site has nothing to look at and the gate is a foregone conclusion -- which
+    // is how this probe would compare construction at length without ever
+    // reaching the rule it was written for. A corner platform makes the floor
+    // locally full and globally sparse, which is exactly the distinction the
+    // radius draws.
+    constexpr int platform = 2;
+    for (int z = 0; z < platform; ++z) {
+        for (int x = 0; x < platform; ++x) {
+            structures[vkexp::lattice::kernel::latticeCellIndex(x, 0, z, settings.latticeWidth,
+                                                                settings.latticeHeight)] = 1;
+        }
+    }
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        vkexp::AgentState& agent = expected[index];
+        agent.cell.x = static_cast<std::int32_t>(index) % platform;
+        agent.cell.z = static_cast<std::int32_t>(index) / platform;
+        agent.cell.y = 1;
+        agent.intent = {agent.cell.x, agent.cell.y, agent.cell.z, 0};
+    }
+    std::vector<std::int32_t> occupancy(claims.size());
+    vkexp::lattice::buildOccupancy(expected, settings, layout, occupancy);
+
+    // upload() clears the outcome counters, so both sides are compared one step
+    // at a time rather than as a running total -- which is the stronger check:
+    // two attributions that differ and then differ back would cancel in a sum.
+    std::vector<std::uint32_t> outcomes(
+        static_cast<std::size_t>(layout.worldCount()) *
+        vkexp::lattice::kernel::LatticeBuildOutcomeCount);
+    static constexpr std::array<const char*, 9> reasonNames{
+        "cooling",   "unwilling",      "no facing",  "off the lattice", "blocked",
+        "unsupported", "above frontier", "in the way", "claimed"};
+
+    LatticeHarness harness{context, settings, layout, weights};
+    for (std::uint32_t step = 0; step < 48; ++step) {
+        harness.upload(expected, occupancy);
+        harness.uploadStructures(structures);
+        harness.step();
+        std::fill(outcomes.begin(), outcomes.end(), 0U);
+        vkexp::stepLatticeCpu({expected, occupancy, claims, weights,
+                               static_cast<std::uint32_t>(brain.weightCount()),
+                               layout.groupSize(), layout.trialsPerGenome, structures, outcomes},
+                              settings);
+        const std::vector<vkexp::AgentState> actual = harness.readAgents();
+        const std::string where = "Construction step " + std::to_string(step);
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            compareAgents(expected[index], actual[index], where + " agent " + std::to_string(index),
+                          2.0e-3F);
+        }
+        const std::vector<std::int32_t> device = harness.readStructures();
+        for (std::size_t cell = 0; cell < structures.size(); ++cell) {
+            require(structures[cell] == device[cell],
+                    where + ": cell " + std::to_string(cell) + " holds " +
+                        std::to_string(structures[cell]) + " on the host and " +
+                        std::to_string(device[cell]) + " on the device");
+        }
+        // The reasons, not only the results. Two implementations can refuse the
+        // same attempt for different reasons and agree on every block, and then
+        // the counters that are supposed to explain the builders explain the
+        // wrong thing.
+        const std::vector<std::uint32_t> deviceOutcomes = harness.readBuildOutcomes();
+        for (std::size_t at = 0; at < outcomes.size(); ++at) {
+            require(outcomes[at] == deviceOutcomes[at],
+                    where + ": " + reasonNames[at % reasonNames.size()] + " counted " +
+                        std::to_string(outcomes[at]) + " on the host and " +
+                        std::to_string(deviceOutcomes[at]) + " on the device");
+        }
+        std::uint32_t attempts = 0;
+        for (const std::uint32_t reason : outcomes) {
+            attempts += reason;
+        }
+        require(attempts == expected.size(),
+                where + ": " + std::to_string(attempts) + " outcomes recorded for " +
+                    std::to_string(expected.size()) +
+                    " agents -- every agent gets exactly one reason per step");
+    }
+
+    const auto placed = std::count_if(structures.begin(), structures.end(), [](const std::int32_t v) {
+        return v != vkexp::lattice::kernel::LatticeNoStructure;
+    });
+
+    require(placed > 0, "Construction parity probe never placed a block, so it compared nothing");
+    // And the gate is doing something: every cell filled would mean the local
+    // fill test waved through anything, which is the failure mode a parity
+    // check alone cannot see, because both sides would be wrong together.
+    require(static_cast<std::size_t>(placed) < structures.size(),
+            "Construction parity probe filled the whole world, so the build gate refused nothing");
+}
+
 void runFullLatticeProbe(vkexp::HeadlessComputeContext& context) {
     vkexp::SimulationStep settings =
         paritySettings(vkexp::Neighborhood::Moore, vkexp::NeuronModel::TimeConstant);
@@ -798,6 +954,7 @@ void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
     packed.constructionCourseFill = nextFloat();
     packed.constructionHeightLead = nextUint();
     packed.allowSideSupportedBlocks = nextUint();
+    packed.constructionSupportRadius = nextUint();
     packed.fitness.trackingReward = nextFloat();
     packed.fitness.objectiveBonus = nextFloat();
     packed.fitness.motorCostWeight = nextFloat();
@@ -830,6 +987,7 @@ void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
     expectFloat("constructionCourseFill", packed.constructionCourseFill);
     expectUint("constructionHeightLead", packed.constructionHeightLead);
     expectUint("allowSideSupportedBlocks", packed.allowSideSupportedBlocks);
+    expectUint("constructionSupportRadius", packed.constructionSupportRadius);
     expectFloat("fitness.trackingReward", packed.fitness.trackingReward);
     expectFloat("fitness.objectiveBonus", packed.fitness.objectiveBonus);
     expectFloat("fitness.motorCostWeight", packed.fitness.motorCostWeight);
@@ -1084,6 +1242,7 @@ int runAll() {
     runContentionProbe(context);
     runGenomeAddressingProbe(context);
     runFullLatticeProbe(context);
+    runConstructionParityProbe(context);
 
     // Both neighbourhoods, because the face-only reduction is a branch the Moore
     // case never takes, and all four neuron models, because each decides the

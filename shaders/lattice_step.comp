@@ -28,9 +28,10 @@ layout(std430, set = 0, binding = 5) readonly buffer StepParameterBlocks {
     StepParameters stepParameters[];
 };
 layout(std430, set = 0, binding = 6) readonly buffer Structures { int structures[]; };
-layout(std430, set = 0, binding = 7) readonly buffer StructureLevelCounts {
-    uint structureLevelCounts[];
-};
+// One counter per world per reason a build attempt can end. Written and never
+// read by any pass: it is diagnosis, not state, and nothing the simulation does
+// depends on it.
+layout(std430, set = 0, binding = 7) buffer BuildOutcomes { uint buildOutcomes[]; };
 
 layout(push_constant) uniform StepSelector { uint stepIndex; }
 selector;
@@ -78,39 +79,68 @@ int constructionLandingY(uint worldBase, int x, int y, int z) {
     return landing;
 }
 
-// A remembered diagonal heading still names one unambiguous face: x wins the
-// tie. Building therefore extends a cardinal column, never a diagonal support.
-void constructionFacing(Agent agent, out int faceX, out int faceZ) {
-    faceX = 0;
-    faceZ = 0;
-    const uint heading = uint(agent.cell.w);
-    if (heading >= BrainNeighborCount) {
-        return;
-    }
-    const int headingX = latticeNeighborX(heading);
-    const int headingZ = latticeNeighborZ(heading);
-    if (headingX != 0) {
-        faceX = headingX;
-    } else if (headingZ != 0) {
-        faceZ = headingZ;
-    }
+// Which face the agent is turned towards. One cardinal face, never a diagonal --
+// x wins a tie -- so a block extends a cardinal column and never a diagonal
+// support.
+//
+// Used for climbing as well as building, deliberately: which wall to go up is
+// the same kind of choice as which wall to build against, and an agent that
+// could aim one but not the other would have to walk to pick its ladder.
+//
+// Mirrors vkexp::constructionFacing.
+void constructionFacing(float aimX, float aimZ, out int faceX, out int faceZ) {
+    faceX = latticeAimComponent(0u, aimX, aimZ, params.moveThreshold);
+    faceZ = latticeAimComponent(1u, aimX, aimZ, params.moveThreshold);
 }
 
-// Only consecutive sufficiently broad courses lift the construction frontier.
-// A handful of tall columns therefore cannot finance still taller columns.
-uint constructionFoundationHeight(uint world) {
-    const uint courseArea = params.latticeWidth * params.latticeDepth;
-    const uint required =
-        max(uint(ceil(float(courseArea) * clamp(params.constructionCourseFill, 0.0, 1.0))), 1u);
-    const uint base = world * params.latticeHeight;
-    uint foundation = 0u;
-    for (uint y = 0u; y < params.latticeHeight; ++y) {
-        if (structureLevelCounts[base + y] < required) {
-            break;
+// How much foundation stands under one build site.
+//
+// This used to be a question about the whole world: a level lifted the frontier
+// only once `constructionCourseFill` of the world's entire floor area was
+// occupied at that height, counting consecutively from the ground. That makes
+// the frontier a global synchroniser -- no corner of the world may rise until
+// every other corner has been filled in -- and a rule like that can only
+// produce a layer cake. Nothing about it is a statement about whether a
+// particular block would be standing on anything.
+//
+// So the same question is now asked of a neighbourhood: of the cells within
+// `constructionSupportRadius` of this column at level y, clipped at the walls,
+// how many are filled? The highest level below the target that answers "enough"
+// is what the target is standing on, and the height lead is measured from
+// there. Levels are not required to be consecutive, because standing on a roof
+// is standing on something whatever is under the roof.
+//
+// A radius that spans the floor reproduces the old global rule, which is why
+// that rule needs no separate switch. The scan runs downward and returns at the
+// first level that qualifies, so the common case -- solid ground immediately
+// below -- costs one level's worth of sampling.
+//
+// Mirrors vkexp::lattice::constructionLocalFoundation.
+uint constructionLocalFoundation(uint worldBase, int x, int buildY, int z) {
+    const int radius = int(params.constructionSupportRadius);
+    const float fill = clamp(params.constructionCourseFill, 0.0, 1.0);
+    for (int y = buildY - 1; y >= 0; --y) {
+        uint sampled = 0u;
+        uint filled = 0u;
+        for (int dz = -radius; dz <= radius; ++dz) {
+            for (int dx = -radius; dx <= radius; ++dx) {
+                const int nx = x + dx;
+                const int nz = z + dz;
+                if (nx < 0 || nz < 0 || nx >= int(params.latticeWidth) ||
+                    nz >= int(params.latticeDepth)) {
+                    continue;
+                }
+                ++sampled;
+                const uint cell =
+                    latticeCellIndex(nx, y, nz, params.latticeWidth, params.latticeHeight);
+                filled += structures[worldBase + cell] != LatticeNoStructure ? 1u : 0u;
+            }
         }
-        ++foundation;
+        if (filled >= max(uint(ceil(float(sampled) * fill)), 1u)) {
+            return uint(y) + 1u;
+        }
     }
-    return foundation;
+    return 0u;
 }
 
 // Mirrors vkexp::sampleAgentInputs. `worldBase` is where this agent's own
@@ -129,7 +159,8 @@ void senseLattice(Agent agent, uint worldBase, out float sensed[BrainInputCapaci
         const int z = agent.cell.z + latticeNeighborZ(neighbor);
 
         float occupied = 0.0;
-        float blocked = 0.0;
+        float edge = 0.0;
+        float structure = 0.0;
         float signal = 0.0;
         if (!latticeInBounds(x, y, z, params.latticeWidth, params.latticeHeight,
                              params.latticeDepth)) {
@@ -137,20 +168,21 @@ void senseLattice(Agent agent, uint worldBase, out float sensed[BrainInputCapaci
             // cell. There is no boundary geometry and no push-out: a lattice
             // ends, and the one place that has to be said is here and in the
             // move rule below.
-            blocked = 1.0;
+            edge = 1.0;
         } else {
             const uint cell = latticeCellIndex(x, y, z, params.latticeWidth, params.latticeHeight);
             const int occupant = occupancy[worldBase + cell];
             if (params.worldMode == LatticeWorldConstruction &&
                 structures[worldBase + cell] != LatticeNoStructure) {
-                blocked = 1.0;
+                structure = 1.0;
             } else if (occupant != LatticeNoOccupant) {
                 occupied = 1.0;
                 signal = clamp(inputAgents[uint(occupant)].signal.x, 0.0, 1.0);
             }
         }
         sensed[brainNeighborChannelIndex(neighbor, LatticeNeighborOccupied)] = occupied;
-        sensed[brainNeighborChannelIndex(neighbor, LatticeNeighborBlocked)] = blocked;
+        sensed[brainNeighborChannelIndex(neighbor, LatticeNeighborEdge)] = edge;
+        sensed[brainNeighborChannelIndex(neighbor, LatticeNeighborStructure)] = structure;
         sensed[brainNeighborChannelIndex(neighbor, LatticeNeighborSignal)] = signal;
     }
 
@@ -187,6 +219,7 @@ void senseLattice(Agent agent, uint worldBase, out float sensed[BrainInputCapaci
         sensed[BrainSelfOffset + 2u] = latticeDirectionComponent(headingZ, headingLength);
     }
     sensed[BrainSelfOffset + 3u] = agent.intent.w != 0 ? 1.0 : 0.0;
+    sensed[BrainSelfOffset + 4u] = latticeStillness(agent.memory.z);
 
     sensed[BrainRecurrentInputOffset] = clamp(agent.memory.x, -1.0, 1.0);
     sensed[BrainRecurrentInputOffset + 1u] = clamp(agent.memory.y, -1.0, 1.0);
@@ -230,6 +263,8 @@ void main() {
     const float driveX = produced[BrainMoveOutput];
     const float driveY = produced[BrainMoveOutput + 1u];
     const float driveZ = produced[BrainMoveOutput + 2u];
+    const float aimDriveX = produced[BrainFaceOutput];
+    const float aimDriveZ = produced[BrainFaceOutput + 1u];
     const int stepX =
         latticeMoveComponent(params.neighborhood, 0u, driveX, driveY, driveZ, params.moveThreshold);
     const int stepY =
@@ -267,7 +302,7 @@ void main() {
         } else if (stepY > 0) {
             int faceX;
             int faceZ;
-            constructionFacing(agent, faceX, faceZ);
+            constructionFacing(aimDriveX, aimDriveZ, faceX, faceZ);
             const bool hasFace = (faceX != 0 || faceZ != 0) &&
                                  (hasStructure(worldBase, agent.cell.x + faceX, agent.cell.y,
                                                agent.cell.z + faceZ) ||
@@ -312,14 +347,27 @@ void main() {
         }
 
         agent.beacon.xyz = ivec3(-1);
-        if (agent.signal.z <= 0.0 && agent.signal.y > params.buildThreshold) {
+        // One outcome per agent per step, filed under the first test the attempt
+        // fails. The chain below is written as a sequence of early exits rather
+        // than one condition precisely so that there is somewhere to record it;
+        // mirrored by the same chain in vkexp::stepLatticeCpu.
+        uint outcome = LatticeBuildClaimed;
+        if (agent.signal.z > 0.0) {
+            outcome = LatticeBuildCooling;
+        } else if (agent.signal.y <= params.buildThreshold) {
+            outcome = LatticeBuildUnwilling;
+        } else {
             int faceX;
             int faceZ;
-            constructionFacing(agent, faceX, faceZ);
+            constructionFacing(aimDriveX, aimDriveZ, faceX, faceZ);
             const int buildX = agent.cell.x + faceX;
             const int buildZ = agent.cell.z + faceZ;
-            if ((faceX != 0 || faceZ != 0) && buildX >= 0 && buildZ >= 0 &&
-                buildX < int(params.latticeWidth) && buildZ < int(params.latticeDepth)) {
+            if (faceX == 0 && faceZ == 0) {
+                outcome = LatticeBuildNoFacing;
+            } else if (buildX < 0 || buildZ < 0 || buildX >= int(params.latticeWidth) ||
+                       buildZ >= int(params.latticeDepth)) {
+                outcome = LatticeBuildOffLattice;
+            } else {
                 // Normal placement is at the agent's height. With side support
                 // enabled, an unsupported target falls back one level to the
                 // front of its feet: this is how an agent standing on a column
@@ -332,17 +380,25 @@ void main() {
                 }
                 const uint target = latticeCellIndex(buildX, buildY, buildZ, params.latticeWidth,
                                                      params.latticeHeight);
-                const bool empty = structures[worldBase + target] == LatticeNoStructure;
-                const uint foundation = constructionFoundationHeight(world);
-                const bool belowFrontier =
-                    uint(buildY) < foundation + max(params.constructionHeightLead, 1u);
-                if (empty && supported && belowFrontier &&
-                    occupancy[worldBase + target] == LatticeNoOccupant) {
+                const uint foundation = constructionLocalFoundation(worldBase, buildX, buildY,
+                                                                    buildZ);
+                if (structures[worldBase + target] != LatticeNoStructure) {
+                    outcome = LatticeBuildBlocked;
+                } else if (!supported) {
+                    outcome = LatticeBuildUnsupported;
+                } else if (uint(buildY) >=
+                           foundation + max(params.constructionHeightLead, 1u)) {
+                    outcome = LatticeBuildAboveFrontier;
+                } else if (occupancy[worldBase + target] != LatticeNoOccupant) {
+                    outcome = LatticeBuildInTheWay;
+                } else {
                     agent.beacon.xyz = ivec3(buildX, buildY, buildZ);
-                    atomicMin(claims[worldBase + target], latticeBuildClaim(id, params.agentCount));
+                    atomicMin(claims[worldBase + target],
+                              latticeBuildClaim(id, params.agentCount));
                 }
             }
         }
+        atomicAdd(buildOutcomes[world * LatticeBuildOutcomeCount + outcome], 1u);
     } else if (stepX != 0 || stepY != 0 || stepZ != 0) {
         const int wantedX = agent.cell.x + stepX;
         const int wantedY = agent.cell.y + stepY;

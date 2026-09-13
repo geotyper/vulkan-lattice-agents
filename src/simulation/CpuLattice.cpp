@@ -63,17 +63,43 @@ namespace kern = lattice::kernel;
     return landing;
 }
 
-[[nodiscard]] std::array<int, 2> constructionFacing(const AgentState& agent) {
-    const auto heading = static_cast<std::uint32_t>(agent.cell.w);
-    if (heading >= kern::LatticeNeighborCount) {
-        return {0, 0};
-    }
-    const int x = kern::latticeNeighborX(heading);
-    const int z = kern::latticeNeighborZ(heading);
-    return x != 0 ? std::array<int, 2>{x, 0} : std::array<int, 2>{0, z};
+// Mirrors constructionFacing in lattice_step.comp.
+[[nodiscard]] std::array<int, 2> constructionFacing(const SimulationStep& settings,
+                                                    const float aimX, const float aimZ) {
+    return {kern::latticeAimComponent(0U, aimX, aimZ, settings.moveThreshold),
+            kern::latticeAimComponent(1U, aimX, aimZ, settings.moveThreshold)};
 }
 
 } // namespace
+
+std::uint32_t constructionLocalFoundation(const std::span<const std::int32_t> worldStructures,
+                                          const SimulationStep& settings, const int x,
+                                          const int buildY, const int z) {
+    const auto radius = static_cast<int>(settings.constructionSupportRadius);
+    const float fill = std::clamp(settings.constructionCourseFill, 0.0F, 1.0F);
+    for (int y = buildY - 1; y >= 0; --y) {
+        std::uint32_t sampled = 0;
+        std::uint32_t filled = 0;
+        for (int dz = -radius; dz <= radius; ++dz) {
+            for (int dx = -radius; dx <= radius; ++dx) {
+                const int nx = x + dx;
+                const int nz = z + dz;
+                if (nx < 0 || nz < 0 || nx >= static_cast<int>(settings.latticeWidth) ||
+                    nz >= static_cast<int>(settings.latticeDepth)) {
+                    continue;
+                }
+                ++sampled;
+                filled += hasStructure(worldStructures, settings, nx, y, nz) ? 1U : 0U;
+            }
+        }
+        const auto required = std::max(
+            static_cast<std::uint32_t>(std::ceil(static_cast<float>(sampled) * fill)), 1U);
+        if (filled >= required) {
+            return static_cast<std::uint32_t>(y) + 1U;
+        }
+    }
+    return 0;
+}
 
 void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& settings) {
     const std::uint32_t cells = latticeCellsPerWorld(settings);
@@ -95,39 +121,6 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
     std::vector<float> signals(population.agents.size());
     for (std::size_t index = 0; index < population.agents.size(); ++index) {
         signals[index] = population.agents[index].signal.x;
-    }
-
-    // A compact mirror of the GPU's per-course counter buffer. It is rebuilt
-    // from the reference structure field once per step, before any placement,
-    // so every agent decides against the same construction frontier.
-    const std::uint32_t worldCount =
-        static_cast<std::uint32_t>(population.occupancy.size() / cells);
-    std::vector<std::uint32_t> foundationHeights(worldCount, 0U);
-    if (settings.worldMode == WorldMode::Construction && !population.structures.empty()) {
-        std::vector<std::uint32_t> courseCounts(
-            static_cast<std::size_t>(worldCount) * settings.latticeHeight, 0U);
-        for (std::size_t absolute = 0; absolute < population.structures.size(); ++absolute) {
-            if (population.structures[absolute] == kern::LatticeNoStructure) {
-                continue;
-            }
-            const std::uint32_t world = static_cast<std::uint32_t>(absolute / cells);
-            const std::uint32_t local = static_cast<std::uint32_t>(absolute % cells);
-            const std::uint32_t y = (local / settings.latticeWidth) % settings.latticeHeight;
-            ++courseCounts[static_cast<std::size_t>(world) * settings.latticeHeight + y];
-        }
-        const std::uint32_t courseArea = settings.latticeWidth * settings.latticeDepth;
-        const std::uint32_t required =
-            std::max(static_cast<std::uint32_t>(
-                         std::ceil(static_cast<float>(courseArea) *
-                                   std::clamp(settings.constructionCourseFill, 0.0F, 1.0F))),
-                     1U);
-        for (std::uint32_t world = 0; world < worldCount; ++world) {
-            while (foundationHeights[world] < settings.latticeHeight &&
-                   courseCounts[static_cast<std::size_t>(world) * settings.latticeHeight +
-                                foundationHeights[world]] >= required) {
-                ++foundationHeights[world];
-            }
-        }
     }
 
     // --- decide ---------------------------------------------------------------
@@ -180,6 +173,8 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
         const float driveX = output[brain::BrainMoveOutput];
         const float driveY = output[brain::BrainMoveOutput + 1];
         const float driveZ = output[brain::BrainMoveOutput + 2];
+        const float aimDriveX = output[brain::BrainFaceOutput];
+        const float aimDriveZ = output[brain::BrainFaceOutput + 1];
         const int stepX = kern::latticeMoveComponent(neighborhood, 0U, driveX, driveY, driveZ,
                                                      settings.moveThreshold);
         const int stepY = kern::latticeMoveComponent(neighborhood, 1U, driveX, driveY, driveZ,
@@ -214,7 +209,7 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                         constructionLandingY(worldStructures, settings, wantedX, wantedY, wantedZ);
                 }
             } else if (stepY > 0) {
-                const auto [faceX, faceZ] = constructionFacing(agent);
+                const auto [faceX, faceZ] = constructionFacing(settings, aimDriveX, aimDriveZ);
                 const bool hasFace = (faceX != 0 || faceZ != 0) &&
                                      (hasStructure(worldStructures, settings, agent.cell.x + faceX,
                                                    agent.cell.y, agent.cell.z + faceZ) ||
@@ -264,13 +259,27 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
             agent.beacon.x = -1;
             agent.beacon.y = -1;
             agent.beacon.z = -1;
-            if (agent.signal.z <= 0.0F && agent.signal.y > settings.buildThreshold) {
-                const auto [faceX, faceZ] = constructionFacing(agent);
+            // One outcome per agent per step, filed under the first test the
+            // attempt fails. Mirrors the same chain in lattice_step.comp; the
+            // construction parity probe compares the counters as well as the
+            // blocks, so a reason recorded differently is a failure and not a
+            // difference of opinion.
+            std::uint32_t outcome = kern::LatticeBuildClaimed;
+            if (agent.signal.z > 0.0F) {
+                outcome = kern::LatticeBuildCooling;
+            } else if (agent.signal.y <= settings.buildThreshold) {
+                outcome = kern::LatticeBuildUnwilling;
+            } else {
+                const auto [faceX, faceZ] = constructionFacing(settings, aimDriveX, aimDriveZ);
                 const int buildX = agent.cell.x + faceX;
                 const int buildZ = agent.cell.z + faceZ;
-                if ((faceX != 0 || faceZ != 0) && buildX >= 0 && buildZ >= 0 &&
-                    buildX < static_cast<int>(settings.latticeWidth) &&
-                    buildZ < static_cast<int>(settings.latticeDepth)) {
+                if (faceX == 0 && faceZ == 0) {
+                    outcome = kern::LatticeBuildNoFacing;
+                } else if (buildX < 0 || buildZ < 0 ||
+                           buildX >= static_cast<int>(settings.latticeWidth) ||
+                           buildZ >= static_cast<int>(settings.latticeDepth)) {
+                    outcome = kern::LatticeBuildOffLattice;
+                } else {
                     int buildY = agent.cell.y;
                     bool supported = constructionBlockSupported(worldStructures, settings, buildX,
                                                                 buildY, buildZ);
@@ -281,13 +290,18 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                     }
                     const std::uint32_t target = kern::latticeCellIndex(
                         buildX, buildY, buildZ, settings.latticeWidth, settings.latticeHeight);
-                    const bool empty =
-                        !hasStructure(worldStructures, settings, buildX, buildY, buildZ);
-                    const bool belowFrontier =
-                        static_cast<std::uint32_t>(buildY) <
-                        foundationHeights[world] + std::max(settings.constructionHeightLead, 1U);
-                    if (empty && supported && belowFrontier &&
-                        worldOccupancy[target] == kern::LatticeNoOccupant) {
+                    const std::uint32_t foundation = constructionLocalFoundation(
+                        worldStructures, settings, buildX, buildY, buildZ);
+                    if (hasStructure(worldStructures, settings, buildX, buildY, buildZ)) {
+                        outcome = kern::LatticeBuildBlocked;
+                    } else if (!supported) {
+                        outcome = kern::LatticeBuildUnsupported;
+                    } else if (static_cast<std::uint32_t>(buildY) >=
+                               foundation + std::max(settings.constructionHeightLead, 1U)) {
+                        outcome = kern::LatticeBuildAboveFrontier;
+                    } else if (worldOccupancy[target] != kern::LatticeNoOccupant) {
+                        outcome = kern::LatticeBuildInTheWay;
+                    } else {
                         agent.beacon.x = buildX;
                         agent.beacon.y = buildY;
                         agent.beacon.z = buildZ;
@@ -297,6 +311,11 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                                 index, static_cast<std::uint32_t>(population.agents.size())));
                     }
                 }
+            }
+            if (!population.buildOutcomes.empty()) {
+                ++population.buildOutcomes[static_cast<std::size_t>(world) *
+                                               kern::LatticeBuildOutcomeCount +
+                                           outcome];
             }
             continue;
         }
@@ -370,6 +389,9 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
         // The flag the next step reads back as a self input, so a policy can
         // notice it is stuck without having to infer it from the neighbourhood.
         agent.intent = Int4{agent.cell.x, agent.cell.y, agent.cell.z, refused ? 1 : 0};
+        // And how long it has been standing still, which the refusal flag cannot
+        // say: an agent that never asked to move was never refused.
+        agent.memory.z = moved ? 0.0F : agent.memory.z + 1.0F;
 
         if (settings.worldMode == WorldMode::Construction && agent.beacon.x >= 0 &&
             !worldStructures.empty()) {

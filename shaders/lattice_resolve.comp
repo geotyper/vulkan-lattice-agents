@@ -36,9 +36,6 @@ layout(std430, set = 0, binding = 3) readonly buffer StepParameterBlocks {
 layout(std430, set = 0, binding = 4) buffer Structures {
     int structures[];
 };
-layout(std430, set = 0, binding = 5) buffer StructureLevelCounts {
-    uint structureLevelCounts[];
-};
 
 layout(push_constant) uniform StepSelector {
     uint stepIndex;
@@ -84,6 +81,10 @@ void main() {
     // The flag the next step reads back as a self input, so a policy can notice
     // it is stuck without having to infer it from the neighbourhood.
     agent.intent = ivec4(agent.cell.xyz, refused ? 1 : 0);
+    // And how long it has been standing still, which the refusal flag cannot
+    // say: an agent that never asked to move was never refused. Counted here
+    // because this is the pass that knows whether the move happened.
+    agent.memory.z = moved ? 0.0 : agent.memory.z + 1.0;
 
     if (params.worldMode == LatticeWorldConstruction && agent.beacon.x >= 0) {
         const uint target = latticeCellIndex(agent.beacon.x, agent.beacon.y, agent.beacon.z,
@@ -94,9 +95,6 @@ void main() {
         if (claims[worldBase + target] == latticeBuildClaim(id, params.agentCount) &&
             structures[worldBase + target] == LatticeNoStructure) {
             structures[worldBase + target] = int(id) + 1;
-            atomicAdd(structureLevelCounts[uint(agent.beacon.w) * params.latticeHeight +
-                                           uint(agent.beacon.y)],
-                      1u);
             agent.signal.z = float(params.buildIntervalTicks);
             agent.signal.w = 1.0;
             agent.metrics.y += 1.0;

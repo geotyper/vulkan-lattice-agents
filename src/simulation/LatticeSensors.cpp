@@ -29,7 +29,8 @@ neuro::Inputs sampleAgentInputs(const AgentState& agent, const std::span<const f
         const int z = agent.cell.z + kern::latticeNeighborZ(neighbor);
 
         float occupied = 0.0F;
-        float blocked = 0.0F;
+        float edge = 0.0F;
+        float structure = 0.0F;
         float signal = 0.0F;
         if (!kern::latticeInBounds(x, y, z, settings.latticeWidth, settings.latticeHeight,
                                    settings.latticeDepth)) {
@@ -37,7 +38,7 @@ neuro::Inputs sampleAgentInputs(const AgentState& agent, const std::span<const f
             // cell. There is no boundary geometry and no push-out: a lattice
             // ends, and the one place that has to be said is here and in the
             // move rule, not in a containment pass after the fact.
-            blocked = 1.0F;
+            edge = 1.0F;
         } else {
             const std::uint32_t index =
                 kern::latticeCellIndex(x, y, z, settings.latticeWidth, settings.latticeHeight);
@@ -45,7 +46,7 @@ neuro::Inputs sampleAgentInputs(const AgentState& agent, const std::span<const f
                 index < occupancy.size() ? occupancy[index] : kern::LatticeNoOccupant;
             if (settings.worldMode == WorldMode::Construction && index < structures.size() &&
                 structures[index] != kern::LatticeNoStructure) {
-                blocked = 1.0F;
+                structure = 1.0F;
             } else if (occupant != kern::LatticeNoOccupant &&
                        static_cast<std::size_t>(occupant) < signals.size()) {
                 occupied = 1.0F;
@@ -54,7 +55,9 @@ neuro::Inputs sampleAgentInputs(const AgentState& agent, const std::span<const f
         }
         inputs[brain::brainNeighborChannelIndex(neighbor, kern::LatticeNeighborOccupied)] =
             occupied;
-        inputs[brain::brainNeighborChannelIndex(neighbor, kern::LatticeNeighborBlocked)] = blocked;
+        inputs[brain::brainNeighborChannelIndex(neighbor, kern::LatticeNeighborEdge)] = edge;
+        inputs[brain::brainNeighborChannelIndex(neighbor, kern::LatticeNeighborStructure)] =
+            structure;
         inputs[brain::brainNeighborChannelIndex(neighbor, kern::LatticeNeighborSignal)] = signal;
     }
 
@@ -111,6 +114,7 @@ neuro::Inputs sampleAgentInputs(const AgentState& agent, const std::span<const f
             kern::latticeDirectionComponent(headingZ, headingLength);
     }
     inputs[brain::BrainSelfOffset + 3] = agent.intent.w != 0 ? 1.0F : 0.0F;
+    inputs[brain::BrainSelfOffset + 4] = kern::latticeStillness(agent.memory.z);
 
     inputs[brain::BrainRecurrentInputOffset] = std::clamp(agent.memory.x, -1.0F, 1.0F);
     inputs[brain::BrainRecurrentInputOffset + 1] = std::clamp(agent.memory.y, -1.0F, 1.0F);
