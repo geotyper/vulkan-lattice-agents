@@ -258,6 +258,38 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
             state_.settings.buildIntervalTicks = static_cast<std::uint32_t>(buildInterval);
         }
         ImGui::SliderFloat("Build threshold", &state_.settings.buildThreshold, 0.0F, 0.95F, "%.2f");
+
+        // The foundation rule. Off in the chasm, and not as a default the user
+        // may override: a cantilever has nothing beneath it, so this test would
+        // refuse every block of a bridge and leave that world unsolvable.
+        ImGui::BeginDisabled(!lattice::kernel::latticeWorldFrontier(
+            static_cast<std::uint32_t>(state_.settings.worldMode)));
+        float courseFillPercent = state_.settings.constructionCourseFill * 100.0F;
+        if (ImGui::SliderFloat("Course fill", &courseFillPercent, 5.0F, 100.0F, "%.0f%%",
+                               ImGuiSliderFlags_AlwaysClamp)) {
+            state_.settings.constructionCourseFill = courseFillPercent * 0.01F;
+        }
+        ImGui::SetItemTooltip("How full a level must be, around a build site, before it counts "
+                              "as something to stand on.");
+        int supportRadius = static_cast<int>(state_.settings.constructionSupportRadius);
+        if (ImGui::SliderInt("Support radius", &supportRadius, 0, 16, "%d cells")) {
+            state_.settings.constructionSupportRadius = static_cast<std::uint32_t>(supportRadius);
+        }
+        ImGui::SetItemTooltip("How wide the fill question is asked. Zero asks only about the "
+                              "column itself; a radius that spans the floor asks about the whole "
+                              "world, which is the old global course frontier. In between, one "
+                              "corner of a world may run ahead of another.");
+        int heightLead = static_cast<int>(state_.settings.constructionHeightLead);
+        if (ImGui::SliderInt("Height above foundation", &heightLead, 1, 16, "%d levels")) {
+            state_.settings.constructionHeightLead = static_cast<std::uint32_t>(heightLead);
+        }
+        ImGui::SetItemTooltip("A block cannot be placed more than this many levels above the "
+                              "nearest level below it that is filled enough to stand on.");
+        ImGui::EndDisabled();
+        if (state_.settings.worldMode == WorldMode::Chasm) {
+            ImGui::TextDisabled("The foundation rule is off here: a bridge block has nothing "
+                                "under it, so the test would refuse every one of them.");
+        }
         bool allowSideSupport = state_.settings.allowSideSupportedBlocks != 0U ||
                                 state_.settings.worldMode == WorldMode::Chasm;
         ImGui::BeginDisabled(state_.settings.worldMode == WorldMode::Chasm);
@@ -738,10 +770,10 @@ void SimulationUiModule::drawBuildOutcomes() {
     const std::size_t visible = std::min<std::size_t>(state_.worlds.selectedWorld, worlds - 1);
 
     ImGui::SeparatorText("Why the builders stopped");
-    static constexpr std::array<const char*, 9> names{
-        "Cooling",    "Unwilling",  "No facing", "Off the lattice", "Blocked",
-        "No support", "In the way", "Placed",    "Lost the cell"};
-    std::array<std::uint64_t, 9> total{};
+    static constexpr std::array<const char*, 10> names{
+        "Cooling",    "Unwilling",      "No facing",  "Off the lattice", "Blocked",
+        "No support", "Above frontier", "In the way", "Placed",          "Lost the cell"};
+    std::array<std::uint64_t, 10> total{};
     std::uint64_t attempts = 0;
     for (std::size_t world = 0; world < worlds; ++world) {
         for (std::size_t reason = 0; reason < count; ++reason) {

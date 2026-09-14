@@ -715,9 +715,19 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
     settings.buildIntervalTicks = 2;
     settings.buildThreshold = -1.0F;
     settings.allowSideSupportedBlocks = 1;
-    // A radius of one, a quarter fill and two levels of headroom: small enough
-    // that the gate actually refuses placements in a 4x4x4 box rather than
-    // waving everything through.
+    // Tuned so the foundation rule actually refuses something in a box four
+    // cells high, which the shipped defaults cannot: bedrock fills the bottom
+    // course, so the foundation is never lower than one, and five levels of
+    // headroom above that is more than this box has. A demanding fill and one
+    // level of lead put the refusal where the group can reach it -- a block may
+    // go on the platform, and nothing may go on top of that.
+    //
+    // This is a test of agreement, not of meaning: it asks whether both
+    // implementations refuse the same attempts and file them under the same
+    // outcome. What the fill and the radius mean is testConstructionLocalFoundation.
+    settings.constructionSupportRadius = 1;
+    settings.constructionCourseFill = 0.9F;
+    settings.constructionHeightLead = 1;
 
     const vkexp::lattice::PopulationLayout layout{4, 4, 1};
     const vkexp::neuro::BrainShape brain = vkexp::resolvedBrain(settings);
@@ -754,9 +764,14 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
         vkexp::AgentState& agent = expected[index];
         const std::int32_t row = static_cast<std::int32_t>(index) % platform;
         const std::int32_t column = static_cast<std::int32_t>(index) / platform;
-        agent.cell.x = chasm ? row : row + platform;
+        agent.cell.x = chasm ? row : row;
         agent.cell.z = chasm ? column + platform : column;
-        agent.cell.y = 1;
+        // On top of the platform in the worlds that have a frontier, beside the
+        // ground in the one that does not. Height is the point: bedrock fills
+        // the bottom course, so the foundation is never lower than one, and in a
+        // box four high a group standing at height one can never build far
+        // enough above it to meet the rule at all.
+        agent.cell.y = chasm ? 1 : platform;
         agent.intent = {agent.cell.x, agent.cell.y, agent.cell.z, 0};
     }
     std::vector<std::int32_t> occupancy(claims.size());
@@ -768,10 +783,12 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
     std::vector<std::uint32_t> outcomes(
         static_cast<std::size_t>(layout.worldCount()) *
         vkexp::lattice::kernel::LatticeBuildOutcomeCount);
-    static constexpr std::array<const char*, 9> reasonNames{
-        "cooling",     "unwilling", "no facing",  "off the lattice", "blocked",
-        "unsupported", "in the way", "placed",    "contested"};
+    static constexpr std::array<const char*, 10> reasonNames{
+        "cooling",         "unwilling", "no facing",  "off the lattice", "blocked",
+        "unsupported",     "above the frontier",      "in the way",      "placed",
+        "contested"};
 
+    std::vector<std::uint64_t> frontierRefusals(layout.worldCount(), 0);
     LatticeHarness harness{context, settings, layout, weights};
     for (std::uint32_t step = 0; step < 48; ++step) {
         harness.upload(expected, occupancy);
@@ -817,6 +834,13 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
                 where + ": " + std::to_string(attempts) + " outcomes recorded for " +
                     std::to_string(expected.size()) +
                     " agents -- every agent gets exactly one reason per step");
+
+        for (std::uint32_t world = 0; world < layout.worldCount(); ++world) {
+            frontierRefusals[world] +=
+                outcomes[static_cast<std::size_t>(world) *
+                             vkexp::lattice::kernel::LatticeBuildOutcomeCount +
+                         vkexp::lattice::kernel::LatticeBuildAboveFrontier];
+        }
 
         if (chasm) {
             // Nobody stands on nothing. The rule is the same everywhere, but
@@ -873,6 +897,19 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
     // check alone cannot see, because both sides would be wrong together.
     require(static_cast<std::size_t>(placed) < structures.size(),
             "Construction parity probe filled the whole world, so the build gate refused nothing");
+
+    if (vkexp::lattice::kernel::latticeWorldFrontier(static_cast<std::uint32_t>(worldMode))) {
+        // The frontier has to have fired at least once, or this probe compared
+        // two implementations of a rule neither of them reached. That is exactly
+        // how the rule went five refusals in two and a half million without
+        // anyone noticing.
+        std::uint64_t refusedAbove = 0;
+        for (std::uint32_t world = 0; world < layout.worldCount(); ++world) {
+            refusedAbove += frontierRefusals[world];
+        }
+        require(refusedAbove > 0,
+                "The foundation rule never refused anything, so the probe did not test it");
+    }
 }
 
 void runFullLatticeProbe(vkexp::HeadlessComputeContext& context) {
@@ -1008,6 +1045,9 @@ void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
     packed.worldMode = nextUint();
     packed.buildIntervalTicks = nextUint();
     packed.buildThreshold = nextFloat();
+    packed.constructionCourseFill = nextFloat();
+    packed.constructionHeightLead = nextUint();
+    packed.constructionSupportRadius = nextUint();
     packed.allowSideSupportedBlocks = nextUint();
     packed.resourceHeightLow = nextUint();
     packed.resourceHeightHigh = nextUint();
@@ -1042,6 +1082,9 @@ void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
     expectUint("worldMode", packed.worldMode);
     expectUint("buildIntervalTicks", packed.buildIntervalTicks);
     expectFloat("buildThreshold", packed.buildThreshold);
+    expectFloat("constructionCourseFill", packed.constructionCourseFill);
+    expectUint("constructionHeightLead", packed.constructionHeightLead);
+    expectUint("constructionSupportRadius", packed.constructionSupportRadius);
     expectUint("allowSideSupportedBlocks", packed.allowSideSupportedBlocks);
     expectUint("resourceHeightLow", packed.resourceHeightLow);
     expectUint("resourceHeightHigh", packed.resourceHeightHigh);

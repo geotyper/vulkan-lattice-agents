@@ -54,6 +54,9 @@ void main() {
     echo[at++] = params.worldMode;
     echo[at++] = params.buildIntervalTicks;
     echo[at++] = floatBitsToUint(params.buildThreshold);
+    echo[at++] = floatBitsToUint(params.constructionCourseFill);
+    echo[at++] = params.constructionHeightLead;
+    echo[at++] = params.constructionSupportRadius;
     echo[at++] = params.allowSideSupportedBlocks;
     echo[at++] = params.resourceHeightLow;
     echo[at++] = params.resourceHeightHigh;

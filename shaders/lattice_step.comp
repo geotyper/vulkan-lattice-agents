@@ -74,6 +74,51 @@ bool constructionBlockSupported(uint worldBase, int x, int y, int z) {
             hasStructure(worldBase, x, y, z - 1) || hasStructure(worldBase, x, y, z + 1));
 }
 
+// How much foundation stands under one build site.
+//
+// The question is asked of a neighbourhood, not of the world: of the cells
+// within `constructionSupportRadius` of this column at level y, clipped at the
+// walls, how many are filled? The highest level below the target that answers
+// "enough" is what the target is standing on, and the height lead is measured
+// from there. Levels need not be consecutive, because standing on a roof is
+// standing on something whatever is under the roof.
+//
+// A radius that spans the floor reproduces a global course frontier, in which
+// no corner of the world may rise until every other corner has been filled --
+// a rule that can only produce a layer cake. That is why the radius is a knob
+// and not a switch.
+//
+// The scan runs downward and returns at the first level that qualifies, so the
+// common case -- a broad mass immediately below -- costs one level's sampling.
+//
+// Mirrors vkexp::lattice::constructionLocalFoundation.
+uint constructionLocalFoundation(uint worldBase, int x, int buildY, int z) {
+    const int radius = int(params.constructionSupportRadius);
+    const float fill = clamp(params.constructionCourseFill, 0.0, 1.0);
+    for (int y = buildY - 1; y >= 0; --y) {
+        uint sampled = 0u;
+        uint filled = 0u;
+        for (int dz = -radius; dz <= radius; ++dz) {
+            for (int dx = -radius; dx <= radius; ++dx) {
+                const int nx = x + dx;
+                const int nz = z + dz;
+                if (nx < 0 || nz < 0 || nx >= int(params.latticeWidth) ||
+                    nz >= int(params.latticeDepth)) {
+                    continue;
+                }
+                ++sampled;
+                const uint cell =
+                    latticeCellIndex(nx, y, nz, params.latticeWidth, params.latticeHeight);
+                filled += structures[worldBase + cell] != LatticeNoStructure ? 1u : 0u;
+            }
+        }
+        if (filled >= max(uint(ceil(float(sampled) * fill)), 1u)) {
+            return uint(y) + 1u;
+        }
+    }
+    return 0u;
+}
+
 // Where a body falling down this column comes to rest, or -1 if nothing in it
 // holds one. The search used to stop at height zero, which was correct while
 // every column had solid floor there and became a second, invisible floor the
@@ -394,6 +439,11 @@ void main() {
                     outcome = LatticeBuildBlocked;
                 } else if (!supported) {
                     outcome = LatticeBuildUnsupported;
+                } else if (latticeWorldFrontier(params.worldMode) &&
+                           uint(buildY) >= constructionLocalFoundation(worldBase, buildX, buildY,
+                                                                      buildZ) +
+                                               max(params.constructionHeightLead, 1u)) {
+                    outcome = LatticeBuildAboveFrontier;
                 } else if (occupancy[worldBase + target] != LatticeNoOccupant) {
                     outcome = LatticeBuildInTheWay;
                 } else {

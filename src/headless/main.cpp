@@ -48,6 +48,9 @@ struct Options {
     std::uint32_t resourceHeightLow{4};
     std::uint32_t resourceHeightHigh{8};
     std::uint32_t chasmGroundWidth{};
+    float constructionCourseFill{0.5F};
+    std::uint32_t constructionHeightLead{5};
+    std::uint32_t constructionSupportRadius{2};
     bool allowSideSupportedBlocks{};
 
     vkexp::FitnessWeights fitness{};
@@ -96,6 +99,10 @@ void printHelp(const char* executable) {
                  "                           hangs in, inclusive (4-8), hashed per world\n"
                  "  --ground-width <n>       chasm: columns of solid floor from x=0.\n"
                  "                           0 means half the lattice\n"
+                 "  --course-fill <x>        fill a level needs, locally, to be stood on (0.5)\n"
+                 "  --support-radius <n>     cells around a site that question covers (2). A\n"
+                 "                           radius spanning the floor is the old global rule\n"
+                 "  --height-lead <n>        build levels allowed above foundation (5)\n"
                  "  --side-support           allow cardinal face-supported bridge blocks\n"
                  "  --boundary-penalty <x>   charged per agent-tick on the x/z edge (0.002)\n\n"
                  "Ablations:\n"
@@ -339,6 +346,14 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.resourceHeightLow = parseNumber<std::uint32_t>(band.substr(0, dash), argument);
             options.resourceHeightHigh =
                 parseNumber<std::uint32_t>(band.substr(dash + 1), argument);
+        } else if (argument == "--course-fill") {
+            options.constructionCourseFill = parseNumber<float>(next(index, argument), argument);
+        } else if (argument == "--support-radius") {
+            options.constructionSupportRadius =
+                parseNumber<std::uint32_t>(next(index, argument), argument);
+        } else if (argument == "--height-lead") {
+            options.constructionHeightLead =
+                parseNumber<std::uint32_t>(next(index, argument), argument);
         } else if (argument == "--ground-width") {
             options.chasmGroundWidth = parseNumber<std::uint32_t>(next(index, argument), argument);
         } else if (argument == "--side-support") {
@@ -439,6 +454,11 @@ int run(const Options& options) {
     state.settings.resourceHeightHigh =
         std::clamp(options.resourceHeightHigh, state.settings.resourceHeightLow, ceiling);
     state.settings.chasmGroundWidth = options.chasmGroundWidth;
+    state.settings.constructionCourseFill = std::clamp(options.constructionCourseFill, 0.0F, 1.0F);
+    state.settings.constructionHeightLead =
+        std::clamp(options.constructionHeightLead, 1U, vkexp::latticeMaximumExtent);
+    state.settings.constructionSupportRadius =
+        std::min(options.constructionSupportRadius, vkexp::latticeMaximumExtent);
     // The chasm forces it on and the flag can only add to that: a world whose
     // objective needs a cantilever must not be startable without one.
     state.settings.allowSideSupportedBlocks |= options.allowSideSupportedBlocks ? 1U : 0U;
@@ -519,7 +539,7 @@ int run(const Options& options) {
             *csv << "generation,lattice,seed,best,median,mean,arrival_ratio,"
                     "blocks,footprint,peak,mean_height,height_spread,compactness,overhangs,"
                     "roofed,cooling,unwilling,no_facing,off_lattice,blocked,unsupported,"
-                    "in_the_way,placed,contested\n";
+                    "above_frontier,in_the_way,placed,contested\n";
         }
     }
 
@@ -562,6 +582,13 @@ int run(const Options& options) {
                               ? "a block directly below, or a cardinal side face"
                               : "a block directly below")
                       << '\n';
+            if (vkexp::lattice::kernel::latticeWorldFrontier(
+                    static_cast<std::uint32_t>(state.settings.worldMode))) {
+                std::cout << "Frontier:   " << state.settings.constructionCourseFill * 100.0F
+                          << "% fill within " << state.settings.constructionSupportRadius
+                          << " cells, " << state.settings.constructionHeightLead
+                          << " levels of headroom above it\n";
+            }
             if (vkexp::worldHarvests(state.settings.worldMode)) {
                 std::cout << "Resource:   between " << state.settings.resourceHeightLow << " and "
                           << state.settings.resourceHeightHigh << " levels up, collected within "

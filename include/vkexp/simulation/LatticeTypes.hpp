@@ -329,6 +329,28 @@ struct SimulationStep {
     // construction experiment below.
     std::uint32_t buildIntervalTicks{12};
     float buildThreshold{0.55F};
+    // How full a level has to be, around a build site, before it counts as
+    // something to stand on. The area asked about is the square of
+    // constructionSupportRadius cells around the site, clipped at the walls.
+    //
+    // Half rather than the quarter it was first tried at. A quarter, with the
+    // five-level lead below, refused five attempts out of two and a half
+    // million: one block underneath already filled a quarter of a small window,
+    // so the foundation was almost always the level immediately below and the
+    // lead was never spent. Half asks for a mass rather than a neighbour.
+    float constructionCourseFill{0.5F};
+    // The highest legal target is this many levels above that foundation. This
+    // is the "go up by five" of the original idea: build freely within the lead,
+    // and to go higher, widen what is underneath first.
+    std::uint32_t constructionHeightLead{5};
+    // How wide the question is. Zero asks only about the column itself; a
+    // radius that spans the floor asks about the whole world and reproduces the
+    // old global course frontier, which is why that rule needs no switch of its
+    // own. In between, one corner of a world may run ahead of another -- which
+    // is the whole reason the frontier stopped being global: a rule that makes
+    // every part of the world wait for every other part can only produce a
+    // layer cake.
+    std::uint32_t constructionSupportRadius{2};
     // Harvest and chasm: the band the resource hangs in, inclusive. A band and
     // not a height, because a fixed height is a number a genome can learn to
     // count to rather than a place it has to find.
@@ -480,6 +502,9 @@ struct alignas(16) GpuStepParameters {
     std::uint32_t worldMode{};
     std::uint32_t buildIntervalTicks{};
     float buildThreshold{};
+    float constructionCourseFill{};
+    std::uint32_t constructionHeightLead{};
+    std::uint32_t constructionSupportRadius{};
     std::uint32_t allowSideSupportedBlocks{};
     std::uint32_t resourceHeightLow{};
     std::uint32_t resourceHeightHigh{};

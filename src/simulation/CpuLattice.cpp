@@ -79,6 +79,35 @@ namespace kern = lattice::kernel;
 
 } // namespace
 
+std::uint32_t constructionLocalFoundation(const std::span<const std::int32_t> worldStructures,
+                                          const SimulationStep& settings, const int x,
+                                          const int buildY, const int z) {
+    const auto radius = static_cast<int>(settings.constructionSupportRadius);
+    const float fill = std::clamp(settings.constructionCourseFill, 0.0F, 1.0F);
+    for (int y = buildY - 1; y >= 0; --y) {
+        std::uint32_t sampled = 0;
+        std::uint32_t filled = 0;
+        for (int dz = -radius; dz <= radius; ++dz) {
+            for (int dx = -radius; dx <= radius; ++dx) {
+                const int nx = x + dx;
+                const int nz = z + dz;
+                if (nx < 0 || nz < 0 || nx >= static_cast<int>(settings.latticeWidth) ||
+                    nz >= static_cast<int>(settings.latticeDepth)) {
+                    continue;
+                }
+                ++sampled;
+                filled += hasStructure(worldStructures, settings, nx, y, nz) ? 1U : 0U;
+            }
+        }
+        const auto required = std::max(
+            static_cast<std::uint32_t>(std::ceil(static_cast<float>(sampled) * fill)), 1U);
+        if (filled >= required) {
+            return static_cast<std::uint32_t>(y) + 1U;
+        }
+    }
+    return 0;
+}
+
 void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& settings) {
     const std::uint32_t cells = latticeCellsPerWorld(settings);
     if (cells == 0 || population.agents.empty()) {
@@ -295,6 +324,13 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                         outcome = kern::LatticeBuildBlocked;
                     } else if (!supported) {
                         outcome = kern::LatticeBuildUnsupported;
+                    } else if (kern::latticeWorldFrontier(
+                                   static_cast<std::uint32_t>(settings.worldMode)) &&
+                               static_cast<std::uint32_t>(buildY) >=
+                                   constructionLocalFoundation(worldStructures, settings, buildX,
+                                                               buildY, buildZ) +
+                                       std::max(settings.constructionHeightLead, 1U)) {
+                        outcome = kern::LatticeBuildAboveFrontier;
                     } else if (worldOccupancy[target] != kern::LatticeNoOccupant) {
                         outcome = kern::LatticeBuildInTheWay;
                     } else {
