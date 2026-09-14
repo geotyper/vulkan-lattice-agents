@@ -19,12 +19,12 @@
 
 // --- preset: change these when the sensor suite or brain width changes -------
 
-// The Moore neighbourhood, one slot per surrounding cell. Restated rather than
-// included from LatticeKernel.inl because the two kernels compile into separate
-// namespaces on the C++ side and GLSL has no namespaces at all; testLatticeBrain
-// asserts the two agree, which is the same arrangement the 2D build used for the
-// body radius it shared with the scenario kernel.
-const uint BrainNeighborCount = 26u;
+// The front hemisphere, one slot per cell the agent can see. Restated rather
+// than included from LatticeKernel.inl because the two kernels compile into
+// separate namespaces on the C++ side and GLSL has no namespaces at all;
+// testLatticeBrain asserts the two agree, which is the same arrangement the 2D
+// build used for the body radius it shared with the scenario kernel.
+const uint BrainNeighborCount = 17u;
 // Something is standing there, the lattice ends there, a block stands there, and
 // how loudly its occupant is signalling. The last channel is the whole of
 // agent-to-agent perception: an agent reads its neighbour's broadcast, never its

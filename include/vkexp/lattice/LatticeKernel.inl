@@ -20,10 +20,14 @@
 // size, because a cell *is* a cell. Neighbours are a constant offset away, which
 // is why the 2D build's atomicExchange spatial hash has no successor here.
 
-// The Moore neighbourhood: every cell sharing a face, an edge or a corner.
-const uint LatticeNeighborCount = 26u;
-// The von Neumann subset of it: the six that share a face.
-const uint LatticeFaceNeighborCount = 6u;
+// What an agent can see: the half of the 3x3x3 block from its own plane
+// forward, centre removed. Seventeen cells rather than twenty six, because in a
+// body frame the nine behind it are nine cells it cannot walk into, cannot build
+// in, and cannot reach without a turn -- and a turn brings them round to the
+// side, where they are sensed. Nine cells the network had to learn to ignore.
+const uint LatticeNeighborCount = 17u;
+// The faces of it: the five that share one, the sixth being behind.
+const uint LatticeFaceNeighborCount = 5u;
 
 // Which of those an agent may actually step into. The sensor reads all 26 under
 // both settings -- "how many directions can I see" and "how many can I walk"
@@ -279,49 +283,41 @@ VKEXP_LATTICE_FN bool latticeInBounds(int x, int y, int z, uint width, uint heig
 
 // --- neighbour numbering -----------------------------------------------------
 //
-// Neighbour n is the n-th cell of the 3x3x3 block around the centre with the
-// centre itself removed, walked x fastest. So 0 is (-1,-1,-1) and 25 is
-// (+1,+1,+1), and the numbering is the same on both sides by construction
-// rather than by two matching tables -- a table written twice is a table that
-// can be edited once.
+// These offsets are in the agent's own frame, not the world's: forward is +x,
+// up is +y, and +z is to one side. The sensor turns them by the facing, so slot
+// n is the same direction relative to the agent whichever way it is pointed.
+//
+// Neighbour n is the n-th cell of the two 3x3 planes at x = 0 and x = +1, walked
+// y fastest then z, with the centre removed. So 0 is (0,-1,-1), 3 is (0,-1,0) --
+// the cell underfoot -- and 16 is (+1,+1,+1). Derived rather than tabulated, and
+// derived once: a table written twice is a table that can be edited once.
 
 VKEXP_LATTICE_FN uint latticeNeighborSlot(uint neighbor) {
-    return neighbor < 13u ? neighbor : neighbor + 1u;
+    return neighbor < 4u ? neighbor : neighbor + 1u;
 }
 
 VKEXP_LATTICE_FN int latticeNeighborX(uint neighbor) {
-    return int(latticeNeighborSlot(neighbor) % 3u) - 1;
+    return int(latticeNeighborSlot(neighbor) / 9u);
 }
 
 VKEXP_LATTICE_FN int latticeNeighborY(uint neighbor) {
-    return int((latticeNeighborSlot(neighbor) / 3u) % 3u) - 1;
+    return int(latticeNeighborSlot(neighbor) % 3u) - 1;
 }
 
 VKEXP_LATTICE_FN int latticeNeighborZ(uint neighbor) {
-    return int(latticeNeighborSlot(neighbor) / 9u) - 1;
+    return int((latticeNeighborSlot(neighbor) / 3u) % 3u) - 1;
 }
 
-// The inverse, for a step that is known not to be (0,0,0). Undefined for the
-// centre on purpose: "stay put" is not a neighbour, and giving it an index
-// would put a 27th slot in every loop bound in the file.
+// The inverse, for an offset known to be in front of the agent's plane and not
+// the centre. Undefined for the centre on purpose -- "stay put" is not a
+// neighbour -- and undefined behind, which is the whole point: there is no slot
+// back there to name.
 VKEXP_LATTICE_FN uint latticeNeighborIndex(int stepX, int stepY, int stepZ) {
-    const uint slot = uint((stepZ + 1) * 9 + (stepY + 1) * 3 + (stepX + 1));
-    return slot < 13u ? slot : slot - 1u;
+    const uint slot = uint(stepX * 9 + (stepZ + 1) * 3 + (stepY + 1));
+    return slot < 4u ? slot : slot - 1u;
 }
 
 VKEXP_LATTICE_FN int latticeAbs(int value) { return value < 0 ? -value : value; }
-
-VKEXP_LATTICE_FN bool latticeIsFaceNeighbor(uint neighbor) {
-    return latticeAbs(latticeNeighborX(neighbor)) + latticeAbs(latticeNeighborY(neighbor)) +
-               latticeAbs(latticeNeighborZ(neighbor)) ==
-           1;
-}
-
-// Whether a move in this direction is legal under the selected neighbourhood.
-// Sensing does not ask: see the note on LatticeNeighborhoodFaces.
-VKEXP_LATTICE_FN bool latticeNeighborWalkable(uint neighborhood, uint neighbor) {
-    return neighborhood == LatticeNeighborhoodMoore || latticeIsFaceNeighbor(neighbor);
-}
 
 // --- distance ----------------------------------------------------------------
 //

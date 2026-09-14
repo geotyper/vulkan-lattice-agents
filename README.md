@@ -26,7 +26,7 @@ logical world.
 
 ```
 Lattice:    32x32x16 = 16384 cells per world, Moore (26)
-Brain:      114 -> 20 -> 5
+Brain:      78 -> 20 -> 5
 Trial:      900 steps = 15.0 s at 60.0 Hz
 Population: 512 genomes x 4 trials = 2048 agents in 172 lattices
 Movement:   turn threshold 0.70, beacon reached within 1 cell(s)
@@ -36,17 +36,19 @@ Movement:   turn threshold 0.70, beacon reached within 1 cell(s)
 - the population partitioned into configurable logical groups from one agent to
   the whole population (12 agents per lattice by default), so with the default
   group size 512 genomes occupy 43 groups and 172 independent lattices;
-- 26 neighbouring cells read as four channels each -- occupied, the edge of the
-  lattice, a block, and what the occupant is broadcasting -- 104 inputs, and
-  read in the agent's own frame: slot n is the same direction relative to the
-  agent whichever way it is facing;
+- 17 neighbouring cells read as four channels each -- occupied, the edge of the
+  lattice, a block, and what the occupant is broadcasting -- 68 inputs, read in
+  the agent's own frame: slot n is the same direction relative to the agent
+  whichever way it is facing. Seventeen and not twenty six because the nine
+  cells behind it are nine it cannot walk into, build in, or reach without a
+  turn -- and a turn brings them round to the side, where they are sensed;
 - six task inputs: beacon direction/nearness, or height, build readiness,
   previous build success and physical support;
 - two inputs about itself: whether its last move was refused and how long it has
   been standing still. No heading channel -- in a body frame the agent faces
   forward by definition;
 - two recurrent memory cells fed back, 2 inputs;
-- `114 inputs -> 20 tanh neurons -> 5 outputs` by default, with the hidden layers
+- `78 inputs -> 20 tanh neurons -> 5 outputs` by default, with the hidden layers
   configurable from the Brain window: up to three of them, 32 neurons in total;
 - every hidden neuron holds its own state and a time constant that is evolved,
   recomputed from the inputs each step, or pinned to the step, so a memory is
@@ -159,8 +161,8 @@ field, where every resize was a buffer-lifetime bug under live descriptors:
 `vklat_reconfiguration_smoke` asserts that the step resources are built exactly
 once across every reconfiguration the UI can produce.
 
-**Two neighbourhoods, one input width.** The sensed neighbourhood is 26 cells
-either way. Since the body frame arrived the setting no longer changes how an
+**Two neighbourhoods, one input width.** The sensed neighbourhood is the same
+17 cells either way. Since the body frame arrived the setting no longer changes how an
 agent moves -- forward is forward -- and what it still chooses is the distance
 the fitness is measured in: Chebyshev under Moore, Manhattan under faces. Kept
 as a setting because the two answer different questions about how far away a
@@ -474,7 +476,7 @@ that lays that network out differently, naming the block that moved.
 A deeper plan is usually *cheaper* than a flat one, which is worth knowing before
 reaching for it: the first matrix dominates, so a narrow first layer shrinks the
 whole network even as it makes it deeper. That matters more here than it did in
-the arena, because 114 inputs is a wider front than 61 was.
+the arena, because 78 inputs is a wider front than 61 was.
 
 **The default width and the capacity are separate numbers**, and a test says so.
 Sharing one constant would mean that raising how many neurons there *may* be
@@ -510,13 +512,13 @@ vklat_headless --neuron-model gated --describe-brain brain.json
 
 ```json
 {
-  "inputs_count": 114, "hidden_count": 20, "outputs_count": 5,
-  "weight_count": 4725, "neuron_model": "gated",
+  "inputs_count": 78, "hidden_count": 20, "outputs_count": 5,
+  "weight_count": 3285, "neuron_model": "gated",
   "inputs": [
-    { "name": "neighbourhood", "offset": 0, "count": 104, "rows": 26, "columns": 4 },
-    { "name": "task", "offset": 104, "count": 6 },
-    { "name": "self", "offset": 110, "count": 2 },
-    { "name": "memory_in", "offset": 112, "count": 2 }
+    { "name": "neighbourhood", "offset": 0, "count": 68, "rows": 17, "columns": 4 },
+    { "name": "task", "offset": 68, "count": 6 },
+    { "name": "self", "offset": 74, "count": 2 },
+    { "name": "memory_in", "offset": 76, "count": 2 }
   ],
   "outputs": [
     { "name": "turn", "offset": 0, "count": 1 },
@@ -525,8 +527,8 @@ vklat_headless --neuron-model gated --describe-brain brain.json
     { "name": "memory_out", "offset": 3, "count": 2 }
   ],
   "weights": [
-    { "name": "hidden0_weights", "offset": 0, "count": 2280,
-      "from": "inputs", "to": "hidden0", "rows": 20, "columns": 114 },
+    { "name": "hidden0_weights", "offset": 0, "count": 1560,
+      "from": "inputs", "to": "hidden0", "rows": 20, "columns": 78 },
     ...
   ]
 }

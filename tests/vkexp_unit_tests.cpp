@@ -372,7 +372,7 @@ void testBrainForwardPass() {
     // neuron layer and a widening plan are where an off-by-one in a source count
     // shows up as something other than a rounding difference.
     const std::array<Case, 6> cases{{
-        {vkexp::neuro::defaultBrainShape, "the default 114 -> 20 -> 5"},
+        {vkexp::neuro::defaultBrainShape, "the default 78 -> 20 -> 5"},
         {{57, 20, 5}, "a trimmed 57 -> 20 -> 5"},
         {{8, 4, 5}, "a small 8 -> 4 -> 5"},
         {{4, 1, 5}, "a single hidden neuron"},
@@ -891,7 +891,7 @@ void testGenomeArchiveRoundTrip() {
     // is what replaced one compiled-in genome length: interchangeability now
     // comes from the file describing itself, so an archive of a three-layer
     // brain is a perfectly good file even in a run set up for a flat one.
-    const vkexp::neuro::BrainShape deepPlan{88, 12, 5, 8, 8};
+    const vkexp::neuro::BrainShape deepPlan{64, 12, 5, 8, 8};
     const std::filesystem::path deepPath = path.parent_path() / "deep.vkng";
     std::vector<vkexp::Genome> deepGenomes(2, vkexp::Genome{vkexp::neuro::makeWeights(deepPlan)});
     deepGenomes.front().weights.front() = 0.5F;
@@ -901,7 +901,7 @@ void testGenomeArchiveRoundTrip() {
         1U,
         0.5F,
         0.25F,
-        88,
+        64,
         static_cast<std::uint32_t>(deepPlan.hiddenTotal()),
         static_cast<std::uint32_t>(deepPlan.outputCount),
         deepPlan.packedLayers()};
@@ -2027,13 +2027,13 @@ void testLatticeAddressing() {
 }
 
 void testLatticeNeighbourhood() {
-    check(lk::LatticeNeighborCount == 26 && lk::LatticeFaceNeighborCount == 6,
-          "The neighbourhood is the 3x3x3 block less its centre");
+    check(lk::LatticeNeighborCount == 17 && lk::LatticeFaceNeighborCount == 5,
+          "The sensed neighbourhood is the front half of the block, centre removed");
 
-    // Every neighbour is a distinct non-zero offset, and the numbering round
-    // trips through latticeNeighborIndex. The inverse is what turns a move back
-    // into a heading, so an error here is an agent that reports facing somewhere
-    // it did not go.
+    // Every neighbour is a distinct non-zero offset in front of the agent's own
+    // plane, and the numbering round trips through latticeNeighborIndex. Counted
+    // as well as checked: a numbering that skipped a cell and repeated another
+    // would pass every test in the loop and still be missing a direction.
     std::vector<std::array<int, 3>> offsets;
     std::uint32_t faces = 0;
     for (std::uint32_t neighbor = 0; neighbor < lk::LatticeNeighborCount; ++neighbor) {
@@ -2041,27 +2041,31 @@ void testLatticeNeighbourhood() {
         const int y = lk::latticeNeighborY(neighbor);
         const int z = lk::latticeNeighborZ(neighbor);
         check(x != 0 || y != 0 || z != 0, "No neighbour is the centre cell");
+        check(x >= 0, "Nothing behind the agent's own plane is sensed");
         check(std::abs(x) <= 1 && std::abs(y) <= 1 && std::abs(z) <= 1,
               "Every neighbour is one step away on each axis");
         check(lk::latticeNeighborIndex(x, y, z) == neighbor,
               "The neighbour numbering round-trips through its inverse");
-        faces += lk::latticeIsFaceNeighbor(neighbor) ? 1U : 0U;
+        faces += std::abs(x) + std::abs(y) + std::abs(z) == 1 ? 1U : 0U;
         offsets.push_back({x, y, z});
     }
     std::sort(offsets.begin(), offsets.end());
     check(std::adjacent_find(offsets.begin(), offsets.end()) == offsets.end(),
           "No two neighbours share an offset");
-    check(faces == lk::LatticeFaceNeighborCount, "Exactly six neighbours share a face");
+    check(offsets.size() == 17, "Seventeen cells: two 3x3 planes less the agent's own");
+    check(faces == lk::LatticeFaceNeighborCount,
+          "Five neighbours share a face -- the sixth is the one behind");
 
-    // Sensing reads all 26 under both settings; only walking is restricted. That
-    // is what lets a population trained on one setting load into the other.
-    std::uint32_t walkable = 0;
-    for (std::uint32_t neighbor = 0; neighbor < lk::LatticeNeighborCount; ++neighbor) {
-        walkable += lk::latticeNeighborWalkable(lk::LatticeNeighborhoodFaces, neighbor) ? 1U : 0U;
-        check(lk::latticeNeighborWalkable(lk::LatticeNeighborhoodMoore, neighbor),
-              "Every neighbour is walkable under Moore");
-    }
-    check(walkable == lk::LatticeFaceNeighborCount, "Only the faces are walkable under faces");
+    // The three the rules themselves reach for, by name rather than by number,
+    // because these are the slots a policy has to be able to read for the
+    // climbing rule to be learnable at all.
+    check(lk::latticeNeighborX(lk::latticeNeighborIndex(0, -1, 0)) == 0 &&
+              lk::latticeNeighborY(lk::latticeNeighborIndex(0, -1, 0)) == -1,
+          "The cell underfoot is sensed");
+    check(lk::latticeNeighborIndex(1, 0, 0) < lk::LatticeNeighborCount,
+          "and so is the cell a block would go in");
+    check(lk::latticeNeighborIndex(1, -1, 0) < lk::LatticeNeighborCount,
+          "and the wall in front of the feet, which is what a climber holds");
 
     // Distance is counted in moves, so it follows the neighbourhood. A corner of
     // a 4x4x4 box is three Moore steps away and nine Manhattan ones.
@@ -2198,13 +2202,13 @@ void testLatticeSensing() {
             closeTo(middle[bk::brainNeighborChannelIndex(neighborPlusX, lk::LatticeNeighborSignal)],
                     0.75F),
         "An occupied neighbour reads as occupied, not a wall, and broadcasting what it emits");
-    const std::uint32_t neighborMinusX = lk::latticeNeighborIndex(-1, 0, 0);
+    // An empty cell beside the agent. Beside and not behind: nothing behind the
+    // agent's own plane has a slot at all, which is the point of the hemisphere.
+    const std::uint32_t bodyLeft = lk::latticeNeighborIndex(0, 0, 1);
     check(
-        closeTo(middle[bk::brainNeighborChannelIndex(neighborMinusX, lk::LatticeNeighborOccupied)],
-                0.0F) &&
-            closeTo(
-                middle[bk::brainNeighborChannelIndex(neighborMinusX, lk::LatticeNeighborEdge)],
-                0.0F),
+        closeTo(middle[bk::brainNeighborChannelIndex(bodyLeft, lk::LatticeNeighborOccupied)], 0.0F)
+            && closeTo(middle[bk::brainNeighborChannelIndex(bodyLeft, lk::LatticeNeighborEdge)],
+                       0.0F),
         "An empty neighbour inside the lattice reads as neither occupied nor a wall");
 
     // The direction to the beacon is a unit vector, and the nearness is what the
@@ -2217,13 +2221,15 @@ void testLatticeSensing() {
           "The beacon reads as a unit direction and a nearness");
 
     // The edge of the lattice reads as a wall. There is no boundary geometry and
-    // no push-out: a lattice ends, and this is the one place that says so.
-    agent.cell = {0, 2, 2, agent.cell.w};
+    // no push-out: a lattice ends, and this is the one place that says so. Read
+    // in front, since that is where an agent meets one: at the far wall, facing
+    // it, the cell it would step into is off the lattice.
+    agent.cell = {static_cast<std::int32_t>(settings.latticeWidth) - 1, 2, 2, 0};
     const vkexp::neuro::Inputs edge = vkexp::sampleAgentInputs(agent, signals, occupancy, settings);
-    check(closeTo(edge[bk::brainNeighborChannelIndex(neighborMinusX, lk::LatticeNeighborEdge)],
+    check(closeTo(edge[bk::brainNeighborChannelIndex(neighborPlusX, lk::LatticeNeighborEdge)],
                   1.0F) &&
               closeTo(
-                  edge[bk::brainNeighborChannelIndex(neighborMinusX, lk::LatticeNeighborOccupied)],
+                  edge[bk::brainNeighborChannelIndex(neighborPlusX, lk::LatticeNeighborOccupied)],
                   0.0F),
           "A neighbour outside the lattice reads as a wall rather than empty");
 

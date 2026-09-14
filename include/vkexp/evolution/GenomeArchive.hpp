@@ -63,8 +63,9 @@ struct GenomeArchive {
 // every weight now addresses a different sensor.
 // 5 is the body frame, and is the oldest readable version for the same reason 4
 // was: the output block changed from five world-axis drives to a turn and an
-// action, and the sensor block lost the three heading channels, so a weight from
-// an older file addresses a slot that is no longer there. A file that loads and
+// action, the sensor block lost the three heading channels, and the
+// neighbourhood shrank to the seventeen cells in front of the agent -- so a
+// weight from an older file addresses a slot that is no longer there. A file that loads and
 // steers nothing is worse than one that is refused.
 inline constexpr std::uint32_t genomeArchiveVersion = 5;
 inline constexpr std::uint32_t genomeArchiveOldestVersion = 5;
