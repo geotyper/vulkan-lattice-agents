@@ -2306,6 +2306,93 @@ void testLatticeContention() {
           "Walking into an occupied cell is refused and charged");
 }
 
+// Walking off the edge of a chasm. The rule under test is that a column with no
+// bottom cannot be entered -- which is not a rule about chasms at all, but the
+// consequence of there being no implicit floor any more. It needs its own test
+// because the parity probe cannot reach it: parity says the two implementations
+// agree, and while the landing search stopped at height zero both of them agreed
+// on the same wrong answer, which was that the bottom of the hole is a floor.
+//
+// What is not a bug, and is worth stating because it looks like one: the first
+// column of the void is enterable at any height where the cliff is beside it.
+// Support has always included a vertical face -- that is the climbing rule, and
+// it is what lets an agent go up a wall at all -- so an agent may hang on the
+// cliff and move along it. It may not leave it, which is the difference between
+// hugging an edge and walking across a hole.
+void testChasmEdge() {
+    vkexp::SimulationStep settings{};
+    settings.worldMode = vkexp::WorldMode::Chasm;
+    settings.latticeWidth = 8;
+    settings.latticeHeight = 6;
+    settings.latticeDepth = 5;
+    settings.neighborhood = vkexp::Neighborhood::Faces;
+    settings.neuronModel = vkexp::NeuronModel::Reactive;
+    settings.chasmGroundWidth = 3; // ground at x 0..2, open air at x 3..7
+    // Nothing is built in this test: a tanh output cannot exceed one, so the
+    // gate never opens and what is measured is walking alone.
+    settings.buildThreshold = 2.0F;
+    const auto ground = static_cast<std::int32_t>(vkexp::latticeGroundWidth(settings));
+    check(ground == 3, "The fixture's ground is where it says it is");
+
+    const vkexp::lattice::PopulationLayout layout{1, 1, 1};
+    const vkexp::neuro::BrainShape brain = vkexp::resolvedBrain(settings);
+    const auto stride = static_cast<std::uint32_t>(brain.weightCount());
+    std::vector<float> weights(static_cast<std::size_t>(stride) * layout.genomeCount, 0.0F);
+    namespace bk = vkexp::neuro::kernel;
+    weights[bk::brainOutputBiasIndex(0U, static_cast<std::uint32_t>(brain.inputCount),
+                                     brain.packedLayers(),
+                                     static_cast<std::uint32_t>(brain.outputCount),
+                                     bk::BrainMoveOutput)] = 8.0F; // drive +x, every step
+
+    std::vector<vkexp::AgentState> agents(1);
+    agents[0].cell = {ground - 1, 1, 2, static_cast<std::int32_t>(lk::LatticeNeighborCount)};
+    agents[0].beacon = {-1, -1, -1, 0};
+    agents[0].intent = {agents[0].cell.x, agents[0].cell.y, agents[0].cell.z, 0};
+
+    std::vector<std::int32_t> structures =
+        vkexp::lattice::makeTerrain(settings, layout.worldCount());
+    const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
+    std::vector<std::int32_t> occupancy(static_cast<std::size_t>(cells) * layout.worldCount());
+    vkexp::lattice::buildOccupancy(agents, settings, layout, occupancy);
+    std::vector<std::int32_t> claims(occupancy.size());
+    std::vector<std::uint32_t> outcomes(static_cast<std::size_t>(layout.worldCount()) *
+                                        lk::LatticeBuildOutcomeCount);
+
+    const auto step = [&] {
+        std::fill(outcomes.begin(), outcomes.end(), 0U);
+        vkexp::stepLatticeCpu({agents, occupancy, claims, weights, stride, layout.groupSize(),
+                               layout.trialsPerGenome, structures, outcomes},
+                              settings);
+    };
+
+    // Twenty steps of walking east as hard as the output can ask. Without the
+    // rule the agent reaches the far wall: every cell of the hole was a landing,
+    // so the hole was a road.
+    for (std::uint32_t tick = 0; tick < 20; ++tick) {
+        step();
+        check(agents[0].cell.x <= ground,
+              "Nobody walks past the cliff face into open air, however hard they push");
+    }
+    check(agents[0].cell.x == ground,
+          "The cliff face itself is reachable -- hanging on a wall is the climbing rule");
+    check(agents[0].intent.w == 1,
+          "and the step beyond it is charged as a refusal, like the edge of the lattice");
+
+    // Not a special case for the void, and not a wall: give the next column a
+    // bottom and the very same drive walks into it. Without this the test would
+    // pass just as well if stepping east had been forbidden outright.
+    const int ledgeX = ground + 1;
+    structures[lk::latticeCellIndex(ledgeX, 0, agents[0].cell.z, settings.latticeWidth,
+                                    settings.latticeHeight)] = 1;
+    step();
+    check(agents[0].cell.x == ledgeX,
+          "A block placed in the next column turns it into somewhere to go");
+    check(structures[lk::latticeCellIndex(ledgeX, 0, agents[0].cell.z, settings.latticeWidth,
+                                          settings.latticeHeight)] == 1 &&
+              agents[0].cell.y == 1,
+          "and the agent is standing on that block, one level up from nothing");
+}
+
 void testLatticeFitness() {
     // The four counters and what each is worth. Written out rather than folded
     // into agentFitness so that changing a weight and changing the arithmetic
@@ -2356,6 +2443,7 @@ int main() {
     testLatticeAddressing();
     testLatticeNeighbourhood();
     testLatticeMoveRule();
+    testChasmEdge();
     testLatticeSpawn();
     testLatticeSensing();
     testLatticeContention();

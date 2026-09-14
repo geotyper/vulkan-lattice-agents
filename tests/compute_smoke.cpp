@@ -817,6 +817,34 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
                 where + ": " + std::to_string(attempts) + " outcomes recorded for " +
                     std::to_string(expected.size()) +
                     " agents -- every agent gets exactly one reason per step");
+
+        if (chasm) {
+            // Nobody stands on nothing. The rule is the same everywhere, but
+            // only here can it be broken: with a floor all the way across, a
+            // fall always finds one. The bug this catches let an agent walk off
+            // the edge, stop at height zero because the landing search stopped
+            // there, and then stroll along the bottom of the chasm -- which
+            // makes the whole world pointless without failing anything else.
+            const auto solid = [&](const int x, const int y, const int z) {
+                if (!vkexp::lattice::kernel::latticeInBounds(x, y, z, settings.latticeWidth,
+                                                             settings.latticeHeight,
+                                                             settings.latticeDepth)) {
+                    return false;
+                }
+                return structures[vkexp::lattice::kernel::latticeCellIndex(
+                           x, y, z, settings.latticeWidth, settings.latticeHeight)] !=
+                       vkexp::lattice::kernel::LatticeNoStructure;
+            };
+            for (std::size_t index = 0; index < expected.size(); ++index) {
+                const vkexp::Int4 at = expected[index].cell;
+                const bool held = solid(at.x, at.y - 1, at.z) || solid(at.x - 1, at.y, at.z) ||
+                                  solid(at.x + 1, at.y, at.z) || solid(at.x, at.y, at.z - 1) ||
+                                  solid(at.x, at.y, at.z + 1);
+                require(held, where + " agent " + std::to_string(index) + " is standing at (" +
+                                  std::to_string(at.x) + ", " + std::to_string(at.y) + ", " +
+                                  std::to_string(at.z) + ") with nothing to hold it");
+            }
+        }
     }
 
     if (vkexp::worldHarvests(worldMode)) {

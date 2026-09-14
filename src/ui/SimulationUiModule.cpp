@@ -858,16 +858,18 @@ void SimulationUiModule::drawViewControls() {
     if (ImGui::Combo("Slice axis", &axis, axes, static_cast<int>(std::size(axes)))) {
         display.sliceAxis = static_cast<std::uint32_t>(axis);
         display.sliceLow = 0;
-        display.sliceHigh = extents[static_cast<std::size_t>(axis)] - 1;
+        display.sliceHigh = latticeMaximumExtent;
     }
     const auto extent = static_cast<int>(extents[static_cast<std::size_t>(axis)]);
     int low = std::clamp(static_cast<int>(display.sliceLow), 0, extent - 1);
     int high = std::clamp(static_cast<int>(display.sliceHigh), low, extent - 1);
-    // Extents can shrink on a simulation reset. Persist the clamp even when the
-    // user does not touch this control; otherwise the slider shows the last
-    // cell while the renderer still receives the old, now-empty slab.
-    display.sliceLow = static_cast<std::uint32_t>(low);
-    display.sliceHigh = static_cast<std::uint32_t>(high);
+    // Clamped for the slider, never written back. The renderer clamps the slab
+    // for itself, so persisting it here bought nothing and cost the one state
+    // worth keeping: "show all of it". Writing the clamp back turned an open
+    // slab into a fixed number the moment any lattice was smaller, and then a
+    // world that grew -- picking the chasm, which is a 32-cube -- kept showing
+    // the old half. Half a lattice looks exactly like a lattice, which is what
+    // makes this worth a comment rather than a clamp.
     if (ImGui::DragIntRange2("Slice", &low, &high, 0.25F, 0, extent - 1, "%d", "%d")) {
         display.sliceLow = static_cast<std::uint32_t>(low);
         display.sliceHigh = static_cast<std::uint32_t>(high);
@@ -875,7 +877,9 @@ void SimulationUiModule::drawViewControls() {
     ImGui::SameLine();
     if (ImGui::SmallButton("All")) {
         display.sliceLow = 0;
-        display.sliceHigh = static_cast<std::uint32_t>(extent - 1);
+        // Not extent - 1: the point of this button is a slab that stays open
+        // when the lattice changes under it.
+        display.sliceHigh = latticeMaximumExtent;
     }
 
     LatticeCamera& camera = display.camera;

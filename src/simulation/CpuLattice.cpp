@@ -32,10 +32,13 @@ namespace kern = lattice::kernel;
     return cell < structures.size() && structures[cell] != kern::LatticeNoStructure;
 }
 
+// Mirrors constructionSupported in lattice_step.comp. There is no special case
+// for height zero: the floor is a course of bedrock in the block field, so
+// "something below me" is the whole of the rule.
 [[nodiscard]] bool constructionSupported(const std::span<const std::int32_t> structures,
                                          const SimulationStep& settings, const int x, const int y,
                                          const int z) {
-    return y <= 0 || hasStructure(structures, settings, x, y - 1, z) ||
+    return hasStructure(structures, settings, x, y - 1, z) ||
            hasStructure(structures, settings, x - 1, y, z) ||
            hasStructure(structures, settings, x + 1, y, z) ||
            hasStructure(structures, settings, x, y, z - 1) ||
@@ -55,11 +58,13 @@ namespace kern = lattice::kernel;
             hasStructure(structures, settings, x, y, z + 1));
 }
 
+// Mirrors constructionLandingY in lattice_step.comp, including the -1 that says
+// this column has no bottom at all.
 [[nodiscard]] int constructionLandingY(const std::span<const std::int32_t> structures,
                                        const SimulationStep& settings, const int x, const int y,
                                        const int z) {
     int landing = std::clamp(y, 0, static_cast<int>(settings.latticeHeight) - 1);
-    while (landing > 0 && !constructionSupported(structures, settings, x, landing, z)) {
+    while (landing >= 0 && !constructionSupported(structures, settings, x, landing, z)) {
         --landing;
     }
     return landing;
@@ -178,8 +183,14 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                         attempted = false;
                     }
                 } else {
-                    wantedY =
-                        constructionLandingY(worldStructures, settings, wantedX, wantedY, wantedZ);
+                    const int landing = constructionLandingY(worldStructures, settings, wantedX,
+                                                             wantedY, wantedZ);
+                    if (landing < 0) {
+                        agent.intent.w = 1;
+                        attempted = false;
+                    } else {
+                        wantedY = landing;
+                    }
                 }
             } else if (stepY > 0) {
                 const auto [faceX, faceZ] = constructionFacing(settings, aimDriveX, aimDriveZ);
@@ -196,23 +207,38 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                     attempted = false;
                 }
             } else if (stepY < 0) {
-                wantedY =
-                    constructionLandingY(worldStructures, settings, wantedX, wantedY - 1, wantedZ);
+                const int landing = constructionLandingY(worldStructures, settings, wantedX,
+                                                         wantedY - 1, wantedZ);
+                if (landing < 0) {
+                    agent.intent.w = 1;
+                    attempted = false;
+                } else {
+                    wantedY = landing;
+                }
             } else if (!constructionSupported(worldStructures, settings, wantedX, wantedY,
                                               wantedZ)) {
-                wantedY =
-                    constructionLandingY(worldStructures, settings, wantedX, wantedY - 1, wantedZ);
-                attempted = true;
+                const int landing = constructionLandingY(worldStructures, settings, wantedX,
+                                                         wantedY - 1, wantedZ);
+                if (landing < 0) {
+                    agent.intent.w = 1;
+                    attempted = false;
+                } else {
+                    wantedY = landing;
+                    attempted = true;
+                }
             }
 
             if (!attempted && agent.intent.w == 0 &&
                 !constructionSupported(worldStructures, settings, agent.cell.x, agent.cell.y,
                                        agent.cell.z)) {
-                wantedX = agent.cell.x;
-                wantedY = constructionLandingY(worldStructures, settings, agent.cell.x,
-                                               agent.cell.y - 1, agent.cell.z);
-                wantedZ = agent.cell.z;
-                attempted = true;
+                const int landing = constructionLandingY(worldStructures, settings, agent.cell.x,
+                                                         agent.cell.y - 1, agent.cell.z);
+                if (landing >= 0) {
+                    wantedX = agent.cell.x;
+                    wantedY = landing;
+                    wantedZ = agent.cell.z;
+                    attempted = true;
+                }
             }
 
             if (attempted && agent.intent.w == 0 &&

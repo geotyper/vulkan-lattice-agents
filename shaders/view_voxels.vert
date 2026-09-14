@@ -134,7 +134,13 @@ void main() {
         colour = vec4(body, 1.0);
     }
 
-    if (!latticeCellVisible(cell)) {
+    // The objective is exempt from the slab, as it is from transparency, and for
+    // the same reason: it is the one thing in the box whose position is the
+    // question rather than the answer. It also keeps it agreeing with its own
+    // guide, which is drawn as lines and was never sliced -- a cube that
+    // vanished while its plumb line stayed reads as a bug in the world rather
+    // than as a setting on the view.
+    if (mode != LatticeViewModeBeacon && !latticeCellVisible(cell)) {
         hide();
         return;
     }

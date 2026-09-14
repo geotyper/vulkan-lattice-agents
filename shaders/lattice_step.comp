@@ -74,9 +74,16 @@ bool constructionBlockSupported(uint worldBase, int x, int y, int z) {
             hasStructure(worldBase, x, y, z - 1) || hasStructure(worldBase, x, y, z + 1));
 }
 
+// Where a body falling down this column comes to rest, or -1 if nothing in it
+// holds one. The search used to stop at height zero, which was correct while
+// every column had solid floor there and became a second, invisible floor the
+// moment one did not: an agent that walked off the edge landed on the bottom of
+// the chasm and could then walk along it, which is the one thing the world
+// exists to forbid. A column with no bottom is not a place to fall to, so it is
+// not a place to step into either -- every caller refuses the move instead.
 int constructionLandingY(uint worldBase, int x, int y, int z) {
     int landing = clamp(y, 0, int(params.latticeHeight) - 1);
-    while (landing > 0 && !constructionSupported(worldBase, x, landing, z)) {
+    while (landing >= 0 && !constructionSupported(worldBase, x, landing, z)) {
         --landing;
     }
     return landing;
@@ -270,7 +277,16 @@ void main() {
                     attempted = false; // structure contact is not penalised
                 }
             } else {
-                wantedY = constructionLandingY(worldBase, wantedX, wantedY, wantedZ);
+                const int landing = constructionLandingY(worldBase, wantedX, wantedY, wantedZ);
+                if (landing < 0) {
+                    // The far side of a chasm edge. Refused like the edge of the
+                    // lattice, and counted as a refusal for the same reason:
+                    // from the agent's side the two are the same answer.
+                    agent.intent.w = 1;
+                    attempted = false;
+                } else {
+                    wantedY = landing;
+                }
             }
         } else if (stepY > 0) {
             int faceX;
@@ -289,10 +305,22 @@ void main() {
                 attempted = false;
             }
         } else if (stepY < 0) {
-            wantedY = constructionLandingY(worldBase, wantedX, wantedY - 1, wantedZ);
+            const int landing = constructionLandingY(worldBase, wantedX, wantedY - 1, wantedZ);
+            if (landing < 0) {
+                agent.intent.w = 1;
+                attempted = false;
+            } else {
+                wantedY = landing;
+            }
         } else if (!constructionSupported(worldBase, wantedX, wantedY, wantedZ)) {
-            wantedY = constructionLandingY(worldBase, wantedX, wantedY - 1, wantedZ);
-            attempted = true;
+            const int landing = constructionLandingY(worldBase, wantedX, wantedY - 1, wantedZ);
+            if (landing < 0) {
+                agent.intent.w = 1;
+                attempted = false;
+            } else {
+                wantedY = landing;
+                attempted = true;
+            }
         }
 
         // A failed climb cannot leave the agent suspended above the end of a
@@ -300,10 +328,17 @@ void main() {
         // this tick just as it does when no movement was requested.
         if (!attempted && agent.intent.w == 0 &&
             !constructionSupported(worldBase, agent.cell.x, agent.cell.y, agent.cell.z)) {
-            wantedX = agent.cell.x;
-            wantedY = constructionLandingY(worldBase, agent.cell.x, agent.cell.y - 1, agent.cell.z);
-            wantedZ = agent.cell.z;
-            attempted = true;
+            const int landing =
+                constructionLandingY(worldBase, agent.cell.x, agent.cell.y - 1, agent.cell.z);
+            // Nothing below at all should now be unreachable, since no move into
+            // such a column is allowed. Staying put is the honest answer if it
+            // happens anyway: there is no cell to fall to.
+            if (landing >= 0) {
+                wantedX = agent.cell.x;
+                wantedY = landing;
+                wantedZ = agent.cell.z;
+                attempted = true;
+            }
         }
 
         if (attempted && agent.intent.w == 0 &&
