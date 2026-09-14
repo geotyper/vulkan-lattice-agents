@@ -112,6 +112,7 @@ constexpr std::uint32_t modeBounds = 2;
 constexpr std::uint32_t modeTrail = 3;
 constexpr std::uint32_t modeStructure = 4;
 constexpr std::uint32_t modeGoal = 5;
+constexpr std::uint32_t modeTerrain = 6;
 
 // Mirrors the push constant block in shaders/lattice/lattice_view.glsl. Exactly
 // the 128 bytes Vulkan guarantees, with nothing spare: the mode, the slice axis
@@ -663,6 +664,25 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
     // device, and empty instances collapse in the vertex shader without a
     // compaction pass or readback. A tiny seam keeps a tower legible as masonry
     // instead of one featureless prism.
+    // The ground, always opaque and always drawn, over the bottom course alone:
+    // one instance per floor cell rather than per lattice cell, which is the
+    // whole box divided by its height. It is drawn separately from the block
+    // field because terrain is not work -- it should not go see-through when
+    // work does, and a floor plane is the most expensive thing there is to put
+    // through a blended pass, since every pixel of it costs a fragment whatever
+    // stands in front of it.
+    const auto drawTerrain = [&] {
+        const std::array<std::int32_t, 4> savedBeacon = parameters.beacon;
+        const float savedScale = parameters.camera[3];
+        parameters.beacon[3] = static_cast<std::int32_t>(state_.worlds.selectedWorld);
+        parameters.camera[3] = 1.0F;
+        pushWord(modeTerrain);
+        push();
+        vkCmdDraw(commands, cubeVertexCount, settings.latticeWidth * settings.latticeDepth, 0, 0);
+        parameters.beacon = savedBeacon;
+        parameters.camera[3] = savedScale;
+    };
+
     const auto drawStructureField = [&] {
         const std::array<std::int32_t, 4> savedBeacon = parameters.beacon;
         const float savedScale = parameters.camera[3];
@@ -675,6 +695,9 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
         parameters.camera[3] = savedScale;
     };
 
+    if (drawStructures) {
+        drawTerrain();
+    }
     if (drawStructures && !transparent) {
         drawStructureField();
     }
