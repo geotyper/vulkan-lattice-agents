@@ -1105,9 +1105,94 @@ void testRunSnapshotRoundTrip() {
     std::filesystem::remove(path, removeError);
 }
 
+void testRandomWeights() {
+    namespace bk = vkexp::neuro::kernel;
+    const vkexp::neuro::BrainShape shape{40, 12, 6, 8, 0};
+    std::mt19937 random{0x51EEDU};
+    constexpr float spread = 0.55F;
+    const vkexp::neuro::Weights weights = vkexp::neuro::randomWeights(shape, random, true, spread);
+
+    check(weights.size() == shape.weightCount(), "A fresh genome is as long as its plan");
+    // Every gene was written. Nothing here draws an exact zero with any
+    // probability worth naming, so a zero is a block the walk missed -- which is
+    // the failure this guards, since a missed block is a network with a dead
+    // layer that still runs and still scores.
+    check(std::count(weights.begin(), weights.end(), 0.0F) == 0,
+          "Every gene of a fresh genome was drawn, so no block was skipped");
+
+    const auto inputs = static_cast<bk::uint>(shape.inputCount);
+    const auto outputs = static_cast<bk::uint>(shape.outputCount);
+    const bk::uint layers = shape.packedLayers();
+    const auto deviation = [&](const std::vector<std::size_t>& indices) {
+        double sum = 0.0;
+        for (const std::size_t at : indices) {
+            sum += static_cast<double>(weights[at]) * static_cast<double>(weights[at]);
+        }
+        return std::sqrt(sum / static_cast<double>(indices.size()));
+    };
+
+    // Each block is drawn at a width that follows its own fan-in, which is the
+    // whole point: one width for every gene saturates a wide layer and leaves a
+    // narrow one timid. Measured rather than asserted from the constant, because
+    // what matters is what came out.
+    std::vector<std::size_t> firstLayer;
+    for (bk::uint neuron = 0; neuron < 12; ++neuron) {
+        for (bk::uint source = 0; source < inputs; ++source) {
+            firstLayer.push_back(bk::brainLayerWeightIndex(0U, inputs, layers, 0U, neuron, source));
+        }
+    }
+    std::vector<std::size_t> outputLayer;
+    for (bk::uint neuron = 0; neuron < outputs; ++neuron) {
+        for (bk::uint hidden = 0; hidden < 8; ++hidden) {
+            outputLayer.push_back(bk::brainOutputWeightIndex(0U, inputs, layers, neuron, hidden));
+        }
+    }
+    const double firstExpected = spread / std::sqrt(40.0);
+    const double outputExpected = spread / std::sqrt(8.0);
+    check(std::abs(deviation(firstLayer) - firstExpected) < 0.25 * firstExpected,
+          "The first layer is drawn at a width that follows its input count");
+    check(std::abs(deviation(outputLayer) - outputExpected) < 0.25 * outputExpected,
+          "and the output layer at one that follows the last hidden width");
+    check(deviation(outputLayer) > 1.5 * deviation(firstLayer),
+          "so a narrow layer is drawn wider than a wide one, per weight");
+
+    // The time constants are not weights. Each is read through a sigmoid onto a
+    // rate, so narrowing them would pull every neuron toward the same middle
+    // instead of spreading them over the range the model offers.
+    std::vector<std::size_t> rates;
+    for (bk::uint neuron = 0; neuron < shape.hiddenTotal(); ++neuron) {
+        rates.push_back(bk::brainTimeConstantGeneIndex(0U, inputs, layers, outputs, neuron));
+    }
+    check(std::abs(deviation(rates) - spread) < 0.35 * spread,
+          "The time-constant genes keep the width they are read at");
+
+    // And the other policy, which is what the thresholds this project ships were
+    // tuned against: one width everywhere, so a wide layer saturates. Held to the
+    // same coverage rule, because a mode that skipped a block would be a mode
+    // that quietly runs a network with a dead layer.
+    std::mt19937 flatRandom{0x51EEDU};
+    const vkexp::neuro::Weights flat =
+        vkexp::neuro::randomWeights(shape, flatRandom, false, spread);
+    check(std::count(flat.begin(), flat.end(), 0.0F) == 0,
+          "The flat policy draws every gene too");
+    std::vector<float> flatFirst;
+    for (const std::size_t at : firstLayer) {
+        flatFirst.push_back(flat[at]);
+    }
+    double flatSum = 0.0;
+    for (const float weight : flatFirst) {
+        flatSum += static_cast<double>(weight) * static_cast<double>(weight);
+    }
+    const double flatDeviation = std::sqrt(flatSum / static_cast<double>(flatFirst.size()));
+    check(std::abs(flatDeviation - spread) < 0.25 * spread,
+          "Flat means what it says: the widest layer is drawn at the same width as the rest");
+    check(flatDeviation > 3.0 * deviation(firstLayer),
+          "which for forty inputs is several times wider per weight");
+}
+
 void testPopulationReload() {
     const vkexp::EvolutionSettings settings{
-        8, 2, 3, 0.5F, 0.1F, 0.2F, 42U, vkexp::neuro::defaultBrainShape.weightCount()};
+        8, 2, 3, 0.5F, 0.1F, 0.2F, 42U, vkexp::neuro::defaultBrainShape};
     vkexp::GeneticAlgorithm evolution{settings};
     std::vector<vkexp::Genome> replacement(
         settings.populationSize,
@@ -2658,6 +2743,7 @@ int main() {
     testGenomeArchiveRoundTrip();
     testGroupFitnessSharing();
     testRunSnapshotRoundTrip();
+    testRandomWeights();
     testPopulationReload();
     testStepParameterPacking();
     if (failures == 0) {

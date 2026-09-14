@@ -32,6 +32,7 @@ struct Options {
     std::uint32_t stepsPerBatch{128};
     std::uint32_t agentsPerWorld{12};
     std::size_t populationSize{512};
+    vkexp::WeightInit weightInit{vkexp::WeightInit::Saturating};
     std::uint32_t seed{0xC0FFEEU};
 
     // Absent means "leave the default", which lets a sweep change one term
@@ -76,6 +77,10 @@ void printHelp(const char* executable) {
                  "  --generations <n>        generations to run (default 20)\n"
                  "  --steps <n>              steps per generation (default 900 = 15.0 s)\n"
                  "  --population <n>         genomes (default 512)\n"
+                 "  --weight-init <name>     saturating|fan-in: how a fresh genome is drawn\n"
+                 "                           (default saturating). fan-in scales each block by\n"
+                 "                           its input count and needs both thresholds scaled\n"
+                 "                           down with it\n"
                  "  --agents-per-world <n>   agents sharing one lattice (default 12)\n"
                  "  --seed <n>               genetic algorithm seed (default 12648430)\n"
                  "  --steps-per-batch <n>    steps recorded per submission (default 128)\n\n"
@@ -317,6 +322,15 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
                 parseNumber<std::uint32_t>(next(index, argument), argument);
         } else if (argument == "--steps-per-batch") {
             options.stepsPerBatch = parseNumber<std::uint32_t>(next(index, argument), argument);
+        } else if (argument == "--weight-init") {
+            const std::string_view name = next(index, argument);
+            if (name == "saturating" || name == "flat") {
+                options.weightInit = vkexp::WeightInit::Saturating;
+            } else if (name == "fan-in" || name == "fanin") {
+                options.weightInit = vkexp::WeightInit::FanIn;
+            } else {
+                fail("Unknown weight initialisation: " + std::string{name});
+            }
         } else if (argument == "--population") {
             options.populationSize = parseNumber<std::size_t>(next(index, argument), argument);
         } else if (argument == "--agents-per-world") {
@@ -477,6 +491,7 @@ int run(const Options& options) {
 
     vkexp::EvolutionSettings evolution;
     evolution.populationSize = options.populationSize;
+    evolution.weightInit = options.weightInit;
     evolution.seed = options.seed;
 
     vkexp::SimulationDriverConfig config;

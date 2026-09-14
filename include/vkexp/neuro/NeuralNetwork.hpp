@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <random>
 #include <span>
 #include <vector>
 
@@ -184,6 +185,13 @@ using Weights = std::vector<float>;
 [[nodiscard]] inline Weights makeWeights(const BrainShape shape) {
     return Weights(shape.weightCount(), 0.0F);
 }
+
+// A fresh genome for a plan. `fanIn` divides each block's width by the square
+// root of what its neurons sum, which is the standard answer; without it every
+// gene is drawn at one width and a wide layer saturates. See EvolutionSettings'
+// WeightInit for what each one measures out to.
+[[nodiscard]] Weights randomWeights(BrainShape shape, std::mt19937& random, bool fanIn,
+                                    float spread = 0.55F);
 
 // The continuous-time state of one brain's hidden layer, carried between steps.
 using HiddenState = std::array<float, Topology::hiddenNeuronCapacity>;

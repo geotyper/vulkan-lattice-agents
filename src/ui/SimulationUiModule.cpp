@@ -526,6 +526,12 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::Text("Crossover: %.1f%%", state_.evolution.crossoverProbability * 100.0F);
     ImGui::Text("Mutation: %.1f%%  strength %.3f", state_.evolution.mutationProbability * 100.0F,
                 state_.evolution.mutationStrength);
+    ImGui::Text("Fresh genomes: %s", state_.evolution.weightInit == WeightInit::FanIn
+                                         ? "drawn per block by fan-in"
+                                         : "drawn at one width, outputs saturate");
+    ImGui::SetItemTooltip("Set at the start of a run. Fan-in leaves outputs unsaturated, which "
+                          "needs the turn and build thresholds scaled down with it -- at the "
+                          "shipped ones nothing turns and nothing builds.");
 
     // Whether group fitness sharing helps is an empirical question, and one run
     // cannot answer it. A sweep runs the same experiment once per setting from

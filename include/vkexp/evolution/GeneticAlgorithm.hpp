@@ -10,6 +10,31 @@
 
 namespace vkexp {
 
+// How a fresh genome is drawn, which turns out to decide what a run looks like
+// before selection has done anything at all.
+//
+// Saturating draws every gene at one width, so a neuron summing seventy eight
+// inputs lands on tanh's flat part and its output is pinned near +-1. The
+// population starts maximally opinionated at random. That is what the thresholds
+// this project ships were tuned against -- a build gate at 0.55 is only
+// reachable at all by an output that saturates -- and over four generations of
+// construction it wins on every model, spectacularly so under spiking, whose
+// outputs rest at zero and spike: walk by default, act on a spike.
+//
+// FanIn draws each block at a width that follows its own fan-in, the standard
+// answer, so outputs start spread rather than pinned. It needs both thresholds
+// scaled down with it -- at the shipped 0.25 and 0.55 nothing ever turns and
+// nothing ever builds, and the whole population beaches itself against the wall
+// of the world. Rescaled to 0.05 and 0.05 it draws level with saturating for
+// tanh models and loses badly under spiking.
+//
+// Both are kept because four generations is a measurement of where a run starts
+// and not of where it can get to, and the case for FanIn is about the second: a
+// saturated weight has to cross the whole flat part before its output moves at
+// all, so mutation either does nothing or flips a sign, while an unsaturated one
+// moves a little for a little. Which matters more is a long run's question.
+enum class WeightInit : std::uint32_t { Saturating = 0, FanIn = 1 };
+
 struct EvolutionSettings {
     std::size_t populationSize{512};
     std::size_t eliteCount{12};
@@ -18,10 +43,15 @@ struct EvolutionSettings {
     float mutationProbability{0.08F};
     float mutationStrength{0.18F};
     std::uint32_t seed{0xC0FFEEU};
-    // How long one genome is. It follows from the brain plan the run is set up
-    // with, so it is settled once at reset and never guessed at afterwards --
-    // the population, the GPU buffer and every file all read it from here.
-    std::size_t weightCount{neuro::maximumBrainShape.weightCount()};
+    // The brain plan the run is set up with. The genome length follows from it
+    // and is never stored beside it, so the two cannot disagree; the population,
+    // the GPU buffer and every file read the length from here. The plan itself
+    // is carried rather than only its length because drawing a fresh genome
+    // needs to know where each weight block starts and how wide it is.
+    neuro::BrainShape brain{neuro::maximumBrainShape};
+    WeightInit weightInit{WeightInit::Saturating};
+
+    [[nodiscard]] std::size_t weightCount() const { return brain.weightCount(); }
 };
 
 struct Genome {

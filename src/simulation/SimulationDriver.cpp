@@ -65,12 +65,12 @@ lattice::PopulationLayout SimulationDriver::populationLayout() const {
 // once and everything after -- the population, the GPU buffer, the files --
 // reads it from the settings rather than from a compiled-in constant.
 void SimulationDriver::adoptBrainPlan() {
-    const std::size_t weights = resolvedBrain(state_.settings).weightCount();
-    if (evolution_.settings().weightCount == weights) {
+    const neuro::BrainShape brain = resolvedBrain(state_.settings);
+    if (evolution_.settings().brain.weightCount() == brain.weightCount()) {
         return;
     }
     EvolutionSettings settings = evolution_.settings();
-    settings.weightCount = weights;
+    settings.brain = brain;
     evolution_ = GeneticAlgorithm{settings};
     state_.evolution = evolution_.settings();
 }
@@ -239,7 +239,7 @@ void SimulationDriver::createStepResources() {
 }
 
 VkDeviceSize SimulationDriver::genomeBufferBytes() const {
-    return sizeof(float) * evolution_.settings().weightCount * evolution_.population().size();
+    return sizeof(float) * evolution_.settings().weightCount() * evolution_.population().size();
 }
 
 // Adopting a brain plan changes how long a genome is, and nothing else. So this
@@ -307,7 +307,7 @@ void SimulationDriver::destroyResources() {
 
 void SimulationDriver::uploadPopulation(const bool preserveStructures) {
     std::vector<float> flattened;
-    flattened.reserve(evolution_.population().size() * evolution_.settings().weightCount);
+    flattened.reserve(evolution_.population().size() * evolution_.settings().weightCount());
     for (const Genome& genome : evolution_.population()) {
         flattened.insert(flattened.end(), genome.weights.begin(), genome.weights.end());
     }
@@ -368,10 +368,10 @@ void SimulationDriver::restart() {
     // A restart is where a new brain plan takes hold: it changes how long a
     // genome is, so the population and the buffer holding it are both remade --
     // that buffer and no other, because nothing else here is sized by the plan.
-    const std::size_t previous = evolution_.settings().weightCount;
+    const std::size_t previous = evolution_.settings().weightCount();
     adoptBrainPlan();
     evolution_.reset();
-    if (evolution_.settings().weightCount != previous && device_ != VK_NULL_HANDLE) {
+    if (evolution_.settings().weightCount() != previous && device_ != VK_NULL_HANDLE) {
         resizeGenomeBuffer();
     }
     state_.statistics = {};
@@ -438,9 +438,9 @@ void SimulationDriver::restoreSnapshot(const RunSnapshot& snapshot) {
 
     // The settings that just went in decide how long a genome is, so the run
     // adopts that before the population is handed over.
-    const std::size_t previousWeights = evolution_.settings().weightCount;
+    const std::size_t previousWeights = evolution_.settings().weightCount();
     adoptBrainPlan();
-    if (evolution_.settings().weightCount != previousWeights && device_ != VK_NULL_HANDLE) {
+    if (evolution_.settings().weightCount() != previousWeights && device_ != VK_NULL_HANDLE) {
         resizeGenomeBuffer();
     }
     evolution_.setPopulation(snapshot.genomes, snapshot.generation);
