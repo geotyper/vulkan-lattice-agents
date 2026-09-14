@@ -88,8 +88,9 @@ void printHelp(const char* executable) {
                  "  --neighbourhood <name>   faces|moore: whether a step may be diagonal\n"
                  "                           (default moore). The input vector is 26 cells wide\n"
                  "                           either way, so a population carries across\n"
-                 "  --move-threshold <x>     how sure a drive must be to become a step,\n"
-                 "                           0..1 (default 0.25). 0 means never standing still\n"
+                 "  --move-threshold <x>     how sure the turn output must be before the\n"
+                 "                           agent pivots, 0..1 (default 0.25). A turn costs\n"
+                 "                           the whole tick\n"
                  "  --contact-radius <n>     cells from the beacon that count as reaching it\n"
                  "                           (default 1). 0 means one agent per world can\n"
                  "                           score at a time\n"
@@ -538,7 +539,7 @@ int run(const Options& options) {
             // a CSV that has to be re-run to answer the question.
             *csv << "generation,lattice,seed,best,median,mean,arrival_ratio,"
                     "blocks,footprint,peak,mean_height,height_spread,compactness,overhangs,"
-                    "roofed,cooling,unwilling,no_facing,off_lattice,blocked,unsupported,"
+                    "roofed,turning,walking,walled,cooling,off_lattice,blocked,unsupported,"
                     "above_frontier,in_the_way,placed,contested\n";
         }
     }

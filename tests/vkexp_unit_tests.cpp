@@ -246,9 +246,9 @@ void testNeuralNetworkContract() {
               kernel::BrainActuatorOutputCount + kernel::BrainRecurrentCount,
           "Output capacity is actuators plus recurrent cells");
     check(kernel::BrainActuatorOutputCount ==
-              kernel::BrainMoveOutputCount + kernel::BrainSignalOutputCount +
-                  kernel::BrainBuildOutputCount + kernel::BrainFaceOutputCount,
-          "Actuators are the three move drives, broadcast, build impulse and two aim drives");
+              kernel::BrainTurnOutputCount + kernel::BrainActionOutputCount +
+                  kernel::BrainSignalOutputCount,
+          "Actuators are the turn, the action and the broadcast");
     check(vkexp::neuro::Topology::maximumWeightCount ==
               vkexp::neuro::maximumBrainShape.weightCount(),
           "Genome capacity matches the widest brain shape");
@@ -263,7 +263,8 @@ void testNeuralNetworkContract() {
           "The input vector has one slot per cell of the lattice neighbourhood");
     check(kernel::BrainNeighborChannels == 4,
           "A neighbour reads as occupied, a wall, a block and broadcasting");
-    check(kernel::BrainMoveOutputCount == 3, "One move drive per lattice axis");
+    check(kernel::BrainTurnOutputCount == 1 && kernel::BrainActionOutputCount == 1,
+          "Turning is one signed output and acting is one thresholded output");
 
     // The sensor blocks must tile the input vector without gaps or overlaps.
     check(kernel::BrainNeighborOffset == 0, "The neighbourhood block starts the input vector");
@@ -371,12 +372,12 @@ void testBrainForwardPass() {
     // neuron layer and a widening plan are where an off-by-one in a source count
     // shows up as something other than a rounding difference.
     const std::array<Case, 6> cases{{
-        {vkexp::neuro::defaultBrainShape, "the default 114 -> 20 -> 9"},
-        {{57, 20, 8}, "a trimmed 57 -> 20 -> 8"},
-        {{8, 4, 8}, "a small 8 -> 4 -> 8"},
-        {{4, 1, 8}, "a single hidden neuron"},
-        {{8, 4, 8, 3, 2}, "three layers narrowing"},
-        {{8, 2, 8, 5, 7}, "three layers widening"},
+        {vkexp::neuro::defaultBrainShape, "the default 114 -> 20 -> 5"},
+        {{57, 20, 5}, "a trimmed 57 -> 20 -> 5"},
+        {{8, 4, 5}, "a small 8 -> 4 -> 5"},
+        {{4, 1, 5}, "a single hidden neuron"},
+        {{8, 4, 5, 3, 2}, "three layers narrowing"},
+        {{8, 2, 5, 5, 7}, "three layers widening"},
     }};
     for (const Case& item : cases) {
         check(item.shape.fitsCapacity(), std::string{"Test topology fits: "} + item.what);
@@ -410,7 +411,7 @@ void testBrainForwardPass() {
     // reactive model the state *is* the pre-activation, so what comes back is
     // the single weight that was addressed -- and if rows and columns were
     // swapped it would be a different one.
-    const vkexp::neuro::BrainShape wired{6, 3, 8};
+    const vkexp::neuro::BrainShape wired{6, 3, 5};
     const bk::uint layers = wired.packedLayers();
     const auto sources = static_cast<bk::uint>(wired.inputCount);
     const auto weightFor = [](const bk::uint neuron, const bk::uint source) {
@@ -488,7 +489,7 @@ void testBrainForwardPass() {
     // The two are different numbers whenever the state is outside tanh's linear
     // part, which is exactly where a controller spends its time.
     {
-        const vkexp::neuro::BrainShape chain{4, 2, 8, 1, 0};
+        const vkexp::neuro::BrainShape chain{4, 2, 5, 1, 0};
         const bk::uint chainLayers = chain.packedLayers();
         const auto chainInputs = static_cast<bk::uint>(chain.inputCount);
         vkexp::neuro::Weights weights = vkexp::neuro::makeWeights(chain);
@@ -514,7 +515,7 @@ void testBrainForwardPass() {
     // this says the genes reach the neurons they belong to as well as that the
     // sums are right.
     {
-        const vkexp::neuro::BrainShape shape{8, 4, 8, 3, 0};
+        const vkexp::neuro::BrainShape shape{8, 4, 5, 3, 0};
         const float w = 0.05F;
         const float step = 1.0F / 60.0F;
         vkexp::neuro::Weights weights = vkexp::neuro::makeWeights(shape);
@@ -536,8 +537,8 @@ void testBrainForwardPass() {
 
 void testLayeredBrain() {
     namespace bk = vkexp::neuro::kernel;
-    const vkexp::neuro::BrainShape flat{8, 4, 8};
-    const vkexp::neuro::BrainShape deep{8, 4, 8, 3, 2};
+    const vkexp::neuro::BrainShape flat{8, 4, 5};
+    const vkexp::neuro::BrainShape deep{8, 4, 5, 3, 2};
 
     check(flat.hiddenLayerCount() == 1 && flat.hiddenTotal() == 4,
           "One width is one layer, and every scenario that wrote three numbers still means that");
@@ -546,7 +547,7 @@ void testLayeredBrain() {
 
     // A hole is refused rather than closed up: {4, 0, 2} could mean a two-layer
     // plan or a mistake, and guessing between them is worse than saying no.
-    const vkexp::neuro::BrainShape holed{8, 4, 8, 0, 2};
+    const vkexp::neuro::BrainShape holed{8, 4, 5, 0, 2};
     check(!holed.fitsCapacity(), "A plan with a hole in the middle is refused");
     const vkexp::neuro::BrainShape overspent{8, vkexp::neuro::Topology::hiddenNeuronCapacity, 8,
                                              vkexp::neuro::Topology::hiddenNeuronCapacity, 0};
@@ -734,10 +735,8 @@ void testBrainDescription() {
     check(inside("task", bk::brainBeaconInputIndex(0u)) &&
               inside("task", bk::brainBeaconInputIndex(bk::BrainBeaconInputCount - 1u)),
           "The task block covers every task-specific channel");
-    check(inside("move", bk::BrainMoveOutput) &&
-              inside("move", bk::BrainMoveOutput + bk::BrainMoveOutputCount - 1u) &&
+    check(inside("turn", bk::BrainTurnOutput) && inside("action", bk::BrainActionOutput) &&
               inside("signal", bk::BrainSignalIntensityOutput) &&
-              inside("build", bk::BrainBuildOutput) &&
               inside("memory_out", bk::BrainRecurrentOutputOffset),
           "Every named output slot falls in the block that claims it");
 
@@ -751,7 +750,7 @@ void testBrainDescription() {
           "and writing it again produces the same document");
 
     // A trimmed scenario describes a smaller network, not a broken one.
-    const vkexp::neuro::BrainDescription trimmed = vkexp::neuro::describeBrain({52, 20, 8});
+    const vkexp::neuro::BrainDescription trimmed = vkexp::neuro::describeBrain({52, 20, 5});
     check(tiles(trimmed.inputs, 52) && tiles(trimmed.weights, trimmed.weightCount),
           "A trimmed shape still tiles both vectors");
     check(!vkexp::neuro::compareBrainDescriptions(description, trimmed).empty(),
@@ -892,7 +891,7 @@ void testGenomeArchiveRoundTrip() {
     // is what replaced one compiled-in genome length: interchangeability now
     // comes from the file describing itself, so an archive of a three-layer
     // brain is a perfectly good file even in a run set up for a flat one.
-    const vkexp::neuro::BrainShape deepPlan{88, 12, 8, 8, 8};
+    const vkexp::neuro::BrainShape deepPlan{88, 12, 5, 8, 8};
     const std::filesystem::path deepPath = path.parent_path() / "deep.vkng";
     std::vector<vkexp::Genome> deepGenomes(2, vkexp::Genome{vkexp::neuro::makeWeights(deepPlan)});
     deepGenomes.front().weights.front() = 0.5F;
@@ -1798,33 +1797,59 @@ void testStructureShape() {
           "A row of four is its own bounding rectangle, not a quarter of the floor");
 }
 
-void testLatticeAim() {
+void testBodyFrame() {
     namespace lk = vkexp::lattice::kernel;
-    constexpr float threshold = 0.25F;
-    const auto aim = [&](const float x, const float z) {
-        return std::array<int, 2>{lk::latticeAimComponent(0U, x, z, threshold),
-                                  lk::latticeAimComponent(1U, x, z, threshold)};
-    };
 
-    check((aim(0.8F, 0.0F) == std::array<int, 2>{1, 0}), "One drive names one face");
-    check((aim(-0.8F, 0.0F) == std::array<int, 2>{-1, 0}), "And its sign is which way");
+    // Four facings, and turning is a cycle in both directions. A turn that did
+    // not come back where it started after four would be a frame that slowly
+    // drifts away from the world, which no amount of parity would catch: both
+    // sides would drift together.
+    for (std::uint32_t facing = 0; facing < lk::LatticeFacingCount; ++facing) {
+        std::uint32_t right = facing;
+        for (std::uint32_t turn = 0; turn < lk::LatticeFacingCount; ++turn) {
+            right = lk::latticeTurn(right, true);
+        }
+        check(right == facing, "Four turns one way come back to where they started");
+        check(lk::latticeTurn(lk::latticeTurn(facing, true), false) == facing,
+              "and a turn each way cancels");
+        check(lk::latticeTurn(facing, true) != lk::latticeTurn(facing, false),
+              "The sign of the output is which way the agent goes");
+    }
 
-    // Never diagonal: the louder axis takes the whole aim.
-    check((aim(0.9F, 0.4F) == std::array<int, 2>{1, 0}),
-          "Two drives give one face, not a diagonal");
-    check((aim(0.4F, -0.9F) == std::array<int, 2>{0, -1}),
-          "and the louder of the two is the one that wins");
-    check((aim(0.6F, 0.6F) == std::array<int, 2>{1, 0}),
-          "A tie goes to x, the same way the move rule breaks one");
+    // The forward vector is the body's +x turned into the world, and it is a
+    // unit cardinal step for every facing -- never a diagonal and never zero.
+    for (std::uint32_t facing = 0; facing < lk::LatticeFacingCount; ++facing) {
+        const int forwardX = lk::latticeFacingX(facing);
+        const int forwardZ = lk::latticeFacingZ(facing);
+        check(std::abs(forwardX) + std::abs(forwardZ) == 1,
+              "Forward is one cardinal step, whichever way the agent looks");
+        check(forwardX == lk::latticeRotatedX(facing, 1, 0) &&
+                  forwardZ == lk::latticeRotatedZ(facing, 1, 0),
+              "and it is the body's own +x, turned");
+    }
 
-    // Below the dead zone the agent faces nothing at all. There is deliberately
-    // no fallback to the way it last moved: that fallback is what let a parked
-    // agent keep aiming at whatever it had walked into for the rest of a run.
-    check((aim(0.1F, -0.2F) == std::array<int, 2>{0, 0}),
-          "Below the dead zone the agent faces nothing rather than where it came from");
-    check((aim(0.0F, 0.0F) == std::array<int, 2>{0, 0}), "Asking for nothing is facing nothing");
-    check((lk::latticeAimComponent(0U, threshold, 0.0F, threshold) == 0),
-          "Exactly at the threshold is inside the dead zone, as it is for a move");
+    // Rotating and rotating back is the identity. This is the pair the sensors
+    // rely on: the neighbourhood is read body-to-world and the objective is read
+    // world-to-body, so an inverse that was not one would put the task somewhere
+    // the neighbourhood is not.
+    for (std::uint32_t facing = 0; facing < lk::LatticeFacingCount; ++facing) {
+        const std::uint32_t inverse = (lk::LatticeFacingCount - facing) % lk::LatticeFacingCount;
+        for (int x = -2; x <= 2; ++x) {
+            for (int z = -2; z <= 2; ++z) {
+                const int worldX = lk::latticeRotatedX(facing, x, z);
+                const int worldZ = lk::latticeRotatedZ(facing, x, z);
+                check(lk::latticeRotatedX(inverse, worldX, worldZ) == x &&
+                          lk::latticeRotatedZ(inverse, worldX, worldZ) == z,
+                      "Turning a vector into the body frame and back leaves it alone");
+            }
+        }
+    }
+
+    // A rotation and not a reflection: turning preserves lengths, and the left
+    // of the agent stays on its left.
+    check(lk::latticeRotatedX(1u, 1, 0) == -lk::latticeRotatedX(3u, 1, 0) &&
+              lk::latticeRotatedZ(1u, 1, 0) == -lk::latticeRotatedZ(3u, 1, 0),
+          "Opposite turns give opposite directions");
 }
 
 void testLatticeStillness() {
@@ -2066,29 +2091,12 @@ void testLatticeMoveRule() {
     check(lk::latticeAxisStep(0.001F, 0.0F) == 1,
           "A dead zone of zero means an agent moves on every step whatever it thinks");
 
-    // Under Moore all three axes commit at once, which is what makes a diagonal
-    // one step rather than three.
-    const float drives[3] = {0.9F, -0.8F, 0.4F};
-    for (std::uint32_t axis = 0; axis < 3; ++axis) {
-        check(lk::latticeMoveComponent(lk::LatticeNeighborhoodMoore, axis, drives[0], drives[1],
-                                       drives[2], 0.25F) != 0,
-              "Every axis that clears the dead zone moves under Moore");
-    }
-    // Under faces only the loudest does, so the result is always a face step.
-    check(lk::latticeMoveComponent(lk::LatticeNeighborhoodFaces, 0, drives[0], drives[1], drives[2],
-                                   0.25F) == 1 &&
-              lk::latticeMoveComponent(lk::LatticeNeighborhoodFaces, 1, drives[0], drives[1],
-                                       drives[2], 0.25F) == 0 &&
-              lk::latticeMoveComponent(lk::LatticeNeighborhoodFaces, 2, drives[0], drives[1],
-                                       drives[2], 0.25F) == 0,
-          "Only the loudest axis commits under a faces-only neighbourhood");
-    // Ties broken x then y then z, and fixed rather than arbitrary: an arbitrary
-    // tie-break is a divergence between the two implementations that no numeric
-    // tolerance would forgive.
-    check(lk::latticeDominantAxis(0.5F, 0.5F, 0.5F) == 0 &&
-              lk::latticeDominantAxis(0.4F, 0.5F, 0.5F) == 1 &&
-              lk::latticeDominantAxis(0.4F, 0.4F, 0.5F) == 2,
-          "Equal drives break toward x, then y, then z");
+    // The same dead zone reads every command the agent has: a turn is its sign,
+    // and so is the vertical in a world with no gravity. One rule and one
+    // parameter, which is why there is only one place for the two sides to
+    // disagree about it.
+    check(lk::latticeAxisStep(-0.9F, 0.25F) == -1 && lk::latticeAxisStep(0.9F, 0.25F) == 1,
+          "A saturated output commits in the direction of its sign");
 
     check(lk::latticeCellEnterable(lk::LatticeNoOccupant) && !lk::latticeCellEnterable(0) &&
               !lk::latticeCellEnterable(7),
@@ -2124,8 +2132,8 @@ void testLatticeSpawn() {
         check(agent.cell.x != agent.beacon.x || agent.cell.y != agent.beacon.y ||
                   agent.cell.z != agent.beacon.z,
               "Nobody spawns on the beacon, which would solve the world before the first step");
-        check(static_cast<std::uint32_t>(agent.cell.w) == lk::LatticeNeighborCount,
-              "A fresh agent has no heading, which is not the same as heading at neighbour zero");
+        check(static_cast<std::uint32_t>(agent.cell.w) < lk::LatticeFacingCount,
+              "A fresh agent is already looking somewhere: there is no unfacing state");
         occupied.emplace_back(world,
                               lk::latticeCellIndex(agent.cell.x, agent.cell.y, agent.cell.z,
                                                    settings.latticeWidth, settings.latticeHeight));
@@ -2169,7 +2177,7 @@ void testLatticeSensing() {
     std::vector<float> signals{0.0F, 0.75F};
 
     vkexp::AgentState agent{};
-    agent.cell = {2, 2, 2, static_cast<std::int32_t>(lk::LatticeNeighborCount)};
+    agent.cell = {2, 2, 2, 0}; // facing +x
     agent.beacon = {4, 2, 2, 0};
     agent.intent = {2, 2, 2, 0};
 
@@ -2219,19 +2227,35 @@ void testLatticeSensing() {
                   0.0F),
           "A neighbour outside the lattice reads as a wall rather than empty");
 
-    // An agent that has not moved reads zero on all three heading channels,
-    // which is a distinguishable state rather than a direction.
-    check(closeTo(edge[bk::BrainSelfOffset], 0.0F) &&
-              closeTo(edge[bk::BrainSelfOffset + 1], 0.0F) &&
-              closeTo(edge[bk::BrainSelfOffset + 2], 0.0F),
-          "An agent that has never moved reports no heading");
-    agent.cell.w = static_cast<std::int32_t>(lk::latticeNeighborIndex(0, 0, 1));
+    // The self block is two numbers now: whether the last move was refused and
+    // how long it has been standing. There is no heading channel, because in a
+    // body frame the agent faces forward by definition and its absolute
+    // orientation could only ever have carried a constant.
     agent.intent.w = 1;
-    const vkexp::neuro::Inputs headed =
+    const vkexp::neuro::Inputs refused =
         vkexp::sampleAgentInputs(agent, signals, occupancy, settings);
-    check(closeTo(headed[bk::BrainSelfOffset + 2], 1.0F) &&
-              closeTo(headed[bk::BrainSelfOffset + 3], 1.0F),
-          "A heading reads back as the unit step it was, beside the refusal flag");
+    check(closeTo(edge[bk::BrainSelfOffset], 0.0F) && closeTo(refused[bk::BrainSelfOffset], 1.0F),
+          "The self block opens with the refusal flag");
+
+    // And the whole point of the frame: turn the agent and the same world reads
+    // out of different slots. Facing +z, the agent that was in front is now off
+    // to one side, and so is the beacon -- the network sees one arrangement for
+    // what used to be four.
+    agent.cell = {2, 2, 2, 1}; // facing +z
+    agent.intent.w = 0;
+    const vkexp::neuro::Inputs turned =
+        vkexp::sampleAgentInputs(agent, signals, occupancy, settings);
+    const std::uint32_t bodyRight = lk::latticeNeighborIndex(0, 0, -1);
+    check(closeTo(turned[bk::brainNeighborChannelIndex(neighborPlusX,
+                                                       lk::LatticeNeighborOccupied)],
+                  0.0F) &&
+              closeTo(turned[bk::brainNeighborChannelIndex(bodyRight,
+                                                           lk::LatticeNeighborOccupied)],
+                      1.0F),
+          "Turning moves the neighbour from the slot in front to the slot beside");
+    check(closeTo(turned[bk::brainBeaconInputIndex(0)], 0.0F) &&
+              closeTo(turned[bk::brainBeaconInputIndex(2)], -1.0F),
+          "The task direction turns with the agent rather than with the world");
 }
 
 // Two agents asking for one cell, run through the reference. The device side of
@@ -2250,20 +2274,16 @@ void testLatticeContention() {
     const vkexp::neuro::BrainShape brain = vkexp::resolvedBrain(settings);
     const auto stride = static_cast<std::uint32_t>(brain.weightCount());
     std::vector<float> weights(static_cast<std::size_t>(stride) * layout.genomeCount, 0.0F);
-    namespace bk = vkexp::neuro::kernel;
-    const std::size_t moveBias = bk::brainOutputBiasIndex(
-        0U, static_cast<std::uint32_t>(brain.inputCount), brain.packedLayers(),
-        static_cast<std::uint32_t>(brain.outputCount), bk::BrainMoveOutput);
-    weights[moveBias] = 8.0F;           // genome 0 drives +x
-    weights[stride + moveBias] = -8.0F; // genome 1 drives -x
-
+    // No output bias at all: with every weight zero the turn stays under the
+    // threshold and the action lands in the band that means "walk", so each
+    // agent simply steps the way it is pointed. Which way that is, is the
+    // facing in cell.w -- towards each other.
     std::vector<vkexp::AgentState> agents(2);
     for (vkexp::AgentState& agent : agents) {
-        agent.cell.w = static_cast<std::int32_t>(lk::LatticeNeighborCount);
         agent.beacon = {4, 4, 4, 0};
     }
-    agents[0].cell = {1, 2, 2, agents[0].cell.w};
-    agents[1].cell = {3, 2, 2, agents[1].cell.w};
+    agents[0].cell = {1, 2, 2, 0}; // facing +x
+    agents[1].cell = {3, 2, 2, 2}; // facing -x
     for (vkexp::AgentState& agent : agents) {
         agent.intent = {agent.cell.x, agent.cell.y, agent.cell.z, 0};
     }
@@ -2282,8 +2302,8 @@ void testLatticeContention() {
     check(closeTo(agents[1].metrics.w, 1.0F) && closeTo(agents[0].metrics.w, 0.0F),
           "Losing a contested cell is charged as a refusal and winning one is not");
     check(closeTo(agents[0].metrics.z, 1.0F), "A move that worked is charged as one move");
-    check(static_cast<std::uint32_t>(agents[0].cell.w) == lk::latticeNeighborIndex(1, 0, 0),
-          "A move sets the heading to the step it took");
+    check(agents[0].cell.w == 0 && agents[1].cell.w == 2,
+          "A move leaves the facing alone: only a turn changes where an agent looks");
     check(agents[0].intent.w == 0 && agents[1].intent.w == 1,
           "The refusal flag is what the next step reads back as a self input");
 
@@ -2410,14 +2430,11 @@ void testChasmEdge() {
     const vkexp::neuro::BrainShape brain = vkexp::resolvedBrain(settings);
     const auto stride = static_cast<std::uint32_t>(brain.weightCount());
     std::vector<float> weights(static_cast<std::size_t>(stride) * layout.genomeCount, 0.0F);
-    namespace bk = vkexp::neuro::kernel;
-    weights[bk::brainOutputBiasIndex(0U, static_cast<std::uint32_t>(brain.inputCount),
-                                     brain.packedLayers(),
-                                     static_cast<std::uint32_t>(brain.outputCount),
-                                     bk::BrainMoveOutput)] = 8.0F; // drive +x, every step
-
+    // Every weight zero: the turn stays under its threshold and the action lands
+    // in the band that means "walk", so the agent spends every tick stepping the
+    // way it is pointed, which is east at the cliff.
     std::vector<vkexp::AgentState> agents(1);
-    agents[0].cell = {ground - 1, 1, 2, static_cast<std::int32_t>(lk::LatticeNeighborCount)};
+    agents[0].cell = {ground - 1, 1, 2, 0}; // facing +x
     agents[0].beacon = {-1, -1, -1, 0};
     agents[0].intent = {agents[0].cell.x, agents[0].cell.y, agents[0].cell.z, 0};
 
@@ -2451,14 +2468,25 @@ void testChasmEdge() {
           "and the step beyond it is charged as a refusal, like the edge of the lattice");
 
     // Not a special case for the void, and not a wall: give the next column a
-    // bottom and the very same drive walks into it. Without this the test would
-    // pass just as well if stepping east had been forbidden outright.
+    // bottom and the very same walk reaches it. Without this the test would pass
+    // just as well if stepping east had been forbidden outright.
+    //
+    // It takes two ticks, and that is the climbing rule rather than an accident:
+    // the first step meets the block's face and lifts the agent a level in its
+    // own column, holding that face with its feet; the second carries it over
+    // the top. Arriving on top in one step is what the old rule did, and it is
+    // what made building upward impossible -- from the top of your own block
+    // there is nothing in front to build on.
     const int ledgeX = ground + 1;
-    structures[lk::latticeCellIndex(ledgeX, 0, agents[0].cell.z, settings.latticeWidth,
+    const int lane = agents[0].cell.z;
+    structures[lk::latticeCellIndex(ledgeX, 0, lane, settings.latticeWidth,
                                     settings.latticeHeight)] = 1;
     step();
-    check(agents[0].cell.x == ledgeX,
-          "A block placed in the next column turns it into somewhere to go");
+    check(agents[0].cell.x == ground && agents[0].cell.y == 1,
+          "A block in front is climbed rather than stepped onto: the agent rises beside it");
+    step();
+    check(agents[0].cell.x == ledgeX && agents[0].cell.y == 1,
+          "and the step after that carries it over the top");
     check(structures[lk::latticeCellIndex(ledgeX, 0, agents[0].cell.z, settings.latticeWidth,
                                           settings.latticeHeight)] == 1 &&
               agents[0].cell.y == 1,
@@ -2581,7 +2609,7 @@ int main() {
     testTransparencyWeight();
     testLatticeSpawnCapacity();
     testStructureShape();
-    testLatticeAim();
+    testBodyFrame();
     testLatticeStillness();
     testHarvestResource();
     testLatticeAddressing();

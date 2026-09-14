@@ -219,10 +219,10 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                           "means: Chebyshev under Moore, Manhattan under faces.");
     ImGui::TextDisabled("longest journey %u moves", latticeMaximumDistance(state_.settings));
 
-    ImGui::SliderFloat("Move threshold", &state_.settings.moveThreshold, 0.0F, 0.95F, "%.2f");
-    ImGui::SetItemTooltip("How sure a drive has to be before it becomes a step. This is the whole "
-                          "of the decision to stand still: at zero an agent moves every step "
-                          "whatever it thinks, and near one it has to commit.");
+    ImGui::SliderFloat("Turn threshold", &state_.settings.moveThreshold, 0.0F, 0.95F, "%.2f");
+    ImGui::SetItemTooltip("How sure the turn output has to be before the agent pivots. A turn "
+                          "costs the whole tick, so a low threshold is a group that spends its "
+                          "time looking around and a high one is a group that mostly walks.");
 
     if (worldBuilds(state_.settings.worldMode)) {
         if (worldHarvests(state_.settings.worldMode)) {
@@ -467,9 +467,9 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::TextDisabled("time constants %.0f ms .. %.1f s",
                         static_cast<double>(neuro::kernel::BrainTimeConstantMinimum * 1000.0F),
                         static_cast<double>(neuro::kernel::BrainTimeConstantMaximum));
-    ImGui::TextDisabled("%u cells x %u channels, task state, heading and memory",
+    ImGui::TextDisabled("%u cells x %u channels in the body frame, task state and memory",
                         neuro::kernel::BrainNeighborCount, neuro::kernel::BrainNeighborChannels);
-    ImGui::TextDisabled("three move drives, broadcast, build and memory updates");
+    ImGui::TextDisabled("a signed turn, walk or build, broadcast and memory updates");
     ImGui::End();
 
     drawBrainWindow(brain);
@@ -758,9 +758,10 @@ void SimulationUiModule::drawStructureShapes() {
     ImGui::EndTable();
 }
 
-// Why the build attempts ended. Exactly one reason is recorded per agent per
-// step, so these sum to agents times steps and read as a funnel: everything
-// that did not become a block was stopped somewhere, and this says where.
+// What every tick was spent on. Exactly one entry is recorded per agent per
+// step, so these sum to agents times steps: the first three say how the walking
+// went and the rest read as a funnel through the build rules -- everything that
+// did not become a block was stopped somewhere, and this says where.
 void SimulationUiModule::drawBuildOutcomes() {
     const auto count = static_cast<std::size_t>(vkexp::lattice::kernel::LatticeBuildOutcomeCount);
     if (state_.statistics.buildOutcomes.size() < count) {
@@ -769,11 +770,12 @@ void SimulationUiModule::drawBuildOutcomes() {
     const std::size_t worlds = state_.statistics.buildOutcomes.size() / count;
     const std::size_t visible = std::min<std::size_t>(state_.worlds.selectedWorld, worlds - 1);
 
-    ImGui::SeparatorText("Why the builders stopped");
-    static constexpr std::array<const char*, 10> names{
-        "Cooling",    "Unwilling",      "No facing",  "Off the lattice", "Blocked",
-        "No support", "Above frontier", "In the way", "Placed",          "Lost the cell"};
-    std::array<std::uint64_t, 10> total{};
+    ImGui::SeparatorText("What the ticks went on");
+    static constexpr std::array<const char*, vkexp::lattice::kernel::LatticeBuildOutcomeCount>
+        names{"Turning",    "Walking",        "Walled in",  "Cooling",
+              "Off the lattice", "Blocked",   "No support", "Above frontier",
+              "In the way", "Placed",         "Lost the cell"};
+    std::array<std::uint64_t, names.size()> total{};
     std::uint64_t attempts = 0;
     for (std::size_t world = 0; world < worlds; ++world) {
         for (std::size_t reason = 0; reason < count; ++reason) {
@@ -784,7 +786,7 @@ void SimulationUiModule::drawBuildOutcomes() {
         attempts += reason;
     }
     if (attempts == 0) {
-        ImGui::TextDisabled("no build attempts recorded");
+        ImGui::TextDisabled("no ticks recorded");
         return;
     }
 

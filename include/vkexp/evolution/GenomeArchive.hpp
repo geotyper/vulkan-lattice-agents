@@ -61,8 +61,13 @@ struct GenomeArchive {
 // and weights from a 2D run would load and steer nothing. So 4 is the oldest
 // readable version too, which is the only honest thing to say about a file whose
 // every weight now addresses a different sensor.
-inline constexpr std::uint32_t genomeArchiveVersion = 4;
-inline constexpr std::uint32_t genomeArchiveOldestVersion = 4;
+// 5 is the body frame, and is the oldest readable version for the same reason 4
+// was: the output block changed from five world-axis drives to a turn and an
+// action, and the sensor block lost the three heading channels, so a weight from
+// an older file addresses a slot that is no longer there. A file that loads and
+// steers nothing is worse than one that is refused.
+inline constexpr std::uint32_t genomeArchiveVersion = 5;
+inline constexpr std::uint32_t genomeArchiveOldestVersion = 5;
 
 // Writes a versioned little-endian archive, followed by the JSON structure the
 // weights are laid out under. Six numbers in a header can say that a file no

@@ -74,6 +74,56 @@ VKEXP_LATTICE_FN bool latticeWorldHarvests(uint worldMode) {
     return worldMode == LatticeWorldHarvest || worldMode == LatticeWorldChasm;
 }
 
+// --- the body frame ----------------------------------------------------------
+//
+// An agent faces one of the four horizontal cardinals, and that facing is the
+// frame every sense and every action is expressed in. Up and down stay absolute,
+// because gravity is.
+//
+// Facing used to be a consequence rather than a choice: it was whichever way the
+// agent last actually moved, written by the resolve pass. That made it a memory
+// of locomotion -- a refused move left it pointing where the agent was stuck,
+// and an agent that had never moved had no facing at all. Now it is state the
+// agent owns and a turn is an action like any other.
+const uint LatticeFacingCount = 4u;
+
+// Rotate a body-frame horizontal offset into world axes. Facing zero is +x, and
+// each step of the facing turns the frame from +x towards +z.
+VKEXP_LATTICE_FN int latticeRotatedX(uint facing, int bodyX, int bodyZ) {
+    if (facing == 0u) {
+        return bodyX;
+    }
+    if (facing == 1u) {
+        return -bodyZ;
+    }
+    if (facing == 2u) {
+        return -bodyX;
+    }
+    return bodyZ;
+}
+
+VKEXP_LATTICE_FN int latticeRotatedZ(uint facing, int bodyX, int bodyZ) {
+    if (facing == 0u) {
+        return bodyZ;
+    }
+    if (facing == 1u) {
+        return bodyX;
+    }
+    if (facing == 2u) {
+        return -bodyZ;
+    }
+    return -bodyX;
+}
+
+// Straight ahead, as a world-axis step.
+VKEXP_LATTICE_FN int latticeFacingX(uint facing) { return latticeRotatedX(facing, 1, 0); }
+VKEXP_LATTICE_FN int latticeFacingZ(uint facing) { return latticeRotatedZ(facing, 1, 0); }
+
+// One quarter turn. A positive drive turns towards +z, a negative one away.
+VKEXP_LATTICE_FN uint latticeTurn(uint facing, bool positive) {
+    return (facing + (positive ? 1u : LatticeFacingCount - 1u)) % LatticeFacingCount;
+}
+
 const int LatticeNoStructure = 0;
 
 // The ground, stored as blocks rather than assumed. It used to be assumed: both
@@ -178,22 +228,33 @@ VKEXP_LATTICE_FN int latticeResourceY(uint hash, uint lowest, uint highest, uint
 // The order is the order the decide pass tests them in, and it matters: an
 // attempt that fails two tests is filed under the first. Reading the list top
 // to bottom is reading the sequence an agent has to get through.
-const uint LatticeBuildCooling = 0u;    // still inside the build interval
-const uint LatticeBuildUnwilling = 1u;  // the build output was under threshold
-const uint LatticeBuildNoFacing = 2u;   // no cardinal heading to build against
-const uint LatticeBuildOffLattice = 3u; // the face points out of the world
-const uint LatticeBuildBlocked = 4u;    // a block already stands there
-const uint LatticeBuildUnsupported = 5u; // nothing under it, and no side support
-const uint LatticeBuildAboveFrontier = 6u; // too far above the local foundation
-const uint LatticeBuildInTheWay = 7u;   // an agent is standing in the cell
+// What one agent's tick was spent on, counted per world over a generation.
+// Exactly one of these is recorded per agent per step, so they sum to agents
+// times steps and the shape of that sum says what the group is actually doing.
+//
+// It covers walking as well as building now, because a tick is one action: a
+// turn, a step, or a placement. That closes a hole the old funnel had -- it
+// explained refused builds in detail and said nothing at all about an agent
+// that simply stood there, which turned out to be most of what was happening.
+//
+// Two of the old entries are gone rather than renamed. "No facing" cannot occur
+// when facing is state the agent owns, and "unwilling" cannot occur when not
+// wanting to build means walking instead of standing still. Both were failure
+// modes the body frame removes rather than fixes.
+const uint LatticeActionTurning = 0u;   // the tick was spent turning in place
+const uint LatticeActionWalking = 1u;   // a step forward, up a wall, or down
+const uint LatticeActionWalled = 2u;    // the step could not be taken at all
+const uint LatticeBuildCooling = 3u;    // wanted to build, still cooling, walked
+const uint LatticeBuildOffLattice = 4u; // the cell in front is outside the world
+const uint LatticeBuildBlocked = 5u;    // a block already stands there
+const uint LatticeBuildUnsupported = 6u;   // nothing under it, and no side support
+const uint LatticeBuildAboveFrontier = 7u; // too far above the local foundation
+const uint LatticeBuildInTheWay = 8u;      // an agent is standing in the cell
 // The last two are recorded by the resolve pass rather than the decide pass,
-// because whether a bid won is not known until every bid is in. Without them
-// the funnel stopped at "a bid was placed" and how many became blocks had to be
-// divided out of the cooldown count, which is arithmetic standing in for a
-// measurement.
-const uint LatticeBuildPlaced = 8u;     // the bid won and a block stands there
-const uint LatticeBuildContested = 9u;  // the bid was placed and lost
-const uint LatticeBuildOutcomeCount = 10u;
+// because whether a bid won is not known until every bid is in.
+const uint LatticeBuildPlaced = 9u;    // the bid won and a block stands there
+const uint LatticeBuildContested = 10u; // the bid was placed and lost
+const uint LatticeBuildOutcomeCount = 11u;
 
 // An empty cell, and a cell nobody has bid for. Two sentinels and not one: the
 // occupancy grid stores agent indices and -1 for empty, while the bid grid is
@@ -296,17 +357,16 @@ VKEXP_LATTICE_FN uint latticeMaximumDistance(uint neighborhood, uint width, uint
     return latticeStepDistance(neighborhood, spanX, spanY, spanZ);
 }
 
-// --- turning three drives into one move --------------------------------------
+// --- reading a signed output as a decision -----------------------------------
 //
-// The brain produces one output per axis rather than one per direction. Twenty
-// seven directions would need twenty seven outputs and an argmax over them; three
-// signed drives with a dead zone span the same set of moves, cost three output
-// slots, and leave "stay put" reachable by simply not committing -- which a
-// softmax over directions can only approximate.
+// Every command the agent has is one signed output read through a dead zone: a
+// turn is left, nothing or right, and the action is walk or build. Two outputs
+// where the world-axis scheme needed five, because in a body frame the axes are
+// not a choice the network has to make -- forward is wherever it is looking.
 //
-// The dead zone is the whole of the decision to stand still, so it is a
-// parameter and not a constant: at zero an agent moves on every step whatever it
-// thinks, and near one it has to be sure before it does.
+// The dead zone is the whole of the decision not to commit, so it is a parameter
+// and not a constant: at zero an agent turns on every step whatever it thinks,
+// and near one it has to be sure before it does.
 const float LatticeMoveThresholdDefault = 0.25f;
 
 VKEXP_LATTICE_MATH_FN int latticeAxisStep(float drive, float threshold) {
@@ -317,48 +377,6 @@ VKEXP_LATTICE_MATH_FN int latticeAxisStep(float drive, float threshold) {
         return -1;
     }
     return 0;
-}
-
-// Which axis a face-only mover commits to when more than one drive clears the
-// dead zone: the loudest, ties broken x then y then z. A fixed order and not a
-// random one, because an arbitrary tie-break is a source of divergence between
-// the two implementations that no amount of numeric tolerance would forgive.
-VKEXP_LATTICE_MATH_FN uint latticeDominantAxis(float driveX, float driveY, float driveZ) {
-    const float magnitudeX = driveX < 0.0f ? -driveX : driveX;
-    const float magnitudeY = driveY < 0.0f ? -driveY : driveY;
-    const float magnitudeZ = driveZ < 0.0f ? -driveZ : driveZ;
-    if (magnitudeX >= magnitudeY && magnitudeX >= magnitudeZ) {
-        return 0u;
-    }
-    return magnitudeY >= magnitudeZ ? 1u : 2u;
-}
-
-// Which cardinal face an agent is turned towards, one axis at a time. The two
-// aim drives are read the way a move drive is -- dead zone, dominant axis, sign
-// -- so a policy that has learned to steer has already learned to aim.
-//
-// Below the dead zone the agent faces nothing, and this used to fall back to the
-// way it last moved. That fallback was a compatibility patch and it let the old
-// failure back in through the side door: a parked agent with no opinion kept
-// aiming at whatever it had walked into, forever. Aim is a decision now, and not
-// deciding is not building.
-//
-// Never diagonal: one of the two axes wins, and a block goes against a face.
-VKEXP_LATTICE_MATH_FN int latticeAimComponent(uint axis, float driveX, float driveZ,
-                                              float threshold) {
-    const int stepX = latticeAxisStep(driveX, threshold);
-    const int stepZ = latticeAxisStep(driveZ, threshold);
-    if (stepX == 0 && stepZ == 0) {
-        return 0;
-    }
-    // A vertical drive of zero can never be the loudest of the three here,
-    // because reaching this point means one of the other two cleared the dead
-    // zone -- so the shared tie-break decides between x and z alone.
-    const uint dominant = latticeDominantAxis(driveX, 0.0f, driveZ);
-    if (axis == 0u) {
-        return dominant == 0u ? stepX : 0;
-    }
-    return dominant == 0u ? 0 : stepZ;
 }
 
 // How long an agent has to stand still before the stillness input saturates.
@@ -378,24 +396,6 @@ const float LatticeStillnessSpan = 48.0f;
 
 VKEXP_LATTICE_MATH_FN float latticeStillness(float stillTicks) {
     return clamp(stillTicks / LatticeStillnessSpan, 0.0f, 1.0f);
-}
-
-// The move one axis contributes, given all three drives and the neighbourhood.
-// Written as one function of an axis index rather than three near-copies so the
-// face-only reduction cannot be applied to two axes and forgotten on the third.
-VKEXP_LATTICE_MATH_FN int latticeMoveComponent(uint neighborhood, uint axis, float driveX,
-                                               float driveY, float driveZ, float threshold) {
-    if (neighborhood == LatticeNeighborhoodFaces &&
-        axis != latticeDominantAxis(driveX, driveY, driveZ)) {
-        return 0;
-    }
-    if (axis == 0u) {
-        return latticeAxisStep(driveX, threshold);
-    }
-    if (axis == 1u) {
-        return latticeAxisStep(driveY, threshold);
-    }
-    return latticeAxisStep(driveZ, threshold);
 }
 
 // --- who gets the cell -------------------------------------------------------

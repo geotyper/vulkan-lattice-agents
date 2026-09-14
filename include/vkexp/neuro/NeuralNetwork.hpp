@@ -29,7 +29,7 @@ struct Topology {
     static constexpr std::size_t hiddenLayerCount = kernel::BrainHiddenLayerCapacity;
     // What a world gets when it does not ask for anything else.
     static constexpr std::size_t defaultHiddenCount = kernel::BrainDefaultHiddenWidth;
-    static constexpr std::size_t moveOutputCount = kernel::BrainMoveOutputCount;
+    static constexpr std::size_t turnOutputCount = kernel::BrainTurnOutputCount;
     static constexpr std::size_t actuatorOutputCount = kernel::BrainActuatorOutputCount;
     static constexpr std::size_t outputCount = kernel::BrainOutputCapacity;
     // The longest genome the capacity can produce: every neuron in one layer.
@@ -47,7 +47,7 @@ struct Topology {
     static constexpr std::size_t selfOffset = kernel::BrainSelfOffset;
     static constexpr std::size_t recurrentInputOffset = kernel::BrainRecurrentInputOffset;
     static constexpr std::size_t signalIntensityOutput = kernel::BrainSignalIntensityOutput;
-    static constexpr std::size_t buildOutput = kernel::BrainBuildOutput;
+    static constexpr std::size_t actionOutput = kernel::BrainActionOutput;
     static constexpr std::size_t recurrentOutputOffset = kernel::BrainRecurrentOutputOffset;
 };
 // A world selects an active network inside the fixed-capacity genome. Keeping

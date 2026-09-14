@@ -346,10 +346,9 @@ BrainDescription describeBrain(const BrainShape shape, const std::string_view ne
         description.outputs.push_back(
             vectorBlock(std::move(name), offset, std::min(count, outputCount - offset)));
     };
-    addOutput("move", bk::BrainMoveOutput, bk::BrainMoveOutputCount);
+    addOutput("turn", bk::BrainTurnOutput, bk::BrainTurnOutputCount);
+    addOutput("action", bk::BrainActionOutput, bk::BrainActionOutputCount);
     addOutput("signal", bk::BrainSignalIntensityOutput, bk::BrainSignalOutputCount);
-    addOutput("build", bk::BrainBuildOutput, bk::BrainBuildOutputCount);
-    addOutput("face", bk::BrainFaceOutput, bk::BrainFaceOutputCount);
     addOutput("memory_out", bk::BrainRecurrentOutputOffset, bk::BrainRecurrentCount);
 
     // The genome, block by block, in the order it is laid out. Offsets come from

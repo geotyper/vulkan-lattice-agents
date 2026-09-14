@@ -64,14 +64,10 @@ void main() {
                                                   params.latticeWidth, params.latticeHeight);
             occupancy[worldBase + vacated] = LatticeNoOccupant;
             occupancy[worldBase + wanted] = int(id);
-            const int movedX = agent.intent.x - agent.cell.x;
-            const int movedY = agent.intent.y - agent.cell.y;
-            const int movedZ = agent.intent.z - agent.cell.z;
-            // Pure vertical climbing keeps the face the agent was holding as
-            // its facing, so it can continue upward or add to that column.
-            if (!latticeWorldBuilds(params.worldMode) || movedX != 0 || movedZ != 0) {
-                agent.cell.w = int(latticeNeighborIndex(movedX, movedY, movedZ));
-            }
+            // cell.w is untouched: facing is state the agent owns and only a
+            // turn changes it. A move that rewrote it would mean an agent could
+            // never walk one way while looking another, and climbing a wall is
+            // exactly that.
             agent.cell.xyz = agent.intent.xyz;
             moved = true;
         } else {

@@ -52,34 +52,42 @@ const uint BrainNeighborChannels = 4u;
 // would make a population unloadable across worlds -- the same trade the
 // neighbourhood block already makes for the movement setting.
 const uint BrainBeaconInputCount = 6u;
-// Heading as a unit vector, whether the last move was refused, and how long the
-// agent has been standing still. The heading is fed back rather than kept
-// implicit because a move is chosen in lattice axes and not relative to a
-// facing: without this the network has no way to know which way it was already
-// going.
+// Whether the last action was refused, and how long the agent has been standing
+// still. The stillness channel is a ramp rather than a flag, and that is the
+// whole of why it is worth a slot. See LatticeStillnessSpan.
 //
-// The stillness channel is a ramp rather than a flag, and that is the whole of
-// why it is worth a slot. See LatticeStillnessSpan.
-const uint BrainSelfInputCount = 5u;
+// The heading used to be here as a unit vector, because a move was chosen in
+// lattice axes and the network had no other way to know which way it was
+// already going. In a body frame it is not information at all: the agent faces
+// forward by definition, and everything it senses is measured from there, so
+// its absolute orientation is unobservable and cannot matter. Three slots that
+// could only ever have carried a constant.
+const uint BrainSelfInputCount = 2u;
 const uint BrainRecurrentCount = 2u; // memory cells, fed back as inputs
 
-// One drive per axis rather than one per direction. Twenty-seven directions
-// would need twenty-seven outputs and an argmax over them; three signed drives
-// with a dead zone span the same moves, cost three slots, and leave "stay put"
-// reachable by not committing. See LatticeKernel.inl for how a drive becomes a
-// step.
-const uint BrainMoveOutputCount = 3u;
+// Two actuators and a voice, where there used to be six actuators.
+//
+// Turn is one signed drive with a dead zone, not two positive ones. The dead
+// zone is the point: "keep going straight" has to be what an agent gets by not
+// committing, exactly as "stay put" used to be. Two positive outputs would make
+// straight a conjunction -- both quiet at once -- which is harder to hold and
+// drifts. They would also need a rule for what happens when both fire, and an
+// arbitrary rule is one more thing two implementations have to agree on.
+const uint BrainTurnOutputCount = 1u;
+// One output, two actions, and no third: under the threshold the agent steps
+// forward, over it the agent builds in front of itself. Standing still is not
+// in the set at all, and that is deliberate. It used to be reachable by not
+// committing on any axis, which made "the network declined to act" and "the
+// network was not asked" the same state -- invisible in the counters, and
+// exactly what agents that froze were doing. Now doing nothing is walking.
+//
+// It also puts the build/step alternation on a single value crossing a
+// threshold, which is what a tower is: build, climb, build, climb. That
+// sequence had to be coordinated across five continuous outputs before.
+const uint BrainActionOutputCount = 1u;
 const uint BrainSignalOutputCount = 1u;
-const uint BrainBuildOutputCount = 1u;
-// Where to build, as two horizontal drives read exactly like the move drives.
-// Aim used to be a side effect of walking: the facing was whichever way the
-// agent last actually moved, so a refused move left it aimed where it was
-// stuck, and an agent that had never moved could not build at all. Nothing in
-// the network could change it without giving up the cell it was standing in.
-// Two outputs make aim a decision rather than a memory of locomotion.
-const uint BrainFaceOutputCount = 2u;
-const uint BrainActuatorOutputCount = BrainMoveOutputCount + BrainSignalOutputCount +
-                                      BrainBuildOutputCount + BrainFaceOutputCount;
+const uint BrainActuatorOutputCount =
+    BrainTurnOutputCount + BrainActionOutputCount + BrainSignalOutputCount;
 
 // Hidden neurons in total, across however many layers there are, and how many
 // layers there may be. Both are compile-time because both size arrays: the
@@ -114,10 +122,9 @@ const uint BrainSelfOffset = BrainBeaconOffset + BrainBeaconInputCount;
 const uint BrainRecurrentInputOffset = BrainSelfOffset + BrainSelfInputCount;
 const uint BrainInputCapacity = BrainRecurrentInputOffset + BrainRecurrentCount;
 
-const uint BrainMoveOutput = 0u; // three consecutive channels, x then y then z
-const uint BrainSignalIntensityOutput = BrainMoveOutputCount;
-const uint BrainBuildOutput = BrainSignalIntensityOutput + BrainSignalOutputCount;
-const uint BrainFaceOutput = BrainBuildOutput + BrainBuildOutputCount; // x then z
+const uint BrainTurnOutput = 0u;
+const uint BrainActionOutput = BrainTurnOutputCount;
+const uint BrainSignalIntensityOutput = BrainActionOutput + BrainActionOutputCount;
 const uint BrainRecurrentOutputOffset = BrainActuatorOutputCount;
 const uint BrainOutputCapacity = BrainActuatorOutputCount + BrainRecurrentCount;
 

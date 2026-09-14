@@ -639,24 +639,20 @@ void runContentionProbe(vkexp::HeadlessComputeContext& context) {
     const vkexp::neuro::BrainShape brain = vkexp::resolvedBrain(settings);
     std::vector<float> weights(static_cast<std::size_t>(brain.weightCount()) * layout.genomeCount,
                                0.0F);
-    const std::size_t moveBias = vkexp::neuro::kernel::brainOutputBiasIndex(
-        0U, static_cast<std::uint32_t>(brain.inputCount), brain.packedLayers(),
-        static_cast<std::uint32_t>(brain.outputCount), vkexp::neuro::kernel::BrainMoveOutput);
-    weights[moveBias] = 8.0F;
-    weights[static_cast<std::size_t>(brain.weightCount()) + moveBias] = -8.0F;
 
     const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
     std::vector<vkexp::AgentState> agents(layout.agentCount());
     const vkexp::Int4 beacon = vkexp::lattice::beaconCell(settings, 0);
     for (std::uint32_t index = 0; index < agents.size(); ++index) {
         agents[index].beacon = beacon;
-        agents[index].cell.w =
-            static_cast<std::int32_t>(vkexp::lattice::kernel::LatticeNeighborCount);
     }
-    // Agent 0 at x=0 and agent 1 at x=2, both on the same row: the cell at x=1
-    // is the one they both want, and the one that is free.
-    agents[0].cell = {0, 2, 2, agents[0].cell.w};
-    agents[1].cell = {2, 2, 2, agents[1].cell.w};
+    // Agent 0 at x=0 and agent 1 at x=2, both on the same row and pointed at
+    // each other: the cell at x=1 is the one they both want, and the one that
+    // is free. No weights are needed to say so -- with every output at zero the
+    // turn stays under its threshold and the action lands in the band that
+    // means "walk", so each agent steps the way it faces.
+    agents[0].cell = {0, 2, 2, 0}; // facing +x
+    agents[1].cell = {2, 2, 2, 2}; // facing -x
     for (vkexp::AgentState& agent : agents) {
         agent.intent = {agent.cell.x, agent.cell.y, agent.cell.z, 0};
     }
@@ -731,7 +727,29 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
 
     const vkexp::lattice::PopulationLayout layout{4, 4, 1};
     const vkexp::neuro::BrainShape brain = vkexp::resolvedBrain(settings);
-    const std::vector<float> weights = makeWeights(brain, layout.genomeCount, 0xB10CU);
+    std::vector<float> weights = makeWeights(brain, layout.genomeCount, 0xB10CU);
+    // The turn output, damped. Random weights saturate every output, and a
+    // saturated turn means an agent that pivots on the spot for the whole probe
+    // and never reaches a build rule -- which is a real policy an evolved
+    // population may adopt, but not one this probe can compare placements
+    // through. Damped rather than zeroed so turns still happen and the facing
+    // still has to agree on both sides.
+    {
+        namespace bk = vkexp::neuro::kernel;
+        const auto inputs = static_cast<std::uint32_t>(brain.inputCount);
+        const std::uint32_t layers = brain.packedLayers();
+        const auto outputs = static_cast<std::uint32_t>(brain.outputCount);
+        const auto stride = static_cast<std::size_t>(brain.weightCount());
+        for (std::uint32_t genome = 0; genome < layout.genomeCount; ++genome) {
+            const std::size_t base = static_cast<std::size_t>(genome) * stride;
+            for (std::uint32_t hidden = 0; hidden < bk::brainLastHiddenSize(layers); ++hidden) {
+                weights[base + bk::brainOutputWeightIndex(0U, inputs, layers, bk::BrainTurnOutput,
+                                                          hidden)] *= 0.05F;
+            }
+            weights[base + bk::brainOutputBiasIndex(0U, inputs, layers, outputs,
+                                                    bk::BrainTurnOutput)] *= 0.05F;
+        }
+    }
 
     std::vector<vkexp::AgentState> expected = vkexp::lattice::makeInitialAgents(settings, layout);
     const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
@@ -783,10 +801,11 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
     std::vector<std::uint32_t> outcomes(
         static_cast<std::size_t>(layout.worldCount()) *
         vkexp::lattice::kernel::LatticeBuildOutcomeCount);
-    static constexpr std::array<const char*, 10> reasonNames{
-        "cooling",         "unwilling", "no facing",  "off the lattice", "blocked",
-        "unsupported",     "above the frontier",      "in the way",      "placed",
-        "contested"};
+    static constexpr std::array<const char*,
+                                vkexp::lattice::kernel::LatticeBuildOutcomeCount>
+        reasonNames{"turning",     "walking",   "walled in",          "cooling",
+                    "off the lattice", "blocked", "unsupported",      "above the frontier",
+                    "in the way",  "placed",    "contested"};
 
     std::vector<std::uint64_t> frontierRefusals(layout.worldCount(), 0);
     LatticeHarness harness{context, settings, layout, weights};
@@ -861,9 +880,18 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
             };
             for (std::size_t index = 0; index < expected.size(); ++index) {
                 const vkexp::Int4 at = expected[index].cell;
+                // The five faces, and the wall in front of the feet: a climber
+                // hangs on the block it is looking at, diagonally below it, and
+                // touches nothing else. Leaving that case out here would make
+                // this check fail every climb.
+                const auto facing = static_cast<std::uint32_t>(at.w) %
+                                    vkexp::lattice::kernel::LatticeFacingCount;
                 const bool held = solid(at.x, at.y - 1, at.z) || solid(at.x - 1, at.y, at.z) ||
                                   solid(at.x + 1, at.y, at.z) || solid(at.x, at.y, at.z - 1) ||
-                                  solid(at.x, at.y, at.z + 1);
+                                  solid(at.x, at.y, at.z + 1) ||
+                                  solid(at.x + vkexp::lattice::kernel::latticeFacingX(facing),
+                                        at.y - 1,
+                                        at.z + vkexp::lattice::kernel::latticeFacingZ(facing));
                 require(held, where + " agent " + std::to_string(index) + " is standing at (" +
                                   std::to_string(at.x) + ", " + std::to_string(at.y) + ", " +
                                   std::to_string(at.z) + ") with nothing to hold it");
@@ -1233,12 +1261,13 @@ void runGenomeAddressingProbe(vkexp::HeadlessComputeContext& context) {
             0U, static_cast<std::uint32_t>(brain.inputCount), brain.packedLayers(),
             static_cast<std::uint32_t>(brain.outputCount), output);
     };
-    // Genome 0 drives +x, genome 1 drives -y. Under a faces-only neighbourhood
-    // each of those is a single unambiguous step, so the resulting cell names
-    // which genome the agent actually read.
-    weights[biasIndex(vkexp::neuro::kernel::BrainMoveOutput)] = 8.0F;
+    // Genome 0 walks forward and genome 1 sinks: in a world with no gravity the
+    // action output spends its negative end on the vertical, so a saturated
+    // negative bias there is an unambiguous step down while an untouched genome
+    // steps the way it faces. The resulting cell names which genome the agent
+    // actually read.
     weights[static_cast<std::size_t>(brain.weightCount()) +
-            biasIndex(vkexp::neuro::kernel::BrainMoveOutput + 1U)] = -8.0F;
+            biasIndex(vkexp::neuro::kernel::BrainActionOutput)] = -8.0F;
 
     std::vector<vkexp::AgentState> agents(layout.agentCount());
     const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
@@ -1251,9 +1280,7 @@ void runGenomeAddressingProbe(vkexp::HeadlessComputeContext& context) {
         // genome was read, and a blocked step would hide the answer.
         const std::uint32_t genome = index / layout.trialsPerGenome;
         agents[index].cell = {1, static_cast<std::int32_t>(1 + genome),
-                              static_cast<std::int32_t>(genome),
-                              static_cast<std::int32_t>(
-                                  vkexp::lattice::kernel::LatticeNeighborCount)};
+                              static_cast<std::int32_t>(genome), 0}; // facing +x
         agents[index].intent = {agents[index].cell.x, agents[index].cell.y, agents[index].cell.z,
                                 0};
     }
