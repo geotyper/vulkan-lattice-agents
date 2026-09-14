@@ -73,7 +73,23 @@ const uint BrainRecurrentCount = 2u; // memory cells, fed back as inputs
 // straight a conjunction -- both quiet at once -- which is harder to hold and
 // drifts. They would also need a rule for what happens when both fire, and an
 // arbitrary rule is one more thing two implementations have to agree on.
-const uint BrainTurnOutputCount = 1u;
+// Two outputs for one turn, and they have to agree: both over the threshold
+// turns one way, both under the negative one turns the other, and any
+// disagreement -- including one of them sitting in the dead zone -- is no turn.
+//
+// One output could say the same thing in half the genes, and did. The reason
+// for two is what they do to a network nobody has trained yet. A tanh output
+// saturates on almost any input, so a single one clears the dead zone on almost
+// every tick: a fresh population spent 93% of its ticks pivoting on the spot at
+// a threshold of 0.25 and 63% at 0.7, which is a generation spent looking around
+// rather than walking. Two outputs that must agree have to saturate the same way
+// at the same time, and two fresh outputs are near enough independent that this
+// roughly squares the chance.
+//
+// What it does not do is make turning harder for a policy that wants to turn: a
+// network that has learned to steer simply drives both outputs together. It only
+// makes turning rare by accident, which is the thing that was wrong.
+const uint BrainTurnOutputCount = 2u;
 // One output, two actions, and no third: under the threshold the agent steps
 // forward, over it the agent builds in front of itself. Standing still is not
 // in the set at all, and that is deliberate. It used to be reachable by not

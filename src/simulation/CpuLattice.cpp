@@ -182,10 +182,13 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
         // lattice_step.comp -- a turn ends the tick, so pointing somewhere else
         // costs a tick per ninety degrees.
         const auto facing = static_cast<std::uint32_t>(agent.cell.w) % kern::LatticeFacingCount;
-        // Sign, not two outputs, read through the same dead zone as everything
-        // else: not turning is a decision and not a rounding.
-        const int turn =
-            kern::latticeAxisStep(output[brain::BrainTurnOutput], settings.turnThreshold);
+        // Two outputs that have to agree, read through the same dead zone as
+        // everything else. Sign and not a left/right pair: the two turns are one
+        // axis, and a network that had to learn "not both at once" would be
+        // learning the encoding rather than the task.
+        const int turn = kern::latticeTurnStep(output[brain::BrainTurnOutput],
+                                               output[brain::BrainTurnOutput + 1],
+                                               settings.turnThreshold);
         const bool turning = turn != 0;
         if (turning) {
             agent.cell.w = static_cast<std::int32_t>(kern::latticeTurn(facing, turn > 0));

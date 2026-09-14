@@ -263,8 +263,8 @@ void testNeuralNetworkContract() {
           "The input vector has one slot per cell of the lattice neighbourhood");
     check(kernel::BrainNeighborChannels == 4,
           "A neighbour reads as occupied, a wall, a block and broadcasting");
-    check(kernel::BrainTurnOutputCount == 1 && kernel::BrainActionOutputCount == 1,
-          "Turning is one signed output and acting is one thresholded output");
+    check(kernel::BrainTurnOutputCount == 2 && kernel::BrainActionOutputCount == 1,
+          "Turning is two signed outputs that must agree, acting is one thresholded output");
 
     // The sensor blocks must tile the input vector without gaps or overlaps.
     check(kernel::BrainNeighborOffset == 0, "The neighbourhood block starts the input vector");
@@ -372,7 +372,7 @@ void testBrainForwardPass() {
     // neuron layer and a widening plan are where an off-by-one in a source count
     // shows up as something other than a rounding difference.
     const std::array<Case, 6> cases{{
-        {vkexp::neuro::defaultBrainShape, "the default 78 -> 20 -> 5"},
+        {vkexp::neuro::defaultBrainShape, "the default 78 -> 20 -> 6"},
         {{57, 20, 5}, "a trimmed 57 -> 20 -> 5"},
         {{8, 4, 5}, "a small 8 -> 4 -> 5"},
         {{4, 1, 5}, "a single hidden neuron"},
@@ -1844,6 +1844,23 @@ void testBodyFrame() {
             }
         }
     }
+
+    // The turn needs both outputs to agree, which is the whole reason there are
+    // two of them. Tested at the corners rather than sampled: the interesting
+    // cases are the disagreements, and there are only a few of them.
+    const float threshold = 0.25F;
+    check(lk::latticeTurnStep(0.9F, 0.9F, threshold) == 1 &&
+              lk::latticeTurnStep(-0.9F, -0.9F, threshold) == -1,
+          "Two outputs that agree turn the agent the way they agree on");
+    check(lk::latticeTurnStep(0.9F, -0.9F, threshold) == 0 &&
+              lk::latticeTurnStep(-0.9F, 0.9F, threshold) == 0,
+          "Two that point opposite ways cancel");
+    check(lk::latticeTurnStep(0.9F, 0.0F, threshold) == 0 &&
+              lk::latticeTurnStep(0.0F, -0.9F, threshold) == 0,
+          "and one that is sure while the other is undecided is not agreement either");
+    check(lk::latticeTurnStep(0.0F, 0.0F, threshold) == 0, "Two silences are a silence");
+    check(lk::latticeTurnStep(threshold, threshold, threshold) == 0,
+          "Exactly at the threshold is inside the dead zone, for both of them");
 
     // A rotation and not a reflection: turning preserves lengths, and the left
     // of the agent stays on its left.

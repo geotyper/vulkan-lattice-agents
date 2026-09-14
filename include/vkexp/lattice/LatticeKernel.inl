@@ -373,14 +373,14 @@ VKEXP_LATTICE_FN uint latticeMaximumDistance(uint neighborhood, uint width, uint
 // and not a constant: at zero an agent turns on every step whatever it thinks,
 // and near one it has to be sure before it does.
 //
-// Wide by default, which the world-axis scheme did not need. A turn costs the
-// whole tick, and an output that saturates clears a narrow dead zone on almost
-// any input -- at 0.25 a fresh population spends 93% of every generation
-// pivoting on the spot and never reaches a wall to climb. It cannot simply be
-// pushed to one either: turning is also how an agent gets out of a corner, and
-// the wider the zone the longer it is stuck against one. 0.7 is where the two
-// costs met in a four-generation sweep of the construction world.
-const float LatticeTurnThresholdDefault = 0.70f;
+// Narrow, and it can be narrow because the turn needs two outputs to agree --
+// see BrainTurnOutputCount. A single output had to be held back by a wide dead
+// zone or a fresh population spun on the spot for 93% of its ticks, and widening
+// it traded one stall for another: the wider the zone, the longer an agent stays
+// pressed against a wall it cannot turn away from. Agreement suppresses the
+// accidental turn without touching the deliberate one, so the zone goes back to
+// asking only that the network mean it.
+const float LatticeTurnThresholdDefault = 0.25f;
 
 VKEXP_LATTICE_MATH_FN int latticeAxisStep(float drive, float threshold) {
     if (drive > threshold) {
@@ -390,6 +390,17 @@ VKEXP_LATTICE_MATH_FN int latticeAxisStep(float drive, float threshold) {
         return -1;
     }
     return 0;
+}
+
+// The turn, which two outputs have to agree on. Written as equality rather than
+// as a chain of cases because that is what it is: both saying right is right,
+// both saying left is left, both saying nothing is nothing, and every remaining
+// pair disagrees and so is nothing too. See BrainTurnOutputCount for why a turn
+// is the one command that costs two outputs.
+VKEXP_LATTICE_MATH_FN int latticeTurnStep(float voteA, float voteB, float threshold) {
+    const int a = latticeAxisStep(voteA, threshold);
+    const int b = latticeAxisStep(voteB, threshold);
+    return a == b ? a : 0;
 }
 
 // How long an agent has to stand still before the stillness input saturates.

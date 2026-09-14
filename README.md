@@ -26,10 +26,10 @@ logical world.
 
 ```
 Lattice:    32x32x16 = 16384 cells per world, Moore (26)
-Brain:      78 -> 20 -> 5
+Brain:      78 -> 20 -> 6
 Trial:      900 steps = 15.0 s at 60.0 Hz
 Population: 512 genomes x 4 trials = 2048 agents in 172 lattices
-Movement:   turn threshold 0.70, beacon reached within 1 cell(s)
+Movement:   turn threshold 0.25, beacon reached within 1 cell(s)
 ```
 
 - 512 genomes, each evaluated in four trials (2048 GPU agents);
@@ -48,12 +48,12 @@ Movement:   turn threshold 0.70, beacon reached within 1 cell(s)
   been standing still. No heading channel -- in a body frame the agent faces
   forward by definition;
 - two recurrent memory cells fed back, 2 inputs;
-- `78 inputs -> 20 tanh neurons -> 5 outputs` by default, with the hidden layers
+- `78 inputs -> 20 tanh neurons -> 6 outputs` by default, with the hidden layers
   configurable from the Brain window: up to three of them, 32 neurons in total;
 - every hidden neuron holds its own state and a time constant that is evolved,
   recomputed from the inputs each step, or pinned to the step, so a memory is
   measured in seconds and can be held until something says to let go;
-- outputs are a signed turn, one action, one broadcast intensity, and the two
+- outputs are two turn votes, one action, one broadcast intensity, and the two
   recurrent cells. A tick is one of three things: a quarter turn in place, a
   step forward, or a block placed in the cell in front. Standing still is not
   expressible;
@@ -173,9 +173,19 @@ beacon is, and because a population evolved under one loads into the other.
 An agent has a facing, and every command it has is read in that frame. Three
 things can happen in a tick, in this order:
 
-1. **A turn.** One signed output, read through a dead zone: above the threshold
-   it pivots a quarter turn one way, below the negative threshold the other, and
-   the tick ends there. Pointing somewhere else costs a tick per ninety degrees.
+1. **A turn.** Two signed outputs that have to agree, each read through a dead
+   zone: both above the threshold pivots a quarter turn one way, both below the
+   negative threshold the other, and any disagreement is no turn. The tick ends
+   there either way, so pointing somewhere else costs a tick per ninety degrees.
+
+   Two outputs rather than one, for what they do to a network nobody has
+   trained. A tanh output saturates on almost any input, so one of them clears
+   the dead zone nearly every tick: a fresh population spent 93% of its ticks
+   pivoting on the spot. Holding it back with a wide dead zone traded one stall
+   for another -- the wider the zone, the longer an agent stays pressed against
+   a wall it cannot turn away from. Agreement suppresses the accidental turn and
+   leaves the deliberate one alone, since a policy that has learned to steer
+   simply drives both outputs together.
 2. **A block.** If the action output is above the build threshold, the agent
    places one in the cell directly in front of it, at its own level.
 3. **A step forward.** Anything else. Standing still is not expressible, which
@@ -512,8 +522,8 @@ vklat_headless --neuron-model gated --describe-brain brain.json
 
 ```json
 {
-  "inputs_count": 78, "hidden_count": 20, "outputs_count": 5,
-  "weight_count": 3285, "neuron_model": "gated",
+  "inputs_count": 78, "hidden_count": 20, "outputs_count": 6,
+  "weight_count": 3306, "neuron_model": "gated",
   "inputs": [
     { "name": "neighbourhood", "offset": 0, "count": 68, "rows": 17, "columns": 4 },
     { "name": "task", "offset": 68, "count": 6 },
@@ -521,10 +531,10 @@ vklat_headless --neuron-model gated --describe-brain brain.json
     { "name": "memory_in", "offset": 76, "count": 2 }
   ],
   "outputs": [
-    { "name": "turn", "offset": 0, "count": 1 },
-    { "name": "action", "offset": 1, "count": 1 },
-    { "name": "signal", "offset": 2, "count": 1 },
-    { "name": "memory_out", "offset": 3, "count": 2 }
+    { "name": "turn", "offset": 0, "count": 2 },
+    { "name": "action", "offset": 2, "count": 1 },
+    { "name": "signal", "offset": 3, "count": 1 },
+    { "name": "memory_out", "offset": 4, "count": 2 }
   ],
   "weights": [
     { "name": "hidden0_weights", "offset": 0, "count": 1560,

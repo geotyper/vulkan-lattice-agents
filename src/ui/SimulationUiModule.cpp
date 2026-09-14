@@ -220,9 +220,10 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::TextDisabled("longest journey %u moves", latticeMaximumDistance(state_.settings));
 
     ImGui::SliderFloat("Turn threshold", &state_.settings.turnThreshold, 0.0F, 0.95F, "%.2f");
-    ImGui::SetItemTooltip("How sure the turn output has to be before the agent pivots. A turn "
-                          "costs the whole tick, so a low threshold is a group that spends its "
-                          "time looking around and a high one is a group that mostly walks.");
+    ImGui::SetItemTooltip("How sure both turn outputs have to be before the agent pivots. They "
+                          "have to agree: both over it turns one way, both under the negative "
+                          "one turns the other, and a disagreement is no turn. A turn costs the "
+                          "whole tick.");
 
     if (worldBuilds(state_.settings.worldMode)) {
         if (worldHarvests(state_.settings.worldMode)) {
@@ -469,7 +470,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                         static_cast<double>(neuro::kernel::BrainTimeConstantMaximum));
     ImGui::TextDisabled("%u cells x %u channels in the body frame, task state and memory",
                         neuro::kernel::BrainNeighborCount, neuro::kernel::BrainNeighborChannels);
-    ImGui::TextDisabled("a signed turn, walk or build, broadcast and memory updates");
+    ImGui::TextDisabled("two turn votes, walk or build, broadcast and memory updates");
     ImGui::End();
 
     drawBrainWindow(brain);

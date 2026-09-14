@@ -295,11 +295,12 @@ void main() {
     // whole grammar -- a turn ends the tick, so an agent that wants to build
     // somewhere else pays a tick per ninety degrees to point at it.
     const uint facing = uint(agent.cell.w) % LatticeFacingCount;
-    // Sign, not two outputs: the two turns are one axis, and a network that has
-    // to learn "not both at once" is learning the encoding rather than the task.
-    // Read through the same dead zone as everything else, so not turning is a
-    // decision and not a rounding.
-    const int turn = latticeAxisStep(produced[BrainTurnOutput], params.turnThreshold);
+    // Two outputs that have to agree, read through the same dead zone as
+    // everything else. Sign and not a left/right pair: the two turns are one
+    // axis, and a network that had to learn "not both at once" would be learning
+    // the encoding rather than the task.
+    const int turn = latticeTurnStep(produced[BrainTurnOutput], produced[BrainTurnOutput + 1u],
+                                     params.turnThreshold);
     const bool turning = turn != 0;
     if (turning) {
         agent.cell.w = int(latticeTurn(facing, turn > 0));
