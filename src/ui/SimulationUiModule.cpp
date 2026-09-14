@@ -921,10 +921,25 @@ void SimulationUiModule::drawViewControls() {
                      static_cast<int>(std::size(projections)))) {
         camera.projection = static_cast<CameraProjection>(projection);
     }
-    ImGui::Checkbox("Spin", &camera.spin);
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!camera.spin);
-    ImGui::SliderFloat("rad/s", &camera.spinRate, 0.02F, 1.20F, "%.2f");
+    int spin = static_cast<int>(camera.spin);
+    constexpr const char* spins[] = {"Still", "Orbit", "Turntable"};
+    if (ImGui::Combo("Turn", &spin, spins, static_cast<int>(std::size(spins)))) {
+        camera.spin = static_cast<CameraSpin>(spin);
+    }
+    ImGui::SetItemTooltip("Orbit circles the eye around whatever is being looked at. Turntable "
+                          "turns the box on its own axis and leaves it where it is in the frame, "
+                          "which is what a recording wants once the view has been dragged off "
+                          "centre. With the view centred the two are the same motion.");
+    ImGui::BeginDisabled(camera.spin == CameraSpin::Off);
+    // Seconds for one full turn rather than radians per second: the useful
+    // question when filming is how long the clip has to be, not what the
+    // angular rate is.
+    constexpr float tau = 6.283185307F;
+    float secondsPerTurn = tau / std::max(camera.spinRate, 1.0e-3F);
+    if (ImGui::SliderFloat("Seconds per turn", &secondsPerTurn, 4.0F, 300.0F, "%.0f s",
+                           ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp)) {
+        camera.spinRate = tau / std::max(secondsPerTurn, 1.0F);
+    }
     ImGui::EndDisabled();
     if (ImGui::SmallButton("Reset view")) {
         camera = latticeHomeCamera(state_.settings);

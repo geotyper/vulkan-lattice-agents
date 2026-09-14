@@ -447,8 +447,9 @@ void LatticeRenderer::destroyTarget() {
 
 void LatticeRenderer::onUpdate(AppContext& context, const FrameInfo& frame) {
     LatticeCamera& camera = state_.display.camera;
-    if (camera.spin) {
-        camera.yaw += camera.spinRate * frame.deltaSeconds;
+    if (camera.spin != CameraSpin::Off) {
+        camera.spinBy(camera.spinRate * frame.deltaSeconds,
+                      camera.spin == CameraSpin::Turntable);
     }
     // Wrapped rather than left to grow, so a run left spinning overnight does
     // not hand the sine a number with no fractional precision left in it.
@@ -514,9 +515,8 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
     // The orbit is around whatever the camera is looking at, which is the middle
     // of the box until somebody drags it somewhere else.
     const Vec3 target{camera.targetX, camera.targetY, camera.targetZ};
-    const Vec3 eye{target.x + radius * std::cos(camera.pitch) * std::sin(camera.yaw),
-                   target.y + radius * std::sin(camera.pitch),
-                   target.z + radius * std::cos(camera.pitch) * std::cos(camera.yaw)};
+    const std::array<float, 3> eyePoint = camera.eye(radius);
+    const Vec3 eye{eyePoint[0], eyePoint[1], eyePoint[2]};
     const float aspect = static_cast<float>(state_.viewport.extent.width) /
                          static_cast<float>(state_.viewport.extent.height);
     constexpr float verticalFieldOfView = latticeCameraFieldOfView;

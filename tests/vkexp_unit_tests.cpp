@@ -2465,6 +2465,78 @@ void testChasmEdge() {
           "and the agent is standing on that block, one level up from nothing");
 }
 
+// The two turning views, and the difference between them. Both are tested from
+// a dragged-off-centre view, because with the view centred they are the same
+// motion and a test taken there would pass on either implementation.
+void testCameraSpin() {
+    constexpr float radius = 10.0F;
+    constexpr float turn = 0.37F;
+    const auto close = [](const float left, const float right) {
+        return std::abs(left - right) < 1.0e-4F;
+    };
+
+    vkexp::LatticeCamera camera{};
+    camera.yaw = 0.8F;
+    camera.pitch = 0.3F;
+    camera.targetX = 4.0F;
+    camera.targetZ = -3.0F;
+
+    // Orbit: the look-at point does not move, so the eye circles it and its
+    // distance from it is all that is preserved.
+    vkexp::LatticeCamera orbit = camera;
+    const std::array<float, 3> before = camera.eye(radius);
+    orbit.spinBy(turn, false);
+    const std::array<float, 3> orbited = orbit.eye(radius);
+    check(close(orbit.targetX, camera.targetX) && close(orbit.targetZ, camera.targetZ),
+          "Orbit leaves the look-at point where it was");
+    const auto span = [](const std::array<float, 3>& point, const vkexp::LatticeCamera& from) {
+        const float dx = point[0] - from.targetX;
+        const float dz = point[2] - from.targetZ;
+        return std::sqrt(dx * dx + dz * dz);
+    };
+    check(close(span(before, camera), span(orbited, orbit)),
+          "and keeps the eye the same distance from it");
+    // And the box centre does not hold still under it: that is the behaviour the
+    // turntable exists to replace, so if this ever stops being true the two
+    // modes have collapsed into one.
+    const float centredBefore = std::sqrt(before[0] * before[0] + before[2] * before[2]);
+    const float centredAfter = std::sqrt(orbited[0] * orbited[0] + orbited[2] * orbited[2]);
+    check(!close(centredBefore, centredAfter),
+          "Orbiting an off-centre view changes how far the eye is from the box");
+
+    // Turntable: the whole camera frame turns about the origin, which is where
+    // the box is centred. Both the eye and the look-at point come out rotated by
+    // exactly the same angle, which is what makes the box appear to spin in
+    // place rather than travel across the frame.
+    vkexp::LatticeCamera table = camera;
+    table.spinBy(turn, true);
+    const std::array<float, 3> turned = table.eye(radius);
+    const float cosTurn = std::cos(turn);
+    const float sinTurn = std::sin(turn);
+    check(close(turned[0], before[0] * cosTurn + before[2] * sinTurn) &&
+              close(turned[2], -before[0] * sinTurn + before[2] * cosTurn) &&
+              close(turned[1], before[1]),
+          "The turntable rotates the eye about the origin, not about the look-at point");
+    check(close(table.targetX, camera.targetX * cosTurn + camera.targetZ * sinTurn) &&
+              close(table.targetZ, -camera.targetX * sinTurn + camera.targetZ * cosTurn),
+          "and carries the look-at point round by the same angle");
+    check(close(std::sqrt(turned[0] * turned[0] + turned[2] * turned[2]), centredBefore),
+          "so the eye stays exactly as far from the box as it was");
+
+    // Centred, the two are one motion. This is why the bug was invisible: the
+    // default view is centred, and the modes only part once the view is dragged.
+    vkexp::LatticeCamera centred{};
+    centred.yaw = 0.8F;
+    centred.pitch = 0.3F;
+    vkexp::LatticeCamera centredTable = centred;
+    centred.spinBy(turn, false);
+    centredTable.spinBy(turn, true);
+    const std::array<float, 3> one = centred.eye(radius);
+    const std::array<float, 3> other = centredTable.eye(radius);
+    check(close(one[0], other[0]) && close(one[1], other[1]) && close(one[2], other[2]),
+          "With nothing dragged, orbit and turntable are the same motion");
+}
+
 void testLatticeFitness() {
     // The four counters and what each is worth. Written out rather than folded
     // into agentFitness so that changing a weight and changing the arithmetic
@@ -2515,6 +2587,7 @@ int main() {
     testLatticeAddressing();
     testLatticeNeighbourhood();
     testLatticeMoveRule();
+    testCameraSpin();
     testConstructionLocalFoundation();
     testChasmEdge();
     testLatticeSpawn();

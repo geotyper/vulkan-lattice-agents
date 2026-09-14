@@ -110,6 +110,19 @@ enum class VoxelStyle : std::uint32_t {
     Transparent = 1,
 };
 
+// What a turning view turns around. Orbit circles the eye about whatever is
+// being looked at, which is the middle of the box until somebody drags the view
+// somewhere else -- and once they have, the box swings across the screen on an
+// arc instead of turning. Turntable carries the look-at point round with the
+// box, so the box keeps its place in the frame and rotates on its own axis,
+// which is what a recording wants when the structure worth filming is not in
+// the middle. With the view centred the two are the same motion.
+enum class CameraSpin : std::uint32_t {
+    Off = 0,
+    Orbit = 1,
+    Turntable = 2,
+};
+
 enum class CameraProjection : std::uint32_t {
     Perspective = 0,
     Orthographic = 1,
@@ -134,7 +147,7 @@ struct LatticeCamera {
     // rather than the one it was tuned on.
     float distance{2.3F};
     CameraProjection projection{CameraProjection::Perspective};
-    bool spin{};
+    CameraSpin spin{CameraSpin::Off};
     float spinRate{0.15F}; // radians per second while spinning
 
     // What the camera looks at, in cells from the centre of the box. An orbit
@@ -145,6 +158,34 @@ struct LatticeCamera {
     float targetX{};
     float targetY{};
     float targetZ{};
+
+    // Where the eye sits for a given orbit radius. Here rather than inside the
+    // renderer because the turntable's whole claim -- that the box holds its
+    // place in the frame while it turns -- is a statement about this formula,
+    // and a test that restated the formula could not check it.
+    [[nodiscard]] std::array<float, 3> eye(const float radius) const {
+        return {targetX + radius * std::cos(pitch) * std::sin(yaw),
+                targetY + radius * std::sin(pitch),
+                targetZ + radius * std::cos(pitch) * std::cos(yaw)};
+    }
+
+    // One step of a turning view. Orbit moves the eye alone, so it circles the
+    // look-at point. Turntable carries the look-at point round by the same
+    // angle, which rotates the whole camera frame rigidly about the origin --
+    // and the origin is the middle of the box, so the box turns where it stands
+    // instead of swinging across the frame.
+    void spinBy(const float radians, const bool aboutBox) {
+        yaw += radians;
+        if (!aboutBox) {
+            return;
+        }
+        const float cosTurn = std::cos(radians);
+        const float sinTurn = std::sin(radians);
+        const float x = targetX;
+        const float z = targetZ;
+        targetX = x * cosTurn + z * sinTurn;
+        targetZ = -x * sinTurn + z * cosTurn;
+    }
 
     // Slide that point across the screen. The arguments are world units along
     // the camera's own right and up axes, so a caller converts pixels to world
