@@ -402,7 +402,7 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                 if (kern::latticeBeaconReached(distance, settings.beaconContactRadius)) {
                     agent.memory.w = 1.0F;
                 }
-            } else if (kern::latticeGroundColumn(agent.cell.z, latticeGroundDepth(settings)) &&
+            } else if (kern::latticeGroundColumn(agent.cell.x, latticeGroundWidth(settings)) &&
                        agent.cell.y <= 1) {
                 agent.memory.w = 0.0F;
                 agent.metrics.w += 1.0F;

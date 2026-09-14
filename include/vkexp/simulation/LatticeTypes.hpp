@@ -334,11 +334,11 @@ struct SimulationStep {
     // count to rather than a place it has to find.
     std::uint32_t resourceHeightLow{4};
     std::uint32_t resourceHeightHigh{8};
-    // Chasm: how many rows of floor, from z = 0, are solid ground. Everything
+    // Chasm: how many columns of floor, from x = 0, are solid ground. Everything
     // beyond is open air all the way down, and the resource hangs over it. Zero
     // means half the lattice, which is what the world is for; the other building
     // worlds ignore this and get a floor all the way across.
-    std::uint32_t chasmGroundDepth{};
+    std::uint32_t chasmGroundWidth{};
     // Opt-in cantilevers: a block may use a cardinal x/z face as support. Edge
     // and corner contact remain insufficient.
     std::uint32_t allowSideSupportedBlocks{};
@@ -387,28 +387,36 @@ constexpr void applyWorldDefaults(SimulationStep& settings) {
     if (settings.worldMode == WorldMode::Chasm) {
         settings.buildIntervalTicks = 3;
         settings.allowSideSupportedBlocks = 1;
+        // A cube, and deliberately not the default 32x32x16. The span to cross
+        // is half the width, so width is the number that sets the difficulty,
+        // and a shallow box makes the far side a wall rather than a far side.
+        // Height has to clear the resource band with room to build under it.
+        settings.latticeWidth = 32;
+        settings.latticeHeight = 32;
+        settings.latticeDepth = 32;
     }
 }
 
-// How many rows of floor are solid ground. Only the chasm world takes anything
-// away; the others get a floor all the way across, and a chasm asking for zero
-// gets half the lattice, which is the world it was built to be.
-[[nodiscard]] constexpr std::uint32_t latticeGroundDepth(const SimulationStep& settings) {
-    const std::uint32_t depth = std::max(settings.latticeDepth, 1U);
+// How many columns of floor are solid ground, counted from x=0. Only the chasm
+// world takes anything away; the others get a floor all the way across, and a
+// chasm asking for zero gets half the lattice, which is the world it was built
+// to be.
+[[nodiscard]] constexpr std::uint32_t latticeGroundWidth(const SimulationStep& settings) {
+    const std::uint32_t width = std::max(settings.latticeWidth, 1U);
     if (settings.worldMode != WorldMode::Chasm) {
-        return depth;
+        return width;
     }
-    if (settings.chasmGroundDepth == 0) {
-        return std::max(depth / 2U, 1U);
+    if (settings.chasmGroundWidth == 0) {
+        return std::max(width / 2U, 1U);
     }
-    return std::clamp(settings.chasmGroundDepth, 1U, depth);
+    return std::clamp(settings.chasmGroundWidth, 1U, width);
 }
 
 [[nodiscard]] constexpr std::uint32_t latticeSpawnCapacity(const SimulationStep& settings) {
     if (worldBuilds(settings.worldMode)) {
         // Only the columns that have ground under them: a building world stands
         // its group on the bedrock course, and over a chasm there is none.
-        return std::max(settings.latticeWidth * latticeGroundDepth(settings), 1U);
+        return std::max(latticeGroundWidth(settings) * settings.latticeDepth, 1U);
     }
     return std::max(latticeCellsPerWorld(settings), 2U) - 1U;
 }
@@ -477,7 +485,7 @@ struct alignas(16) GpuStepParameters {
     std::uint32_t resourceHeightHigh{};
     // Resolved, never the raw setting: the shader is told where the ground stops
     // in this world, not which world it is and how to work it out.
-    std::uint32_t groundDepth{};
+    std::uint32_t groundWidth{};
     // Only the fetching worlds read it, and only to place their resource. On the
     // device rather than mirrored onto the agent because a resource belongs to
     // the world, and the lanes that would carry it are the per-step build

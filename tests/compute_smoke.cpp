@@ -744,10 +744,18 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
                                                                 settings.latticeHeight)] = 1;
         }
     }
+    // Where the group can actually stand. In a chasm only the first half of the
+    // columns has bedrock, so the group goes there and the platform sits beside
+    // it along z; everywhere else the floor is whole and it sits beside it
+    // along x. Standing anybody over the void would make this a probe about
+    // falling rather than about building.
+    const bool chasm = worldMode == vkexp::WorldMode::Chasm;
     for (std::size_t index = 0; index < expected.size(); ++index) {
         vkexp::AgentState& agent = expected[index];
-        agent.cell.x = static_cast<std::int32_t>(index) % platform + platform;
-        agent.cell.z = static_cast<std::int32_t>(index) / platform;
+        const std::int32_t row = static_cast<std::int32_t>(index) % platform;
+        const std::int32_t column = static_cast<std::int32_t>(index) / platform;
+        agent.cell.x = chasm ? row : row + platform;
+        agent.cell.z = chasm ? column + platform : column;
         agent.cell.y = 1;
         agent.intent = {agent.cell.x, agent.cell.y, agent.cell.z, 0};
     }
@@ -775,9 +783,10 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
                                layout.groupSize(), layout.trialsPerGenome, structures, outcomes},
                               settings);
         const std::vector<vkexp::AgentState> actual = harness.readAgents();
-        const std::string where =
-            (worldMode == vkexp::WorldMode::Harvest ? "Harvest step " : "Construction step ") +
-            std::to_string(step);
+        const char* worldName = worldMode == vkexp::WorldMode::Harvest  ? "Harvest step "
+                                : chasm                                 ? "Chasm step "
+                                                                        : "Construction step ";
+        const std::string where = std::string{worldName} + std::to_string(step);
         for (std::size_t index = 0; index < expected.size(); ++index) {
             compareAgents(expected[index], actual[index], where + " agent " + std::to_string(index),
                           2.0e-3F);
@@ -810,7 +819,7 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
                     " agents -- every agent gets exactly one reason per step");
     }
 
-    if (worldMode == vkexp::WorldMode::Harvest) {
+    if (vkexp::worldHarvests(worldMode)) {
         // The two things only this world does. Without these the probe would
         // compare agents that happen to agree about rules neither side ran.
         std::size_t carrying = 0;
@@ -820,11 +829,14 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
             delivered += agent.metrics.w;
         }
         require(carrying > 0 || delivered > 0.0F,
-                "Harvest parity probe never picked up a load, so it compared nothing new");
+                "A fetching parity probe never picked up a load, so it compared nothing new");
     }
 
     const auto placed = std::count_if(structures.begin(), structures.end(), [](const std::int32_t v) {
-        return v != vkexp::lattice::kernel::LatticeNoStructure;
+        // Strictly positive: bedrock lives in this field too, and counting the
+        // ground as built work would let the check below pass a probe in which
+        // nobody ever placed anything.
+        return v > vkexp::lattice::kernel::LatticeNoStructure;
     });
 
     require(placed > 0, "Construction parity probe never placed a block, so it compared nothing");
@@ -971,7 +983,7 @@ void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
     packed.allowSideSupportedBlocks = nextUint();
     packed.resourceHeightLow = nextUint();
     packed.resourceHeightHigh = nextUint();
-    packed.groundDepth = nextUint();
+    packed.groundWidth = nextUint();
     packed.beaconSeed = nextUint();
     packed.fitness.trackingReward = nextFloat();
     packed.fitness.objectiveBonus = nextFloat();
@@ -1005,7 +1017,7 @@ void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
     expectUint("allowSideSupportedBlocks", packed.allowSideSupportedBlocks);
     expectUint("resourceHeightLow", packed.resourceHeightLow);
     expectUint("resourceHeightHigh", packed.resourceHeightHigh);
-    expectUint("groundDepth", packed.groundDepth);
+    expectUint("groundWidth", packed.groundWidth);
     expectUint("beaconSeed", packed.beaconSeed);
     expectFloat("fitness.trackingReward", packed.fitness.trackingReward);
     expectFloat("fitness.objectiveBonus", packed.fitness.objectiveBonus);
@@ -1266,6 +1278,7 @@ int runAll() {
     // of difference a probe that only ran one of them would never see.
     runConstructionParityProbe(context, vkexp::WorldMode::Construction);
     runConstructionParityProbe(context, vkexp::WorldMode::Harvest);
+    runConstructionParityProbe(context, vkexp::WorldMode::Chasm);
 
     // Both neighbourhoods, because the face-only reduction is a branch the Moore
     // case never takes, and all four neuron models, because each decides the

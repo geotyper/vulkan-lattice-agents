@@ -33,7 +33,7 @@ GpuStepParameters packStepParameters(const SimulationStep& settings,
             settings.worldMode == WorldMode::Chasm ? 1U : settings.allowSideSupportedBlocks,
             settings.resourceHeightLow,
             settings.resourceHeightHigh,
-            latticeGroundDepth(settings),
+            latticeGroundWidth(settings),
             settings.beaconSeed,
             packFitnessWeights(settings.fitness)};
 }

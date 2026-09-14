@@ -81,7 +81,7 @@ struct SettingsIntegers {
     std::uint32_t allowSideSupportedBlocks{};
     std::uint32_t resourceHeightLow{};
     std::uint32_t resourceHeightHigh{};
-    std::uint32_t chasmGroundDepth{};
+    std::uint32_t chasmGroundWidth{};
 };
 
 static_assert(sizeof(SettingsIntegers) == 64);
@@ -150,7 +150,7 @@ void saveRunSnapshot(const std::filesystem::path& path, const RunSnapshot& snaps
                                     settings.allowSideSupportedBlocks,
                                     settings.resourceHeightLow,
                                     settings.resourceHeightHigh,
-                                    settings.chasmGroundDepth};
+                                    settings.chasmGroundWidth};
     stream.write(reinterpret_cast<const char*>(&integers), sizeof(integers));
 
     for (const Genome& genome : snapshot.genomes) {
@@ -279,7 +279,7 @@ RunSnapshot loadRunSnapshot(const std::filesystem::path& path) {
     snapshot.settings.buildIntervalTicks = integers.buildIntervalTicks;
     snapshot.settings.resourceHeightLow = integers.resourceHeightLow;
     snapshot.settings.resourceHeightHigh = integers.resourceHeightHigh;
-    snapshot.settings.chasmGroundDepth = integers.chasmGroundDepth;
+    snapshot.settings.chasmGroundWidth = integers.chasmGroundWidth;
     snapshot.settings.allowSideSupportedBlocks = integers.allowSideSupportedBlocks;
 
     snapshot.genomes.assign(header.genomeCount, Genome{neuro::Weights(header.weightCount, 0.0F)});

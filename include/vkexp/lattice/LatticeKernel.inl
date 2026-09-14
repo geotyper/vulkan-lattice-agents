@@ -88,8 +88,8 @@ VKEXP_LATTICE_FN bool latticeIsBedrock(int cell) { return cell < LatticeNoStruct
 // the near half a place to stand and the far half a place that has to be built
 // over. A depth equal to the lattice's is a world with no chasm at all, which is
 // how the other building worlds ask for their floor.
-VKEXP_LATTICE_FN bool latticeGroundColumn(int z, uint groundDepth) {
-    return z >= 0 && uint(z) < groundDepth;
+VKEXP_LATTICE_FN bool latticeGroundColumn(int x, uint groundWidth) {
+    return x >= 0 && uint(x) < groundWidth;
 }
 
 // --- placement ---------------------------------------------------------------
@@ -123,17 +123,22 @@ VKEXP_LATTICE_FN uint latticeResourceHash(uint world, uint seed) {
     return latticeMix(seed ^ 0x8E5017u, world);
 }
 
-VKEXP_LATTICE_FN int latticeResourceX(uint hash, uint width) {
-    return int(hash % width);
-}
-
 // Over the open half when there is one, and anywhere on the floor plan when
 // there is not. A resource standing over ground the group can walk to is a
 // resource it can reach by climbing; the point of the chasm is that it cannot.
-VKEXP_LATTICE_FN int latticeResourceZ(uint hash, uint width, uint depth, uint groundDepth) {
-    const uint open = groundDepth < depth ? depth - groundDepth : depth;
-    const uint first = groundDepth < depth ? groundDepth : 0u;
-    return int(first + (hash / width) % open);
+//
+// The split runs along x, so the open half is a range of columns rather than of
+// rows. Which axis is arbitrary to the simulation and not to the eye: the box
+// is widest on x and the camera starts side-on to it, so a chasm cut this way
+// is the one you are already looking across.
+VKEXP_LATTICE_FN int latticeResourceX(uint hash, uint width, uint groundWidth) {
+    const uint open = groundWidth < width ? width - groundWidth : width;
+    const uint first = groundWidth < width ? groundWidth : 0u;
+    return int(first + hash % open);
+}
+
+VKEXP_LATTICE_FN int latticeResourceZ(uint hash, uint width, uint depth) {
+    return int((hash / width) % depth);
 }
 
 // Somewhere in a band rather than at one height, hashed like the column. A fixed

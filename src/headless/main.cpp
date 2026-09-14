@@ -47,7 +47,7 @@ struct Options {
     float buildThreshold{0.55F};
     std::uint32_t resourceHeightLow{4};
     std::uint32_t resourceHeightHigh{8};
-    std::uint32_t chasmGroundDepth{};
+    std::uint32_t chasmGroundWidth{};
     bool allowSideSupportedBlocks{};
 
     vkexp::FitnessWeights fitness{};
@@ -94,7 +94,8 @@ void printHelp(const char* executable) {
                  "  --build-threshold <x>    construction output required to place (0.55)\n"
                  "  --resource-band <a>-<b>  harvest/chasm: the band of heights the resource\n"
                  "                           hangs in, inclusive (4-8), hashed per world\n"
-                 "  --ground-depth <n>       chasm: rows of solid floor from z=0. 0 means half\n"
+                 "  --ground-width <n>       chasm: columns of solid floor from x=0.\n"
+                 "                           0 means half the lattice\n"
                  "  --side-support           allow cardinal face-supported bridge blocks\n"
                  "  --boundary-penalty <x>   charged per agent-tick on the x/z edge (0.002)\n\n"
                  "Ablations:\n"
@@ -338,8 +339,8 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.resourceHeightLow = parseNumber<std::uint32_t>(band.substr(0, dash), argument);
             options.resourceHeightHigh =
                 parseNumber<std::uint32_t>(band.substr(dash + 1), argument);
-        } else if (argument == "--ground-depth") {
-            options.chasmGroundDepth = parseNumber<std::uint32_t>(next(index, argument), argument);
+        } else if (argument == "--ground-width") {
+            options.chasmGroundWidth = parseNumber<std::uint32_t>(next(index, argument), argument);
         } else if (argument == "--side-support") {
             options.allowSideSupportedBlocks = true;
         } else if (argument == "--boundary-penalty") {
@@ -437,7 +438,7 @@ int run(const Options& options) {
     state.settings.resourceHeightLow = std::clamp(options.resourceHeightLow, 1U, ceiling);
     state.settings.resourceHeightHigh =
         std::clamp(options.resourceHeightHigh, state.settings.resourceHeightLow, ceiling);
-    state.settings.chasmGroundDepth = options.chasmGroundDepth;
+    state.settings.chasmGroundWidth = options.chasmGroundWidth;
     // The chasm forces it on and the flag can only add to that: a world whose
     // objective needs a cantilever must not be startable without one.
     state.settings.allowSideSupportedBlocks |= options.allowSideSupportedBlocks ? 1U : 0U;
@@ -558,8 +559,8 @@ int run(const Options& options) {
                       << state.settings.fitness.boundaryPenalty << " per agent-tick\n"
                       << "Support:    "
                       << (state.settings.allowSideSupportedBlocks != 0U
-                              ? "floor, a block below, or a cardinal side face"
-                              : "floor or a block directly below")
+                              ? "a block directly below, or a cardinal side face"
+                              : "a block directly below")
                       << '\n';
             if (vkexp::worldHarvests(state.settings.worldMode)) {
                 std::cout << "Resource:   between " << state.settings.resourceHeightLow << " and "
@@ -568,9 +569,9 @@ int run(const Options& options) {
                           << " cell(s) and carried back to the ground\n";
             }
             if (state.settings.worldMode == vkexp::WorldMode::Chasm) {
-                std::cout << "Ground:     " << vkexp::latticeGroundDepth(state.settings) << " of "
-                          << state.settings.latticeDepth
-                          << " rows; the rest is open air, and the resource hangs over it\n";
+                std::cout << "Ground:     " << vkexp::latticeGroundWidth(state.settings) << " of "
+                          << state.settings.latticeWidth
+                          << " columns; the rest is open air, and the resource hangs over it\n";
             }
         } else {
             std::cout << ", beacon reached within " << std::defaultfloat << std::setprecision(6)

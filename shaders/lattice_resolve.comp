@@ -116,11 +116,10 @@ void main() {
         // every time it is used, so what is selected for is a path rather than
         // one lucky scramble. See PLAN.md.
         const uint hash = latticeResourceHash(uint(agent.beacon.w), params.beaconSeed);
-        const int resourceX = latticeResourceX(hash, params.latticeWidth);
+        const int resourceX = latticeResourceX(hash, params.latticeWidth, params.groundWidth);
         const int resourceY = latticeResourceY(hash, params.resourceHeightLow,
                                                params.resourceHeightHigh, params.latticeHeight);
-        const int resourceZ = latticeResourceZ(hash, params.latticeWidth, params.latticeDepth,
-                                               params.groundDepth);
+        const int resourceZ = latticeResourceZ(hash, params.latticeWidth, params.latticeDepth);
         const uint distance = latticeStepDistance(params.neighborhood, resourceX - agent.cell.x,
                                                   resourceY - agent.cell.y,
                                                   resourceZ - agent.cell.z);
@@ -132,7 +131,7 @@ void main() {
             if (latticeBeaconReached(distance, params.beaconContactRadius)) {
                 agent.memory.w = 1.0;
             }
-        } else if (latticeGroundColumn(agent.cell.z, params.groundDepth) &&
+        } else if (latticeGroundColumn(agent.cell.x, params.groundWidth) &&
                    agent.cell.y <= 1) {
             // Scored on the ground the group started from, not on any floor: a
             // load dropped at the far end would otherwise pay without the walk

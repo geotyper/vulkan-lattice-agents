@@ -41,6 +41,18 @@ void main() {
         return;
     }
 
+    if (mode == LatticeViewModeGoal) {
+        const vec3 point =
+            latticeGoalGuideVertex(uint(gl_VertexIndex), latticeCellCentre(view.beacon.xyz));
+        gl_Position = view.viewProjection * vec4(point, 1.0);
+        fragNormal = vec3(0.0, 1.0, 0.0);
+        fragWorld = point;
+        // The objective's own colour, dimmed: the guide has to be findable
+        // without competing with the thing it points at.
+        fragColour = vec4(0.72, 0.26, 0.40, 1.0);
+        return;
+    }
+
     if (mode == LatticeViewModeTrail) {
         const uint count = uint(max(view.beacon.x, 0));
         const uint newest = uint(max(view.beacon.y, 0));

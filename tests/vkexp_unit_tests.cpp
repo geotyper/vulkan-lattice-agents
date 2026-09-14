@@ -1903,6 +1903,66 @@ void testHarvestResource() {
           "Harvest is a building world and beacon is not");
     check(vkexp::latticeSpawnCapacity(settings) == settings.latticeWidth * settings.latticeDepth,
           "A harvest world stands its group on the floor, like a construction world");
+
+    // The chasm is the same resource placed under one extra rule: it may only
+    // hang over the half nobody can walk to. The split runs along x, so that is
+    // a range of columns -- and a resource that strayed back over solid ground
+    // would turn the world into a climb, which is the one thing it is not.
+    vkexp::SimulationStep chasm = settings;
+    chasm.worldMode = vkexp::WorldMode::Chasm;
+    chasm.latticeWidth = 24;
+    chasm.latticeDepth = 20;
+    chasm.chasmGroundWidth = 0; // half
+    const std::uint32_t ground = vkexp::latticeGroundWidth(chasm);
+    check(ground == 12, "A chasm asking for zero ground gets half the width");
+    std::set<std::int32_t> chasmColumns;
+    std::set<std::int32_t> chasmRows;
+    for (std::uint32_t world = 0; world < 64; ++world) {
+        const vkexp::Int4 cell = vkexp::lattice::resourceCell(chasm, world);
+        check(cell.x >= static_cast<std::int32_t>(ground),
+              "The chasm resource hangs over the open half, never over the ground");
+        check(cell.x < static_cast<std::int32_t>(chasm.latticeWidth) && cell.z >= 0 &&
+                  cell.z < static_cast<std::int32_t>(chasm.latticeDepth),
+              "and still inside the box");
+        chasmColumns.insert(cell.x);
+        chasmRows.insert(cell.z);
+    }
+    check(chasmColumns.size() > 4 && chasmRows.size() > 4,
+          "The open half is used across both of its axes, not one line of it");
+
+    // Ground is measured along x now, so the spawn plan is ground columns by
+    // full depth. Getting this wrong stands agents over the void, which the
+    // arbitration cannot represent.
+    check(vkexp::latticeSpawnCapacity(chasm) == ground * chasm.latticeDepth,
+          "A chasm spawns only on the columns that have bedrock under them");
+    check(vkexp::lattice::kernel::latticeGroundColumn(0, ground) &&
+              vkexp::lattice::kernel::latticeGroundColumn(
+                  static_cast<int>(ground) - 1, ground) &&
+              !vkexp::lattice::kernel::latticeGroundColumn(static_cast<int>(ground), ground),
+          "Ground runs from x=0 up to the split and stops there");
+
+    // And the terrain agrees with all of it: bedrock under every ground column
+    // of every row, nothing over the chasm, and only on the bottom course.
+    const std::vector<std::int32_t> terrain = vkexp::lattice::makeTerrain(chasm, 2);
+    const std::uint32_t cells = vkexp::latticeCellsPerWorld(chasm);
+    std::size_t bedrock = 0;
+    for (std::uint32_t world = 0; world < 2; ++world) {
+        for (std::uint32_t z = 0; z < chasm.latticeDepth; ++z) {
+            for (std::uint32_t x = 0; x < chasm.latticeWidth; ++x) {
+                const std::size_t index =
+                    static_cast<std::size_t>(world) * cells +
+                    vkexp::lattice::kernel::latticeCellIndex(static_cast<int>(x), 0,
+                                                             static_cast<int>(z),
+                                                             chasm.latticeWidth,
+                                                             chasm.latticeHeight);
+                const bool solid = terrain[index] == vkexp::lattice::kernel::LatticeBedrock;
+                check(solid == (x < ground), "Bedrock covers the ground columns and only those");
+                bedrock += solid ? 1 : 0;
+            }
+        }
+    }
+    check(bedrock == static_cast<std::size_t>(ground) * chasm.latticeDepth * 2,
+          "and every world gets its own course");
 }
 
 void testLatticeAddressing() {

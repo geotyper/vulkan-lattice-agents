@@ -49,7 +49,7 @@ struct StepParameters {
     uint allowSideSupportedBlocks;
     uint resourceHeightLow;
     uint resourceHeightHigh;
-    uint groundDepth;
+    uint groundWidth;
     uint beaconSeed;
     FitnessWeights fitness;
 };

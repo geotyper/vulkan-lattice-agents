@@ -141,9 +141,11 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
         applyWorldDefaults(state_.settings);
         state_.controls.resetRequested = true;
     }
-    ImGui::SetItemTooltip("Construction starts every agent on the floor, enables supported blocks, "
-                          "climbing and falling, and scores every genome in a world by the same "
-                          "height. Beacon keeps the navigation task.");
+    ImGui::SetItemTooltip("Beacon is the navigation task. The other three build: every agent "
+                          "starts on the bedrock course, climbs, falls and places supported "
+                          "blocks. Construction scores height alone; harvest scores loads fetched "
+                          "from a hanging resource; the chasm takes half the floor away, so the "
+                          "resource can only be reached across something the group builds.");
 
     int requestedAgentsPerWorld = static_cast<int>(state_.worlds.requestedAgentsPerWorld);
     // The ceiling is whichever runs out first: genomes, or cells to stand them
@@ -239,14 +241,15 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                                   "learn to count to rather than a place it has to find.");
         }
         if (state_.settings.worldMode == WorldMode::Chasm) {
-            int ground = static_cast<int>(latticeGroundDepth(state_.settings));
-            if (ImGui::SliderInt("Ground rows", &ground, 1,
-                                 static_cast<int>(state_.settings.latticeDepth) - 1, "%d of %d")) {
-                state_.settings.chasmGroundDepth = static_cast<std::uint32_t>(ground);
+            int ground = static_cast<int>(latticeGroundWidth(state_.settings));
+            if (ImGui::SliderInt("Ground columns", &ground, 1,
+                                 static_cast<int>(state_.settings.latticeWidth) - 1, "%d of %d")) {
+                state_.settings.chasmGroundWidth = static_cast<std::uint32_t>(ground);
             }
-            ImGui::SetItemTooltip("How much of the floor is solid. Everything beyond is open air "
-                                  "all the way down, and the resource hangs over it -- so the only "
-                                  "route is one the group builds out from the edge.");
+            ImGui::SetItemTooltip("How much of the floor is solid, counted along x from the near "
+                                  "edge. Everything beyond is open air all the way down, and the "
+                                  "resource hangs over it -- so the only route is one the group "
+                                  "builds out from the edge.");
             ImGui::TextDisabled("Side support is forced on: without a cantilever the far half "
                                 "cannot be reached at all.");
         }

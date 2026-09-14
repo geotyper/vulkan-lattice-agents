@@ -421,6 +421,20 @@ per world like everything else that is placed. Walking there is impossible, and
 climbing there is impossible, because there is nothing under it to climb. The
 only route is one the group builds out from the edge.
 
+The split runs along x, and the world defaults to a 32x32x32 cube. Which axis is
+arbitrary to the simulation and not to the eye: the camera starts side-on to the
+widest horizontal edge, so a chasm cut along x is the one you are already
+looking across. The cube follows from that -- the span to cross is half the
+width, so width is the number that sets the difficulty, and a shallow box would
+make the far side read as a wall rather than as a far side.
+
+**The objective is drawn as a place, not as a cube.** One cube hanging in air
+has no depth cue: at thirty-two cells deep, a resource at the near edge and one
+at the far edge project to nearly the same pixels, and which column the group
+has to reach is the whole question. So the objective also gets a plumb line down
+to the floor plane and a cross on it -- which doubles as the answer to whether
+there is floor under it or a hole.
+
 **The sequence that solves it already exists.** An agent standing on bedrock
 builds beside itself, supported from below. It walks to the edge and aims into
 the air: no support below, and the placement falls back a level onto the side

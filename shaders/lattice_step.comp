@@ -101,11 +101,10 @@ void constructionFacing(float aimX, float aimZ, out int faceX, out int faceZ) {
 // sensor that will, once a world index is off by one somewhere.
 ivec3 harvestResourceCell(uint world) {
     const uint hash = latticeResourceHash(world, params.beaconSeed);
-    return ivec3(latticeResourceX(hash, params.latticeWidth),
+    return ivec3(latticeResourceX(hash, params.latticeWidth, params.groundWidth),
                  latticeResourceY(hash, params.resourceHeightLow, params.resourceHeightHigh,
                                   params.latticeHeight),
-                 latticeResourceZ(hash, params.latticeWidth, params.latticeDepth,
-                                  params.groundDepth));
+                 latticeResourceZ(hash, params.latticeWidth, params.latticeDepth));
 }
 
 void senseLattice(Agent agent, uint world, uint worldBase, out float sensed[BrainInputCapacity]) {
