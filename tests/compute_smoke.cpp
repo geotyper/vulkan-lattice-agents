@@ -803,9 +803,11 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
         vkexp::lattice::kernel::LatticeBuildOutcomeCount);
     static constexpr std::array<const char*,
                                 vkexp::lattice::kernel::LatticeBuildOutcomeCount>
-        reasonNames{"turning",     "walking",   "walled in",          "cooling",
-                    "off the lattice", "blocked", "unsupported",      "above the frontier",
-                    "in the way",  "placed",    "contested"};
+        reasonNames{"turning",    "walking",         "the edge of the world",
+                    "a chasm",    "a ceiling",       "a crowd",
+                    "cooling",    "off the lattice", "blocked",
+                    "unsupported", "above the frontier", "in the way",
+                    "placed",     "contested"};
 
     std::vector<std::uint64_t> frontierRefusals(layout.worldCount(), 0);
     LatticeHarness harness{context, settings, layout, weights};

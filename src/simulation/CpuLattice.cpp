@@ -274,10 +274,10 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
             if (stepping) {
                 wantedX += forwardX;
                 wantedZ += forwardZ;
-                bool walled = false;
+                std::uint32_t refusal = kern::LatticeBuildOutcomeCount; // no refusal yet
                 if (!kern::latticeInBounds(wantedX, wantedY, wantedZ, settings.latticeWidth,
                                            settings.latticeHeight, settings.latticeDepth)) {
-                    walled = true;
+                    refusal = kern::LatticeActionEdge;
                 } else if (hasStructure(worldStructures, settings, wantedX, wantedY, wantedZ)) {
                     // A wall in front is climbed, not stepped onto: the agent
                     // rises one level in its own column and holds the block
@@ -286,24 +286,28 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                     wantedX = agent.cell.x;
                     wantedZ = agent.cell.z;
                     ++wantedY;
-                    walled = !kern::latticeInBounds(wantedX, wantedY, wantedZ, settings.latticeWidth,
-                                                    settings.latticeHeight, settings.latticeDepth) ||
-                             hasStructure(worldStructures, settings, wantedX, wantedY, wantedZ);
+                    if (!kern::latticeInBounds(wantedX, wantedY, wantedZ, settings.latticeWidth,
+                                               settings.latticeHeight, settings.latticeDepth) ||
+                        hasStructure(worldStructures, settings, wantedX, wantedY, wantedZ)) {
+                        refusal = kern::LatticeActionCeiling;
+                    }
                 } else {
                     const int landing = constructionLandingY(worldStructures, settings, wantedX,
                                                              wantedY, wantedZ, heading);
-                    // The far side of a chasm edge, refused like the edge of
-                    // the lattice: from the agent's side the two are the same
-                    // answer.
-                    walled = landing < 0;
+                    // The far side of a chasm edge, told apart from the edge of
+                    // the lattice: one is a wall to turn away from and the other
+                    // is a gap to build across.
+                    if (landing < 0) {
+                        refusal = kern::LatticeActionVoid;
+                    }
                     wantedY = landing;
                 }
-                if (walled) {
+                if (refusal < kern::LatticeBuildOutcomeCount) {
                     wantedX = agent.cell.x;
                     wantedY = agent.cell.y;
                     wantedZ = agent.cell.z;
                     agent.intent.w = 1;
-                    outcome = kern::LatticeActionWalled;
+                    outcome = refusal;
                 } else {
                     outcome = kern::LatticeActionWalking;
                 }
@@ -330,7 +334,7 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                         population.claims[worldBase + wanted], static_cast<std::int32_t>(index));
                 } else if (!hasStructure(worldStructures, settings, wantedX, wantedY, wantedZ)) {
                     agent.intent.w = 1; // another agent, not a wall
-                    outcome = kern::LatticeActionWalled;
+                    outcome = kern::LatticeActionCrowded;
                 }
             }
         } else if (!turning) {
@@ -349,13 +353,13 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
             if (!kern::latticeInBounds(wantedX, wantedY, wantedZ, settings.latticeWidth,
                                        settings.latticeHeight, settings.latticeDepth)) {
                 agent.intent.w = 1; // walked into the edge of the lattice
-                outcome = kern::LatticeActionWalled;
+                outcome = kern::LatticeActionEdge;
             } else {
                 const std::uint32_t wanted = kern::latticeCellIndex(
                     wantedX, wantedY, wantedZ, settings.latticeWidth, settings.latticeHeight);
                 if (!kern::latticeCellEnterable(worldOccupancy[wanted])) {
                     agent.intent.w = 1; // somebody was already standing there
-                    outcome = kern::LatticeActionWalled;
+                    outcome = kern::LatticeActionCrowded;
                 } else {
                     agent.intent = Int4{wantedX, wantedY, wantedZ, 0};
                     std::int32_t& claim = population.claims[worldBase + wanted];

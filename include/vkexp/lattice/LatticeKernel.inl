@@ -245,20 +245,29 @@ VKEXP_LATTICE_FN int latticeResourceY(uint hash, uint lowest, uint highest, uint
 // when facing is state the agent owns, and "unwilling" cannot occur when not
 // wanting to build means walking instead of standing still. Both were failure
 // modes the body frame removes rather than fixes.
-const uint LatticeActionTurning = 0u;   // the tick was spent turning in place
-const uint LatticeActionWalking = 1u;   // a step forward, up a wall, or down
-const uint LatticeActionWalled = 2u;    // the step could not be taken at all
-const uint LatticeBuildCooling = 3u;    // wanted to build, still cooling, walked
-const uint LatticeBuildOffLattice = 4u; // the cell in front is outside the world
-const uint LatticeBuildBlocked = 5u;    // a block already stands there
-const uint LatticeBuildUnsupported = 6u;   // nothing under it, and no side support
-const uint LatticeBuildAboveFrontier = 7u; // too far above the local foundation
-const uint LatticeBuildInTheWay = 8u;      // an agent is standing in the cell
+const uint LatticeActionTurning = 0u; // the tick was spent turning in place
+const uint LatticeActionWalking = 1u; // a step forward, up a wall, or down
+// Four ways a step fails, and they are four entries rather than one because
+// they call for four different things. An agent against the edge of the world
+// has to turn; one against a chasm has to build; one under a ceiling has run out
+// of room to climb; one blocked by a neighbour only has to wait. Counted as one
+// number, "walled in" says a third of the ticks went nowhere and not which of
+// those four worlds the group is living in.
+const uint LatticeActionEdge = 2u;     // the lattice ends in front
+const uint LatticeActionVoid = 3u;     // the column in front has no bottom
+const uint LatticeActionCeiling = 4u;  // the climb is blocked from above
+const uint LatticeActionCrowded = 5u;  // another agent is standing there
+const uint LatticeBuildCooling = 6u;   // wanted to build, still cooling, walked
+const uint LatticeBuildOffLattice = 7u; // the cell in front is outside the world
+const uint LatticeBuildBlocked = 8u;    // a block already stands there
+const uint LatticeBuildUnsupported = 9u;    // nothing under it, and no side support
+const uint LatticeBuildAboveFrontier = 10u; // too far above the local foundation
+const uint LatticeBuildInTheWay = 11u;      // an agent is standing in the cell
 // The last two are recorded by the resolve pass rather than the decide pass,
 // because whether a bid won is not known until every bid is in.
-const uint LatticeBuildPlaced = 9u;    // the bid won and a block stands there
-const uint LatticeBuildContested = 10u; // the bid was placed and lost
-const uint LatticeBuildOutcomeCount = 11u;
+const uint LatticeBuildPlaced = 12u;    // the bid won and a block stands there
+const uint LatticeBuildContested = 13u; // the bid was placed and lost
+const uint LatticeBuildOutcomeCount = 14u;
 
 // An empty cell, and a cell nobody has bid for. Two sentinels and not one: the
 // occupancy grid stores agent indices and -1 for empty, while the bid grid is

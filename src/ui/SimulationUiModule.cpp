@@ -772,9 +772,10 @@ void SimulationUiModule::drawBuildOutcomes() {
 
     ImGui::SeparatorText("What the ticks went on");
     static constexpr std::array<const char*, vkexp::lattice::kernel::LatticeBuildOutcomeCount>
-        names{"Turning",    "Walking",        "Walled in",  "Cooling",
-              "Off the lattice", "Blocked",   "No support", "Above frontier",
-              "In the way", "Placed",         "Lost the cell"};
+        names{"Turning",         "Walking",    "Edge of the world", "Over a chasm",
+              "Under a ceiling",  "Crowded",    "Cooling",           "Off the lattice",
+              "Blocked",          "No support", "Above frontier",    "In the way",
+              "Placed",           "Lost the cell"};
     std::array<std::uint64_t, names.size()> total{};
     std::uint64_t attempts = 0;
     for (std::size_t world = 0; world < worlds; ++world) {

@@ -540,8 +540,8 @@ int run(const Options& options) {
             // a CSV that has to be re-run to answer the question.
             *csv << "generation,lattice,seed,best,median,mean,arrival_ratio,"
                     "blocks,footprint,peak,mean_height,height_spread,compactness,overhangs,"
-                    "roofed,turning,walking,walled,cooling,off_lattice,blocked,unsupported,"
-                    "above_frontier,in_the_way,placed,contested\n";
+                    "roofed,turning,walking,edge,void,ceiling,crowded,cooling,off_lattice,"
+                    "blocked,unsupported,above_frontier,in_the_way,placed,contested\n";
         }
     }
 

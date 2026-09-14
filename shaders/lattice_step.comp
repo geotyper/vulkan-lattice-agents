@@ -379,10 +379,10 @@ void main() {
         if (stepping) {
             wantedX += forwardX;
             wantedZ += forwardZ;
-            bool walled = false;
+            uint refusal = LatticeBuildOutcomeCount; // no refusal yet
             if (!latticeInBounds(wantedX, wantedY, wantedZ, params.latticeWidth,
                                  params.latticeHeight, params.latticeDepth)) {
-                walled = true;
+                refusal = LatticeActionEdge;
             } else if (hasStructure(worldBase, wantedX, wantedY, wantedZ)) {
                 // A wall in front is climbed, not stepped onto. The agent rises
                 // one level in its own column and ends up beside the block,
@@ -393,24 +393,28 @@ void main() {
                 wantedX = agent.cell.x;
                 wantedZ = agent.cell.z;
                 ++wantedY;
-                walled = !latticeInBounds(wantedX, wantedY, wantedZ, params.latticeWidth,
-                                          params.latticeHeight, params.latticeDepth) ||
-                         hasStructure(worldBase, wantedX, wantedY, wantedZ);
+                if (!latticeInBounds(wantedX, wantedY, wantedZ, params.latticeWidth,
+                                     params.latticeHeight, params.latticeDepth) ||
+                    hasStructure(worldBase, wantedX, wantedY, wantedZ)) {
+                    refusal = LatticeActionCeiling;
+                }
             } else {
                 const int landing =
                     constructionLandingY(worldBase, wantedX, wantedY, wantedZ, heading);
                 // The far side of a chasm edge. Refused like the edge of the
-                // lattice, and counted the same way: from the agent's side the
-                // two are the same answer.
-                walled = landing < 0;
+                // lattice, and told apart from it: one is a wall to turn away
+                // from and the other is a gap to build across.
+                if (landing < 0) {
+                    refusal = LatticeActionVoid;
+                }
                 wantedY = landing;
             }
-            if (walled) {
+            if (refusal < LatticeBuildOutcomeCount) {
                 wantedX = agent.cell.x;
                 wantedY = agent.cell.y;
                 wantedZ = agent.cell.z;
                 agent.intent.w = 1;
-                outcome = LatticeActionWalled;
+                outcome = refusal;
             } else {
                 outcome = LatticeActionWalking;
             }
@@ -439,7 +443,7 @@ void main() {
                 atomicMin(claims[worldBase + wanted], int(id));
             } else if (structures[worldBase + wanted] == LatticeNoStructure) {
                 agent.intent.w = 1; // another agent, not a wall
-                outcome = LatticeActionWalled;
+                outcome = LatticeActionCrowded;
             }
         }
     } else if (!turning) {
@@ -457,13 +461,13 @@ void main() {
         if (!latticeInBounds(wantedX, wantedY, wantedZ, params.latticeWidth, params.latticeHeight,
                              params.latticeDepth)) {
             agent.intent.w = 1; // walked into the edge of the lattice
-            outcome = LatticeActionWalled;
+            outcome = LatticeActionEdge;
         } else {
             const uint wanted = latticeCellIndex(wantedX, wantedY, wantedZ, params.latticeWidth,
                                                  params.latticeHeight);
             if (!latticeCellEnterable(occupancy[worldBase + wanted])) {
                 agent.intent.w = 1; // somebody was already standing there
-                outcome = LatticeActionWalled;
+                outcome = LatticeActionCrowded;
             } else {
                 agent.intent = ivec4(wantedX, wantedY, wantedZ, 0);
                 // The bid. atomicMin and not atomicCompSwap: a minimum is
