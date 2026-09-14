@@ -328,6 +328,18 @@ struct SimulationStep {
     // support from below is always valid; cardinal side support is an opt-in
     // construction experiment below.
     std::uint32_t buildIntervalTicks{12};
+    // Ticks of cooldown charged for a swing that could never have landed: at a
+    // cell that already holds a block, or past the wall of the world. Both are
+    // things the agent can see -- structure and edge arrive on the same sense
+    // channel it already reads -- so this is a cost for not looking, not a cost
+    // for being unlucky.
+    //
+    // It exists because the counters said aiming, not the rules, is what stops
+    // building: of the attempts where an agent actually wanted to build, 56%
+    // were at an occupied cell and 35% past a wall, and 0.38% became blocks.
+    // Nothing charged for any of it, so there was no gradient towards picking a
+    // face that is free. Zero restores the old behaviour.
+    std::uint32_t wastedBuildTicks{4};
     float buildThreshold{0.55F};
     // How full a level has to be, around a build site, before it counts as
     // something to stand on. The area asked about is the square of
@@ -501,6 +513,7 @@ struct alignas(16) GpuStepParameters {
     std::uint32_t brainGenomeStride{};
     std::uint32_t worldMode{};
     std::uint32_t buildIntervalTicks{};
+    std::uint32_t wastedBuildTicks{};
     float buildThreshold{};
     float constructionCourseFill{};
     std::uint32_t constructionHeightLead{};
@@ -519,7 +532,7 @@ struct alignas(16) GpuStepParameters {
     GpuFitnessWeights fitness;
 };
 
-static_assert(sizeof(GpuStepParameters) == 144);
+static_assert(sizeof(GpuStepParameters) == 160);
 static_assert(offsetof(GpuStepParameters, latticeWidth) == 28);
 // The one offset the GLSL mirror cannot derive for itself. Twenty-five scalars
 // come to 100 bytes and both languages round this block up to 112 -- but only
@@ -527,7 +540,7 @@ static_assert(offsetof(GpuStepParameters, latticeWidth) == 28);
 // just as `alignas(16)` does here. Eight floats there would align to 4, and the
 // two strides would then differ by three words: invisible at step index zero
 // and total nonsense at every index after it.
-static_assert(offsetof(GpuStepParameters, fitness) == 112);
+static_assert(offsetof(GpuStepParameters, fitness) == 128);
 static_assert(offsetof(GpuStepParameters, neuronModel) == 56);
 
 // The network this run actually builds. The two ends are the lattice's own: how

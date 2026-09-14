@@ -453,6 +453,15 @@ void main() {
                 }
             }
         }
+        // A swing that could never have landed costs cooldown. Only the two
+        // outcomes the agent could have seen coming: a cell that already holds a
+        // block, and a face pointing past the wall -- both arrive on sense
+        // channels it already reads. An unsupported target is not charged,
+        // because deciding whether a cantilever will hold is the experiment
+        // rather than the mistake, and it is the whole of the chasm world.
+        if (outcome == LatticeBuildBlocked || outcome == LatticeBuildOffLattice) {
+            agent.signal.z = float(params.wastedBuildTicks);
+        }
         if (outcome < LatticeBuildOutcomeCount) {
             atomicAdd(buildOutcomes[world * LatticeBuildOutcomeCount + outcome], 1u);
         }

@@ -258,6 +258,14 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
             state_.settings.buildIntervalTicks = static_cast<std::uint32_t>(buildInterval);
         }
         ImGui::SliderFloat("Build threshold", &state_.settings.buildThreshold, 0.0F, 0.95F, "%.2f");
+        int wasted = static_cast<int>(state_.settings.wastedBuildTicks);
+        if (ImGui::SliderInt("Wasted swing", &wasted, 0, 60, "%d ticks")) {
+            state_.settings.wastedBuildTicks = static_cast<std::uint32_t>(wasted);
+        }
+        ImGui::SetItemTooltip("Cooldown charged for a build aimed where a block can never go: at "
+                              "a cell that already holds one, or past the wall of the world. Both "
+                              "are things the agent can see, so this is a cost for not looking. "
+                              "Zero charges nothing, which is how it behaved before.");
 
         // The foundation rule. Off in the chasm, and not as a default the user
         // may override: a cantilever has nothing beneath it, so this test would

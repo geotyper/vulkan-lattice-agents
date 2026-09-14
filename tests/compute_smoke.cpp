@@ -457,7 +457,17 @@ private:
 // tolerance, because resynchronising every step stops it accumulating: summing
 // the signed differences restores it, since symmetric rounding noise cancels and
 // a constant offset in a shader term does not.
-using AgentDrift = std::array<double, 5 + vkexp::agentHiddenVectorCount * 4>;
+// One slot per float compared with a tolerance, in the order compareAgents
+// compares them: the four signal lanes, the four metrics, the four memory
+// lanes, then the hidden block.
+//
+// It was written as five plus the hidden block, which stopped being the count
+// the moment the memory lanes were added and had been writing three doubles
+// past the end ever since -- silently, because the overrun landed in adjacent
+// stack. Naming the number next to the thing it counts is what stops that
+// happening again the next lane.
+constexpr std::size_t agentDriftScalarCount = 12;
+using AgentDrift = std::array<double, agentDriftScalarCount + vkexp::agentHiddenVectorCount * 4>;
 constexpr double accumulatedDriftBudget = 1.0e-3;
 
 // Cells and occupancy are compared exactly. They are integers, and the whole
@@ -493,6 +503,17 @@ void compareAgents(const vkexp::AgentState& expected, const vkexp::AgentState& a
     identical(expected.intent.z, actual.intent.z, "intent.z");
     identical(expected.intent.w, actual.intent.w, "refusal flag");
     same(expected.signal.x, actual.signal.x, "broadcast");
+    // The rest of the signal block, none of which was compared before. The
+    // build output drifts like any other tanh; the cooldown and the "placed a
+    // block last step" flag are whole numbers, so any difference in them is a
+    // difference of logic and lands far outside the tolerance. The cooldown in
+    // particular is now written by two rules rather than one -- a placement
+    // charges it, and so does a swing that could never have landed -- and a
+    // charge that happened on one side only would otherwise show up as nothing
+    // at all, because the probe re-uploads the host's agents every step.
+    same(expected.signal.y, actual.signal.y, "build output");
+    same(expected.signal.z, actual.signal.z, "build cooldown");
+    same(expected.signal.w, actual.signal.w, "placed last step");
     same(expected.metrics.x, actual.metrics.x, "best nearness");
     same(expected.metrics.y, actual.metrics.y, "contacts");
     same(expected.metrics.z, actual.metrics.z, "effort");
@@ -504,6 +525,12 @@ void compareAgents(const vkexp::AgentState& expected, const vkexp::AgentState& a
     same(expected.memory.x, actual.memory.x, "memory cell 1");
     same(expected.memory.y, actual.memory.y, "memory cell 2");
     same(expected.memory.z, actual.memory.z, "still ticks");
+    same(expected.memory.w, actual.memory.w, "carrying a load");
+    if (slot != agentDriftScalarCount) {
+        throw std::runtime_error("compareAgents compares " + std::to_string(slot) +
+                                 " scalars before the hidden block, and AgentDrift is sized for " +
+                                 std::to_string(agentDriftScalarCount));
+    }
     for (std::size_t index = 0; index < expected.hidden.size(); ++index) {
         same(expected.hidden[index].x, actual.hidden[index].x, "hidden.x");
         same(expected.hidden[index].y, actual.hidden[index].y, "hidden.y");
@@ -1044,6 +1071,7 @@ void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
     packed.brainGenomeStride = nextUint();
     packed.worldMode = nextUint();
     packed.buildIntervalTicks = nextUint();
+    packed.wastedBuildTicks = nextUint();
     packed.buildThreshold = nextFloat();
     packed.constructionCourseFill = nextFloat();
     packed.constructionHeightLead = nextUint();
@@ -1081,6 +1109,7 @@ void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
     expectUint("brainGenomeStride", packed.brainGenomeStride);
     expectUint("worldMode", packed.worldMode);
     expectUint("buildIntervalTicks", packed.buildIntervalTicks);
+    expectUint("wastedBuildTicks", packed.wastedBuildTicks);
     expectFloat("buildThreshold", packed.buildThreshold);
     expectFloat("constructionCourseFill", packed.constructionCourseFill);
     expectUint("constructionHeightLead", packed.constructionHeightLead);

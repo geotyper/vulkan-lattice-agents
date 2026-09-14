@@ -53,6 +53,7 @@ void main() {
     echo[at++] = params.brainGenomeStride;
     echo[at++] = params.worldMode;
     echo[at++] = params.buildIntervalTicks;
+    echo[at++] = params.wastedBuildTicks;
     echo[at++] = floatBitsToUint(params.buildThreshold);
     echo[at++] = floatBitsToUint(params.constructionCourseFill);
     echo[at++] = params.constructionHeightLead;

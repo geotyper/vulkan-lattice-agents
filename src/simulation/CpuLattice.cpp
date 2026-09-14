@@ -344,6 +344,11 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                     }
                 }
             }
+            // Mirrors the same charge in lattice_step.comp: only the two
+            // outcomes the agent could have seen coming.
+            if (outcome == kern::LatticeBuildBlocked || outcome == kern::LatticeBuildOffLattice) {
+                agent.signal.z = static_cast<float>(settings.wastedBuildTicks);
+            }
             if (!population.buildOutcomes.empty() && outcome < kern::LatticeBuildOutcomeCount) {
                 ++population.buildOutcomes[static_cast<std::size_t>(world) *
                                                kern::LatticeBuildOutcomeCount +
