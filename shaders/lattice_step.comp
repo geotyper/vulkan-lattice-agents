@@ -299,7 +299,7 @@ void main() {
     // to learn "not both at once" is learning the encoding rather than the task.
     // Read through the same dead zone as everything else, so not turning is a
     // decision and not a rounding.
-    const int turn = latticeAxisStep(produced[BrainTurnOutput], params.moveThreshold);
+    const int turn = latticeAxisStep(produced[BrainTurnOutput], params.turnThreshold);
     const bool turning = turn != 0;
     if (turning) {
         agent.cell.w = int(latticeTurn(facing, turn > 0));

@@ -311,7 +311,7 @@ struct SimulationStep {
     // How sure a drive has to be before it becomes a step. At zero an agent
     // moves every step whatever it thinks; near one it has to commit. This is
     // the whole of the decision to stand still, which is why it is a parameter.
-    float moveThreshold{lattice::kernel::LatticeMoveThresholdDefault};
+    float turnThreshold{lattice::kernel::LatticeTurnThresholdDefault};
 
     // How near the beacon counts as reached. One rather than zero, so a group
     // can crowd a beacon that only one of them can stand on.
@@ -475,7 +475,7 @@ static_assert(sizeof(GpuFitnessWeights) == 32);
 // one vkCmdPushConstants per step, and the three passes of a step share it.
 struct alignas(16) GpuStepParameters {
     float deltaTime{};
-    float moveThreshold{};
+    float turnThreshold{};
     std::uint32_t agentCount{};
     std::uint32_t brainLayout{}; // packed active input and output counts
     std::uint32_t trialsPerGenome{};

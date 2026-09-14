@@ -39,7 +39,7 @@ struct Options {
     std::optional<std::uint32_t> latticeWidth;
     std::optional<std::uint32_t> latticeHeight;
     std::optional<std::uint32_t> latticeDepth;
-    std::optional<float> moveThreshold;
+    std::optional<float> turnThreshold;
     std::optional<std::uint32_t> contactRadius;
     vkexp::Neighborhood neighborhood{vkexp::Neighborhood::Moore};
     vkexp::WorldMode worldMode{vkexp::WorldMode::Beacon};
@@ -88,9 +88,10 @@ void printHelp(const char* executable) {
                  "  --neighbourhood <name>   faces|moore: whether a step may be diagonal\n"
                  "                           (default moore). The input vector is 26 cells wide\n"
                  "                           either way, so a population carries across\n"
-                 "  --move-threshold <x>     how sure the turn output must be before the\n"
-                 "                           agent pivots, 0..1 (default 0.25). A turn costs\n"
-                 "                           the whole tick\n"
+                 "  --turn-threshold <x>     how sure the turn output must be before the\n"
+                 "                           agent pivots, 0..1 (default 0.70). A turn costs\n"
+                 "                           the whole tick, so a low one is a group that\n"
+                 "                           spends its time looking around\n"
                  "  --contact-radius <n>     cells from the beacon that count as reaching it\n"
                  "                           (default 1). 0 means one agent per world can\n"
                  "                           score at a time\n"
@@ -329,8 +330,8 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.worldMode = parseWorldMode(next(index, argument));
         } else if (argument == "--neighbourhood" || argument == "--neighborhood") {
             options.neighborhood = parseNeighborhood(next(index, argument));
-        } else if (argument == "--move-threshold") {
-            options.moveThreshold = parseNumber<float>(next(index, argument), argument);
+        } else if (argument == "--turn-threshold" || argument == "--move-threshold") {
+            options.turnThreshold = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--contact-radius") {
             options.contactRadius = parseNumber<std::uint32_t>(next(index, argument), argument);
         } else if (argument == "--build-interval") {
@@ -463,8 +464,8 @@ int run(const Options& options) {
     // The chasm forces it on and the flag can only add to that: a world whose
     // objective needs a cantilever must not be startable without one.
     state.settings.allowSideSupportedBlocks |= options.allowSideSupportedBlocks ? 1U : 0U;
-    if (options.moveThreshold) {
-        state.settings.moveThreshold = std::clamp(*options.moveThreshold, 0.0F, 1.0F);
+    if (options.turnThreshold) {
+        state.settings.turnThreshold = std::clamp(*options.turnThreshold, 0.0F, 1.0F);
     }
     if (options.contactRadius) {
         state.settings.beaconContactRadius = *options.contactRadius;
@@ -570,8 +571,8 @@ int run(const Options& options) {
                   << "World:      "
                   << worldModeName(state.settings.worldMode)
                   << '\n'
-                  << "Movement:   threshold " << std::fixed << std::setprecision(2)
-                  << state.settings.moveThreshold;
+                  << "Movement:   turn threshold " << std::fixed << std::setprecision(2)
+                  << state.settings.turnThreshold;
         if (vkexp::worldBuilds(state.settings.worldMode)) {
             std::cout << '\n'
                       << "Construction: one supported block every "

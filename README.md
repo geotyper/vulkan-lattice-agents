@@ -26,10 +26,10 @@ logical world.
 
 ```
 Lattice:    32x32x16 = 16384 cells per world, Moore (26)
-Brain:      88 -> 20 -> 7
+Brain:      114 -> 20 -> 5
 Trial:      900 steps = 15.0 s at 60.0 Hz
 Population: 512 genomes x 4 trials = 2048 agents in 172 lattices
-Movement:   threshold 0.25, beacon reached within 1 cell(s)
+Movement:   turn threshold 0.70, beacon reached within 1 cell(s)
 ```
 
 - 512 genomes, each evaluated in four trials (2048 GPU agents);

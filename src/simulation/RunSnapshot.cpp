@@ -43,7 +43,7 @@ static_assert(sizeof(SnapshotHeader) == 56);
 // runSnapshotVersion.
 template <typename Visit> void visitSettings(SimulationStep& settings, Visit&& visit) {
     visit(settings.deltaTime);
-    visit(settings.moveThreshold);
+    visit(settings.turnThreshold);
     visit(settings.fitness.trackingReward);
     visit(settings.fitness.objectiveBonus);
     visit(settings.fitness.motorCostWeight);

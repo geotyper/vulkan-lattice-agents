@@ -1054,7 +1054,7 @@ void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
 
     vkexp::GpuStepParameters packed{};
     packed.deltaTime = nextFloat();
-    packed.moveThreshold = nextFloat();
+    packed.turnThreshold = nextFloat();
     packed.agentCount = nextUint();
     packed.brainLayout = nextUint();
     packed.trialsPerGenome = nextUint();
@@ -1091,7 +1091,7 @@ void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
     packed.fitness.reserved2 = nextFloat();
 
     expectFloat("deltaTime", packed.deltaTime);
-    expectFloat("moveThreshold", packed.moveThreshold);
+    expectFloat("turnThreshold", packed.turnThreshold);
     expectUint("agentCount", packed.agentCount);
     expectUint("brainLayout", packed.brainLayout);
     expectUint("trialsPerGenome", packed.trialsPerGenome);

@@ -367,7 +367,15 @@ VKEXP_LATTICE_FN uint latticeMaximumDistance(uint neighborhood, uint width, uint
 // The dead zone is the whole of the decision not to commit, so it is a parameter
 // and not a constant: at zero an agent turns on every step whatever it thinks,
 // and near one it has to be sure before it does.
-const float LatticeMoveThresholdDefault = 0.25f;
+//
+// Wide by default, which the world-axis scheme did not need. A turn costs the
+// whole tick, and an output that saturates clears a narrow dead zone on almost
+// any input -- at 0.25 a fresh population spends 93% of every generation
+// pivoting on the spot and never reaches a wall to climb. It cannot simply be
+// pushed to one either: turning is also how an agent gets out of a corner, and
+// the wider the zone the longer it is stuck against one. 0.7 is where the two
+// costs met in a four-generation sweep of the construction world.
+const float LatticeTurnThresholdDefault = 0.70f;
 
 VKEXP_LATTICE_MATH_FN int latticeAxisStep(float drive, float threshold) {
     if (drive > threshold) {

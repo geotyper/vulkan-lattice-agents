@@ -35,7 +35,7 @@ void main() {
     const StepParameters params = stepParameters[selector.stepIndex];
     uint at = 0u;
     echo[at++] = floatBitsToUint(params.deltaTime);
-    echo[at++] = floatBitsToUint(params.moveThreshold);
+    echo[at++] = floatBitsToUint(params.turnThreshold);
     echo[at++] = params.agentCount;
     echo[at++] = params.brainLayout;
     echo[at++] = params.trialsPerGenome;

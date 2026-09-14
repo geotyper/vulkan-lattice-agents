@@ -1002,7 +1002,7 @@ void testRunSnapshotRoundTrip() {
     snapshot.settings.latticeWidth = 24;
     snapshot.settings.latticeHeight = 20;
     snapshot.settings.latticeDepth = 12;
-    snapshot.settings.moveThreshold = 0.4F;
+    snapshot.settings.turnThreshold = 0.4F;
     snapshot.settings.beaconContactRadius = 3;
     snapshot.settings.beaconSeed = 0xFACEU;
     snapshot.settings.neighborhood = vkexp::Neighborhood::Faces;
@@ -1041,7 +1041,7 @@ void testRunSnapshotRoundTrip() {
               loaded.trialsPerGenome == snapshot.trialsPerGenome && loaded.seed == snapshot.seed,
           "A run snapshot round-trips its run header");
     check(closeTo(loaded.settings.deltaTime, snapshot.settings.deltaTime) &&
-              closeTo(loaded.settings.moveThreshold, snapshot.settings.moveThreshold),
+              closeTo(loaded.settings.turnThreshold, snapshot.settings.turnThreshold),
           "A run snapshot round-trips its float settings");
     check(loaded.settings.latticeWidth == 24 && loaded.settings.latticeHeight == 20 &&
               loaded.settings.latticeDepth == 12,
@@ -1144,7 +1144,7 @@ void testStepParameterPacking() {
     settings.latticeHeight = 16;
     settings.latticeDepth = 8;
     settings.neighborhood = vkexp::Neighborhood::Faces;
-    settings.moveThreshold = 0.4F;
+    settings.turnThreshold = 0.4F;
     settings.beaconContactRadius = 2;
     settings.neuronModel = vkexp::NeuronModel::Spiking;
     settings.hiddenLayers = {12, 8, 0};
@@ -1167,7 +1167,7 @@ void testStepParameterPacking() {
     // the longest journey is the sum of the spans rather than the largest.
     check(packed.maximumDistance == (20 - 1) + (16 - 1) + (8 - 1),
           "The longest journey is packed as a Manhattan distance under faces");
-    check(closeTo(packed.moveThreshold, 0.4F) && packed.beaconContactRadius == 2 &&
+    check(closeTo(packed.turnThreshold, 0.4F) && packed.beaconContactRadius == 2 &&
               packed.neuronModel == static_cast<std::uint32_t>(vkexp::NeuronModel::Spiking),
           "The movement and neuron settings reach the shader");
     check(closeTo(packed.fitness.signalCostFactor, 0.31F),

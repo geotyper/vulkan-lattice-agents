@@ -185,7 +185,7 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
         // Sign, not two outputs, read through the same dead zone as everything
         // else: not turning is a decision and not a rounding.
         const int turn =
-            kern::latticeAxisStep(output[brain::BrainTurnOutput], settings.moveThreshold);
+            kern::latticeAxisStep(output[brain::BrainTurnOutput], settings.turnThreshold);
         const bool turning = turn != 0;
         if (turning) {
             agent.cell.w = static_cast<std::int32_t>(kern::latticeTurn(facing, turn > 0));

@@ -219,7 +219,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                           "means: Chebyshev under Moore, Manhattan under faces.");
     ImGui::TextDisabled("longest journey %u moves", latticeMaximumDistance(state_.settings));
 
-    ImGui::SliderFloat("Turn threshold", &state_.settings.moveThreshold, 0.0F, 0.95F, "%.2f");
+    ImGui::SliderFloat("Turn threshold", &state_.settings.turnThreshold, 0.0F, 0.95F, "%.2f");
     ImGui::SetItemTooltip("How sure the turn output has to be before the agent pivots. A turn "
                           "costs the whole tick, so a low threshold is a group that spends its "
                           "time looking around and a high one is a group that mostly walks.");
