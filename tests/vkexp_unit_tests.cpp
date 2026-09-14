@@ -1849,7 +1849,8 @@ void testHarvestResource() {
     settings.latticeWidth = 12;
     settings.latticeHeight = 10;
     settings.latticeDepth = 9;
-    settings.resourceHeight = 4;
+    settings.resourceHeightLow = 4;
+    settings.resourceHeightHigh = 4;
     settings.beaconSeed = 0x5EEDU;
 
     // Inside the box, at the height it was asked for, and the same answer every
@@ -1875,7 +1876,8 @@ void testHarvestResource() {
     // A resource asked for above the ceiling is clamped rather than wrapped.
     // Wrapping would put it near the floor and make the world quietly easy,
     // which is the opposite of saying the setting was wrong.
-    settings.resourceHeight = 99;
+    settings.resourceHeightLow = 99;
+    settings.resourceHeightHigh = 99;
     check(vkexp::lattice::resourceCell(settings, 0).y ==
               static_cast<std::int32_t>(settings.latticeHeight) - 1,
           "A resource above the ceiling sits on the ceiling, not back near the floor");
@@ -1883,7 +1885,8 @@ void testHarvestResource() {
     // It never shares a cell with the beacon of the same seed and world: the two
     // are hashed against different constants precisely so that a run switched
     // from one world to the other is a different problem and not the same one.
-    settings.resourceHeight = 4;
+    settings.resourceHeightLow = 4;
+    settings.resourceHeightHigh = 4;
     std::size_t collisions = 0;
     for (std::uint32_t world = 0; world < 64; ++world) {
         const vkexp::Int4 resource = vkexp::lattice::resourceCell(settings, world);
@@ -1900,6 +1903,66 @@ void testHarvestResource() {
           "Harvest is a building world and beacon is not");
     check(vkexp::latticeSpawnCapacity(settings) == settings.latticeWidth * settings.latticeDepth,
           "A harvest world stands its group on the floor, like a construction world");
+
+    // The chasm is the same resource placed under one extra rule: it may only
+    // hang over the half nobody can walk to. The split runs along x, so that is
+    // a range of columns -- and a resource that strayed back over solid ground
+    // would turn the world into a climb, which is the one thing it is not.
+    vkexp::SimulationStep chasm = settings;
+    chasm.worldMode = vkexp::WorldMode::Chasm;
+    chasm.latticeWidth = 24;
+    chasm.latticeDepth = 20;
+    chasm.chasmGroundWidth = 0; // half
+    const std::uint32_t ground = vkexp::latticeGroundWidth(chasm);
+    check(ground == 12, "A chasm asking for zero ground gets half the width");
+    std::set<std::int32_t> chasmColumns;
+    std::set<std::int32_t> chasmRows;
+    for (std::uint32_t world = 0; world < 64; ++world) {
+        const vkexp::Int4 cell = vkexp::lattice::resourceCell(chasm, world);
+        check(cell.x >= static_cast<std::int32_t>(ground),
+              "The chasm resource hangs over the open half, never over the ground");
+        check(cell.x < static_cast<std::int32_t>(chasm.latticeWidth) && cell.z >= 0 &&
+                  cell.z < static_cast<std::int32_t>(chasm.latticeDepth),
+              "and still inside the box");
+        chasmColumns.insert(cell.x);
+        chasmRows.insert(cell.z);
+    }
+    check(chasmColumns.size() > 4 && chasmRows.size() > 4,
+          "The open half is used across both of its axes, not one line of it");
+
+    // Ground is measured along x now, so the spawn plan is ground columns by
+    // full depth. Getting this wrong stands agents over the void, which the
+    // arbitration cannot represent.
+    check(vkexp::latticeSpawnCapacity(chasm) == ground * chasm.latticeDepth,
+          "A chasm spawns only on the columns that have bedrock under them");
+    check(vkexp::lattice::kernel::latticeGroundColumn(0, ground) &&
+              vkexp::lattice::kernel::latticeGroundColumn(
+                  static_cast<int>(ground) - 1, ground) &&
+              !vkexp::lattice::kernel::latticeGroundColumn(static_cast<int>(ground), ground),
+          "Ground runs from x=0 up to the split and stops there");
+
+    // And the terrain agrees with all of it: bedrock under every ground column
+    // of every row, nothing over the chasm, and only on the bottom course.
+    const std::vector<std::int32_t> terrain = vkexp::lattice::makeTerrain(chasm, 2);
+    const std::uint32_t cells = vkexp::latticeCellsPerWorld(chasm);
+    std::size_t bedrock = 0;
+    for (std::uint32_t world = 0; world < 2; ++world) {
+        for (std::uint32_t z = 0; z < chasm.latticeDepth; ++z) {
+            for (std::uint32_t x = 0; x < chasm.latticeWidth; ++x) {
+                const std::size_t index =
+                    static_cast<std::size_t>(world) * cells +
+                    vkexp::lattice::kernel::latticeCellIndex(static_cast<int>(x), 0,
+                                                             static_cast<int>(z),
+                                                             chasm.latticeWidth,
+                                                             chasm.latticeHeight);
+                const bool solid = terrain[index] == vkexp::lattice::kernel::LatticeBedrock;
+                check(solid == (x < ground), "Bedrock covers the ground columns and only those");
+                bedrock += solid ? 1 : 0;
+            }
+        }
+    }
+    check(bedrock == static_cast<std::size_t>(ground) * chasm.latticeDepth * 2,
+          "and every world gets its own course");
 }
 
 void testLatticeAddressing() {
@@ -2243,6 +2306,165 @@ void testLatticeContention() {
           "Walking into an occupied cell is refused and charged");
 }
 
+// The foundation rule on its own, away from any agent. It is restored with a
+// fill of half rather than the quarter it first ran at: at a quarter one block
+// underneath already filled a small window, so the foundation was the level
+// immediately below and the five-level lead was never spent -- five refusals in
+// two and a half million attempts. Half asks for a mass.
+void testConstructionLocalFoundation() {
+    vkexp::SimulationStep settings{};
+    settings.worldMode = vkexp::WorldMode::Construction;
+    settings.latticeWidth = 8;
+    settings.latticeHeight = 8;
+    settings.latticeDepth = 8;
+    settings.constructionCourseFill = 0.5F;
+    const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
+    std::vector<std::int32_t> field(cells, 0);
+    const auto place = [&](const int x, const int y, const int z) {
+        field[vkexp::lattice::kernel::latticeCellIndex(x, y, z, settings.latticeWidth,
+                                                       settings.latticeHeight)] = 1;
+    };
+
+    settings.constructionSupportRadius = 1;
+    check(vkexp::constructionLocalFoundation(field, settings, 4, 3, 4) == 0,
+          "Nothing under a site is no foundation at all");
+    check(vkexp::constructionLocalFoundation(field, settings, 4, 0, 4) == 0,
+          "A site on the floor has nothing below it to scan");
+
+    // A solid 3x3 directly under the site: the whole window, so dense at any
+    // fill, and the foundation is the level above it.
+    for (int z = 3; z <= 5; ++z) {
+        for (int x = 3; x <= 5; ++x) {
+            place(x, 2, z);
+        }
+    }
+    check(vkexp::constructionLocalFoundation(field, settings, 4, 3, 4) == 3,
+          "A full window one level down is a foundation of that level plus one");
+    check(vkexp::constructionLocalFoundation(field, settings, 4, 6, 4) == 3,
+          "The scan finds the same platform from higher up: levels need not be consecutive");
+
+    // The radius is what decides. Standing two cells away, a radius of one
+    // cannot see the platform at all and a radius of three can.
+    check(vkexp::constructionLocalFoundation(field, settings, 7, 3, 7) == 0,
+          "A narrow window sees nothing two cells away from the platform");
+    settings.constructionSupportRadius = 3;
+    check(vkexp::constructionLocalFoundation(field, settings, 7, 3, 7) == 0,
+          "A wider window reaches the platform, but four cells of sixteen is under half");
+    settings.constructionCourseFill = 0.25F;
+    check(vkexp::constructionLocalFoundation(field, settings, 7, 3, 7) == 3,
+          "At a lower fill the same reach is enough, which is the trade the two sliders make");
+
+    // Clipping at the wall shrinks the question rather than failing it: a corner
+    // sees fewer cells and needs proportionally fewer of them.
+    settings.constructionSupportRadius = 1;
+    settings.constructionCourseFill = 1.0F;
+    std::fill(field.begin(), field.end(), 0);
+    place(0, 0, 0);
+    place(1, 0, 0);
+    place(0, 0, 1);
+    place(1, 0, 1);
+    check(vkexp::constructionLocalFoundation(field, settings, 0, 1, 0) == 1,
+          "A corner window is four cells, and four blocks fill it completely");
+    check(vkexp::constructionLocalFoundation(field, settings, 2, 1, 2) == 0,
+          "One cell short of full is not full, whatever the window size");
+
+    // A fill of zero still needs one block: an empty level is never something
+    // to stand on, however forgiving the setting.
+    settings.constructionCourseFill = 0.0F;
+    check(vkexp::constructionLocalFoundation(field, settings, 6, 2, 6) == 0,
+          "An empty window is never a foundation, even at zero fill");
+    check(vkexp::constructionLocalFoundation(field, settings, 2, 2, 2) == 1,
+          "At zero fill a single block within reach is enough");
+}
+
+
+// Walking off the edge of a chasm. The rule under test is that a column with no
+// bottom cannot be entered -- which is not a rule about chasms at all, but the
+// consequence of there being no implicit floor any more. It needs its own test
+// because the parity probe cannot reach it: parity says the two implementations
+// agree, and while the landing search stopped at height zero both of them agreed
+// on the same wrong answer, which was that the bottom of the hole is a floor.
+//
+// What is not a bug, and is worth stating because it looks like one: the first
+// column of the void is enterable at any height where the cliff is beside it.
+// Support has always included a vertical face -- that is the climbing rule, and
+// it is what lets an agent go up a wall at all -- so an agent may hang on the
+// cliff and move along it. It may not leave it, which is the difference between
+// hugging an edge and walking across a hole.
+void testChasmEdge() {
+    vkexp::SimulationStep settings{};
+    settings.worldMode = vkexp::WorldMode::Chasm;
+    settings.latticeWidth = 8;
+    settings.latticeHeight = 6;
+    settings.latticeDepth = 5;
+    settings.neighborhood = vkexp::Neighborhood::Faces;
+    settings.neuronModel = vkexp::NeuronModel::Reactive;
+    settings.chasmGroundWidth = 3; // ground at x 0..2, open air at x 3..7
+    // Nothing is built in this test: a tanh output cannot exceed one, so the
+    // gate never opens and what is measured is walking alone.
+    settings.buildThreshold = 2.0F;
+    const auto ground = static_cast<std::int32_t>(vkexp::latticeGroundWidth(settings));
+    check(ground == 3, "The fixture's ground is where it says it is");
+
+    const vkexp::lattice::PopulationLayout layout{1, 1, 1};
+    const vkexp::neuro::BrainShape brain = vkexp::resolvedBrain(settings);
+    const auto stride = static_cast<std::uint32_t>(brain.weightCount());
+    std::vector<float> weights(static_cast<std::size_t>(stride) * layout.genomeCount, 0.0F);
+    namespace bk = vkexp::neuro::kernel;
+    weights[bk::brainOutputBiasIndex(0U, static_cast<std::uint32_t>(brain.inputCount),
+                                     brain.packedLayers(),
+                                     static_cast<std::uint32_t>(brain.outputCount),
+                                     bk::BrainMoveOutput)] = 8.0F; // drive +x, every step
+
+    std::vector<vkexp::AgentState> agents(1);
+    agents[0].cell = {ground - 1, 1, 2, static_cast<std::int32_t>(lk::LatticeNeighborCount)};
+    agents[0].beacon = {-1, -1, -1, 0};
+    agents[0].intent = {agents[0].cell.x, agents[0].cell.y, agents[0].cell.z, 0};
+
+    std::vector<std::int32_t> structures =
+        vkexp::lattice::makeTerrain(settings, layout.worldCount());
+    const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
+    std::vector<std::int32_t> occupancy(static_cast<std::size_t>(cells) * layout.worldCount());
+    vkexp::lattice::buildOccupancy(agents, settings, layout, occupancy);
+    std::vector<std::int32_t> claims(occupancy.size());
+    std::vector<std::uint32_t> outcomes(static_cast<std::size_t>(layout.worldCount()) *
+                                        lk::LatticeBuildOutcomeCount);
+
+    const auto step = [&] {
+        std::fill(outcomes.begin(), outcomes.end(), 0U);
+        vkexp::stepLatticeCpu({agents, occupancy, claims, weights, stride, layout.groupSize(),
+                               layout.trialsPerGenome, structures, outcomes},
+                              settings);
+    };
+
+    // Twenty steps of walking east as hard as the output can ask. Without the
+    // rule the agent reaches the far wall: every cell of the hole was a landing,
+    // so the hole was a road.
+    for (std::uint32_t tick = 0; tick < 20; ++tick) {
+        step();
+        check(agents[0].cell.x <= ground,
+              "Nobody walks past the cliff face into open air, however hard they push");
+    }
+    check(agents[0].cell.x == ground,
+          "The cliff face itself is reachable -- hanging on a wall is the climbing rule");
+    check(agents[0].intent.w == 1,
+          "and the step beyond it is charged as a refusal, like the edge of the lattice");
+
+    // Not a special case for the void, and not a wall: give the next column a
+    // bottom and the very same drive walks into it. Without this the test would
+    // pass just as well if stepping east had been forbidden outright.
+    const int ledgeX = ground + 1;
+    structures[lk::latticeCellIndex(ledgeX, 0, agents[0].cell.z, settings.latticeWidth,
+                                    settings.latticeHeight)] = 1;
+    step();
+    check(agents[0].cell.x == ledgeX,
+          "A block placed in the next column turns it into somewhere to go");
+    check(structures[lk::latticeCellIndex(ledgeX, 0, agents[0].cell.z, settings.latticeWidth,
+                                          settings.latticeHeight)] == 1 &&
+              agents[0].cell.y == 1,
+          "and the agent is standing on that block, one level up from nothing");
+}
+
 void testLatticeFitness() {
     // The four counters and what each is worth. Written out rather than folded
     // into agentFitness so that changing a weight and changing the arithmetic
@@ -2293,6 +2515,8 @@ int main() {
     testLatticeAddressing();
     testLatticeNeighbourhood();
     testLatticeMoveRule();
+    testConstructionLocalFoundation();
+    testChasmEdge();
     testLatticeSpawn();
     testLatticeSensing();
     testLatticeContention();

@@ -12,7 +12,10 @@ layout(location = 2) in vec4 fragColour;
 layout(location = 0) out vec4 outColour;
 
 void main() {
-    if (latticeViewMode() == LatticeViewModeBounds) {
+    const uint mode = latticeViewMode();
+    // Lines, both of them: there is no face to catch the light, and shading a
+    // line by a made-up normal only makes it flicker as the camera turns.
+    if (mode == LatticeViewModeBounds || mode == LatticeViewModeGoal) {
         outColour = fragColour;
         return;
     }

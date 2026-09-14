@@ -52,15 +52,16 @@ template <typename Visit> void visitSettings(SimulationStep& settings, Visit&& v
     visit(settings.fitness.groupSharing);
     visit(settings.fitness.boundaryPenalty);
     visit(settings.buildThreshold);
+    visit(settings.constructionCourseFill);
 }
 
-constexpr std::uint32_t settingsFloatCount = 10;
+constexpr std::uint32_t settingsFloatCount = 11;
 
 // visitSettings and SettingsIntegers together have to name every field of
 // SimulationStep, and this is what notices when a new tunable is added and
 // quietly not saved. If it fires: add the field to one of the two lists above,
 // bump runSnapshotVersion, then update this number.
-static_assert(sizeof(SimulationStep) == 96,
+static_assert(sizeof(SimulationStep) == 116,
               "SimulationStep changed shape -- update the run snapshot field lists");
 
 // The fields that are not floats, kept apart so the float list above stays a
@@ -78,11 +79,15 @@ struct SettingsIntegers {
     std::uint32_t neuronModel{};
     std::uint32_t worldMode{};
     std::uint32_t buildIntervalTicks{};
+    std::uint32_t constructionHeightLead{};
+    std::uint32_t constructionSupportRadius{};
     std::uint32_t allowSideSupportedBlocks{};
-    std::uint32_t resourceHeight{};
+    std::uint32_t resourceHeightLow{};
+    std::uint32_t resourceHeightHigh{};
+    std::uint32_t chasmGroundWidth{};
 };
 
-static_assert(sizeof(SettingsIntegers) == 56);
+static_assert(sizeof(SettingsIntegers) == 72);
 
 void readExactly(std::ifstream& stream, void* destination, const std::size_t bytes,
                  const std::filesystem::path& path) {
@@ -145,8 +150,12 @@ void saveRunSnapshot(const std::filesystem::path& path, const RunSnapshot& snaps
                                     static_cast<std::uint32_t>(settings.neuronModel),
                                     static_cast<std::uint32_t>(settings.worldMode),
                                     settings.buildIntervalTicks,
+                                    settings.constructionHeightLead,
+                                    settings.constructionSupportRadius,
                                     settings.allowSideSupportedBlocks,
-                                    settings.resourceHeight};
+                                    settings.resourceHeightLow,
+                                    settings.resourceHeightHigh,
+                                    settings.chasmGroundWidth};
     stream.write(reinterpret_cast<const char*>(&integers), sizeof(integers));
 
     for (const Genome& genome : snapshot.genomes) {
@@ -155,12 +164,8 @@ void saveRunSnapshot(const std::filesystem::path& path, const RunSnapshot& snaps
     }
     stream.write(reinterpret_cast<const char*>(snapshot.agents.data()),
                  static_cast<std::streamsize>(snapshot.agents.size() * sizeof(AgentState)));
-    const std::uint32_t floorCapacity =
-        snapshot.settings.latticeWidth * snapshot.settings.latticeDepth;
     const std::uint32_t requestedAgents =
-        worldBuilds(snapshot.settings.worldMode)
-            ? std::min(snapshot.requestedAgentsPerWorld, floorCapacity)
-            : snapshot.requestedAgentsPerWorld;
+        std::min(snapshot.requestedAgentsPerWorld, latticeSpawnCapacity(snapshot.settings));
     const std::uint32_t agentsPerWorld =
         clampAgentsPerWorld(static_cast<std::uint32_t>(snapshot.genomes.size()), requestedAgents);
     const std::uint32_t worlds =
@@ -273,7 +278,11 @@ RunSnapshot loadRunSnapshot(const std::filesystem::path& path) {
     snapshot.settings.neuronModel = static_cast<NeuronModel>(integers.neuronModel);
     snapshot.settings.worldMode = static_cast<WorldMode>(integers.worldMode);
     snapshot.settings.buildIntervalTicks = integers.buildIntervalTicks;
-    snapshot.settings.resourceHeight = integers.resourceHeight;
+    snapshot.settings.constructionHeightLead = integers.constructionHeightLead;
+    snapshot.settings.constructionSupportRadius = integers.constructionSupportRadius;
+    snapshot.settings.resourceHeightLow = integers.resourceHeightLow;
+    snapshot.settings.resourceHeightHigh = integers.resourceHeightHigh;
+    snapshot.settings.chasmGroundWidth = integers.chasmGroundWidth;
     snapshot.settings.allowSideSupportedBlocks = integers.allowSideSupportedBlocks;
 
     snapshot.genomes.assign(header.genomeCount, Genome{neuro::Weights(header.weightCount, 0.0F)});

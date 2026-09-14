@@ -324,7 +324,10 @@ void SimulationDriver::uploadPopulation(const bool preserveStructures) {
     lattice::buildOccupancy(agents_, state_.settings, populationLayout(), occupancyStaging_);
     occupancy_.write(occupancyStaging_.data(), occupancyStaging_.size() * sizeof(std::int32_t));
     if (!preserveStructures) {
-        structureStaging_.assign(occupancyStaging_.size(), lattice::kernel::LatticeNoStructure);
+        // Terrain, not an empty field: support no longer assumes a floor, so a
+        // world without its bedrock course is a world nobody can stand in.
+        structureStaging_ = lattice::makeTerrain(state_.settings, state_.worlds.worldCount);
+        structureStaging_.resize(occupancyStaging_.size(), lattice::kernel::LatticeNoStructure);
     }
     if (!structureStaging_.empty()) {
         structures_.write(structureStaging_.data(),
@@ -515,7 +518,7 @@ GenerationSummary SimulationDriver::finishGeneration() {
         state_.statistics.buildOutcomes.clear();
         state_.statistics.bestWorld = 0;
     }
-    if (state_.settings.worldMode == WorldMode::Harvest) {
+    if (worldHarvests(state_.settings.worldMode)) {
         // Deliveries, and the best anyone got to the resource. Blocks score
         // nothing at all here: a block is time spent, and whether it was spent
         // well is exactly the question the world asks. The nearness term is
@@ -552,8 +555,8 @@ GenerationSummary SimulationDriver::finishGeneration() {
         const std::uint32_t width = state_.settings.latticeWidth;
         const std::uint32_t latticeHeight = state_.settings.latticeHeight;
         for (std::size_t absolute = 0; absolute < structureStaging_.size(); ++absolute) {
-            if (structureStaging_[absolute] == lattice::kernel::LatticeNoStructure) {
-                continue;
+            if (structureStaging_[absolute] <= lattice::kernel::LatticeNoStructure) {
+                continue; // empty, or terrain nobody built
             }
             const std::uint32_t world =
                 static_cast<std::uint32_t>(absolute / state_.lattice.cellsPerWorld);

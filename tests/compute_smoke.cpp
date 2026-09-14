@@ -706,7 +706,8 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
     // 4x4x4 box. Both are deliberate: a probe where nobody ever picks up a load
     // compares the harvest rules without running them, and where the resource
     // lands is a hash this fixture does not get to choose.
-    settings.resourceHeight = 1;
+    settings.resourceHeightLow = 1;
+    settings.resourceHeightHigh = 1;
     settings.beaconContactRadius = 4;
     // Build often and on almost any signal: what is being compared is placement,
     // and a probe where nobody happens to build compares nothing. The final
@@ -714,9 +715,19 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
     settings.buildIntervalTicks = 2;
     settings.buildThreshold = -1.0F;
     settings.allowSideSupportedBlocks = 1;
-    // A radius of one, a quarter fill and two levels of headroom: small enough
-    // that the gate actually refuses placements in a 4x4x4 box rather than
-    // waving everything through.
+    // Tuned so the foundation rule actually refuses something in a box four
+    // cells high, which the shipped defaults cannot: bedrock fills the bottom
+    // course, so the foundation is never lower than one, and five levels of
+    // headroom above that is more than this box has. A demanding fill and one
+    // level of lead put the refusal where the group can reach it -- a block may
+    // go on the platform, and nothing may go on top of that.
+    //
+    // This is a test of agreement, not of meaning: it asks whether both
+    // implementations refuse the same attempts and file them under the same
+    // outcome. What the fill and the radius mean is testConstructionLocalFoundation.
+    settings.constructionSupportRadius = 1;
+    settings.constructionCourseFill = 0.9F;
+    settings.constructionHeightLead = 1;
 
     const vkexp::lattice::PopulationLayout layout{4, 4, 1};
     const vkexp::neuro::BrainShape brain = vkexp::resolvedBrain(settings);
@@ -725,28 +736,42 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
     std::vector<vkexp::AgentState> expected = vkexp::lattice::makeInitialAgents(settings, layout);
     const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
     std::vector<std::int32_t> claims(static_cast<std::size_t>(cells) * layout.worldCount());
-    std::vector<std::int32_t> structures(claims.size(),
-                                         vkexp::lattice::kernel::LatticeNoStructure);
+    std::vector<std::int32_t> structures;
 
-    // Start on a small platform rather than on the bare floor. Spawning on the
-    // floor puts every build attempt at height zero, where the scan below the
-    // site has nothing to look at and the gate is a foregone conclusion -- which
-    // is how this probe would compare construction at length without ever
-    // reaching the rule it was written for. A corner platform makes the floor
-    // locally full and globally sparse, which is exactly the distinction the
-    // radius draws.
+    // The terrain this world would really start from: a bedrock course under
+    // every column with ground, and nothing under the rest. Building worlds no
+    // longer assume a floor, so a fixture that skipped this would stand its
+    // agents on nothing and compare two different kinds of falling.
+    structures = vkexp::lattice::makeTerrain(settings, layout.worldCount());
+    // A block on the ground for the group to start beside, so that the very
+    // first step already has something to climb, stand on and build against --
+    // otherwise the probe spends its whole length comparing agents that have not
+    // yet found anything to do.
     constexpr int platform = 2;
     for (int z = 0; z < platform; ++z) {
         for (int x = 0; x < platform; ++x) {
-            structures[vkexp::lattice::kernel::latticeCellIndex(x, 0, z, settings.latticeWidth,
+            structures[vkexp::lattice::kernel::latticeCellIndex(x, 1, z, settings.latticeWidth,
                                                                 settings.latticeHeight)] = 1;
         }
     }
+    // Where the group can actually stand. In a chasm only the first half of the
+    // columns has bedrock, so the group goes there and the platform sits beside
+    // it along z; everywhere else the floor is whole and it sits beside it
+    // along x. Standing anybody over the void would make this a probe about
+    // falling rather than about building.
+    const bool chasm = worldMode == vkexp::WorldMode::Chasm;
     for (std::size_t index = 0; index < expected.size(); ++index) {
         vkexp::AgentState& agent = expected[index];
-        agent.cell.x = static_cast<std::int32_t>(index) % platform;
-        agent.cell.z = static_cast<std::int32_t>(index) / platform;
-        agent.cell.y = 1;
+        const std::int32_t row = static_cast<std::int32_t>(index) % platform;
+        const std::int32_t column = static_cast<std::int32_t>(index) / platform;
+        agent.cell.x = chasm ? row : row;
+        agent.cell.z = chasm ? column + platform : column;
+        // On top of the platform in the worlds that have a frontier, beside the
+        // ground in the one that does not. Height is the point: bedrock fills
+        // the bottom course, so the foundation is never lower than one, and in a
+        // box four high a group standing at height one can never build far
+        // enough above it to meet the rule at all.
+        agent.cell.y = chasm ? 1 : platform;
         agent.intent = {agent.cell.x, agent.cell.y, agent.cell.z, 0};
     }
     std::vector<std::int32_t> occupancy(claims.size());
@@ -758,10 +783,12 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
     std::vector<std::uint32_t> outcomes(
         static_cast<std::size_t>(layout.worldCount()) *
         vkexp::lattice::kernel::LatticeBuildOutcomeCount);
-    static constexpr std::array<const char*, 9> reasonNames{
-        "cooling",     "unwilling", "no facing",  "off the lattice", "blocked",
-        "unsupported", "in the way", "placed",    "contested"};
+    static constexpr std::array<const char*, 10> reasonNames{
+        "cooling",         "unwilling", "no facing",  "off the lattice", "blocked",
+        "unsupported",     "above the frontier",      "in the way",      "placed",
+        "contested"};
 
+    std::vector<std::uint64_t> frontierRefusals(layout.worldCount(), 0);
     LatticeHarness harness{context, settings, layout, weights};
     for (std::uint32_t step = 0; step < 48; ++step) {
         harness.upload(expected, occupancy);
@@ -773,9 +800,10 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
                                layout.groupSize(), layout.trialsPerGenome, structures, outcomes},
                               settings);
         const std::vector<vkexp::AgentState> actual = harness.readAgents();
-        const std::string where =
-            (worldMode == vkexp::WorldMode::Harvest ? "Harvest step " : "Construction step ") +
-            std::to_string(step);
+        const char* worldName = worldMode == vkexp::WorldMode::Harvest  ? "Harvest step "
+                                : chasm                                 ? "Chasm step "
+                                                                        : "Construction step ";
+        const std::string where = std::string{worldName} + std::to_string(step);
         for (std::size_t index = 0; index < expected.size(); ++index) {
             compareAgents(expected[index], actual[index], where + " agent " + std::to_string(index),
                           2.0e-3F);
@@ -806,9 +834,44 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
                 where + ": " + std::to_string(attempts) + " outcomes recorded for " +
                     std::to_string(expected.size()) +
                     " agents -- every agent gets exactly one reason per step");
+
+        for (std::uint32_t world = 0; world < layout.worldCount(); ++world) {
+            frontierRefusals[world] +=
+                outcomes[static_cast<std::size_t>(world) *
+                             vkexp::lattice::kernel::LatticeBuildOutcomeCount +
+                         vkexp::lattice::kernel::LatticeBuildAboveFrontier];
+        }
+
+        if (chasm) {
+            // Nobody stands on nothing. The rule is the same everywhere, but
+            // only here can it be broken: with a floor all the way across, a
+            // fall always finds one. The bug this catches let an agent walk off
+            // the edge, stop at height zero because the landing search stopped
+            // there, and then stroll along the bottom of the chasm -- which
+            // makes the whole world pointless without failing anything else.
+            const auto solid = [&](const int x, const int y, const int z) {
+                if (!vkexp::lattice::kernel::latticeInBounds(x, y, z, settings.latticeWidth,
+                                                             settings.latticeHeight,
+                                                             settings.latticeDepth)) {
+                    return false;
+                }
+                return structures[vkexp::lattice::kernel::latticeCellIndex(
+                           x, y, z, settings.latticeWidth, settings.latticeHeight)] !=
+                       vkexp::lattice::kernel::LatticeNoStructure;
+            };
+            for (std::size_t index = 0; index < expected.size(); ++index) {
+                const vkexp::Int4 at = expected[index].cell;
+                const bool held = solid(at.x, at.y - 1, at.z) || solid(at.x - 1, at.y, at.z) ||
+                                  solid(at.x + 1, at.y, at.z) || solid(at.x, at.y, at.z - 1) ||
+                                  solid(at.x, at.y, at.z + 1);
+                require(held, where + " agent " + std::to_string(index) + " is standing at (" +
+                                  std::to_string(at.x) + ", " + std::to_string(at.y) + ", " +
+                                  std::to_string(at.z) + ") with nothing to hold it");
+            }
+        }
     }
 
-    if (worldMode == vkexp::WorldMode::Harvest) {
+    if (vkexp::worldHarvests(worldMode)) {
         // The two things only this world does. Without these the probe would
         // compare agents that happen to agree about rules neither side ran.
         std::size_t carrying = 0;
@@ -818,11 +881,14 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
             delivered += agent.metrics.w;
         }
         require(carrying > 0 || delivered > 0.0F,
-                "Harvest parity probe never picked up a load, so it compared nothing new");
+                "A fetching parity probe never picked up a load, so it compared nothing new");
     }
 
     const auto placed = std::count_if(structures.begin(), structures.end(), [](const std::int32_t v) {
-        return v != vkexp::lattice::kernel::LatticeNoStructure;
+        // Strictly positive: bedrock lives in this field too, and counting the
+        // ground as built work would let the check below pass a probe in which
+        // nobody ever placed anything.
+        return v > vkexp::lattice::kernel::LatticeNoStructure;
     });
 
     require(placed > 0, "Construction parity probe never placed a block, so it compared nothing");
@@ -831,6 +897,19 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
     // check alone cannot see, because both sides would be wrong together.
     require(static_cast<std::size_t>(placed) < structures.size(),
             "Construction parity probe filled the whole world, so the build gate refused nothing");
+
+    if (vkexp::lattice::kernel::latticeWorldFrontier(static_cast<std::uint32_t>(worldMode))) {
+        // The frontier has to have fired at least once, or this probe compared
+        // two implementations of a rule neither of them reached. That is exactly
+        // how the rule went five refusals in two and a half million without
+        // anyone noticing.
+        std::uint64_t refusedAbove = 0;
+        for (std::uint32_t world = 0; world < layout.worldCount(); ++world) {
+            refusedAbove += frontierRefusals[world];
+        }
+        require(refusedAbove > 0,
+                "The foundation rule never refused anything, so the probe did not test it");
+    }
 }
 
 void runFullLatticeProbe(vkexp::HeadlessComputeContext& context) {
@@ -966,8 +1045,13 @@ void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
     packed.worldMode = nextUint();
     packed.buildIntervalTicks = nextUint();
     packed.buildThreshold = nextFloat();
+    packed.constructionCourseFill = nextFloat();
+    packed.constructionHeightLead = nextUint();
+    packed.constructionSupportRadius = nextUint();
     packed.allowSideSupportedBlocks = nextUint();
-    packed.resourceHeight = nextUint();
+    packed.resourceHeightLow = nextUint();
+    packed.resourceHeightHigh = nextUint();
+    packed.groundWidth = nextUint();
     packed.beaconSeed = nextUint();
     packed.fitness.trackingReward = nextFloat();
     packed.fitness.objectiveBonus = nextFloat();
@@ -998,8 +1082,13 @@ void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
     expectUint("worldMode", packed.worldMode);
     expectUint("buildIntervalTicks", packed.buildIntervalTicks);
     expectFloat("buildThreshold", packed.buildThreshold);
+    expectFloat("constructionCourseFill", packed.constructionCourseFill);
+    expectUint("constructionHeightLead", packed.constructionHeightLead);
+    expectUint("constructionSupportRadius", packed.constructionSupportRadius);
     expectUint("allowSideSupportedBlocks", packed.allowSideSupportedBlocks);
-    expectUint("resourceHeight", packed.resourceHeight);
+    expectUint("resourceHeightLow", packed.resourceHeightLow);
+    expectUint("resourceHeightHigh", packed.resourceHeightHigh);
+    expectUint("groundWidth", packed.groundWidth);
     expectUint("beaconSeed", packed.beaconSeed);
     expectFloat("fitness.trackingReward", packed.fitness.trackingReward);
     expectFloat("fitness.objectiveBonus", packed.fitness.objectiveBonus);
@@ -1260,6 +1349,7 @@ int runAll() {
     // of difference a probe that only ran one of them would never see.
     runConstructionParityProbe(context, vkexp::WorldMode::Construction);
     runConstructionParityProbe(context, vkexp::WorldMode::Harvest);
+    runConstructionParityProbe(context, vkexp::WorldMode::Chasm);
 
     // Both neighbourhoods, because the face-only reduction is a branch the Moore
     // case never takes, and all four neuron models, because each decides the

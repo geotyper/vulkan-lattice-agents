@@ -41,6 +41,18 @@ void main() {
         return;
     }
 
+    if (mode == LatticeViewModeGoal) {
+        const vec3 point =
+            latticeGoalGuideVertex(uint(gl_VertexIndex), latticeCellCentre(view.beacon.xyz));
+        gl_Position = view.viewProjection * vec4(point, 1.0);
+        fragNormal = vec3(0.0, 1.0, 0.0);
+        fragWorld = point;
+        // The objective's own colour, dimmed: the guide has to be findable
+        // without competing with the thing it points at.
+        fragColour = vec4(0.72, 0.26, 0.40, 1.0);
+        return;
+    }
+
     if (mode == LatticeViewModeTrail) {
         const uint count = uint(max(view.beacon.x, 0));
         const uint newest = uint(max(view.beacon.y, 0));
@@ -75,7 +87,26 @@ void main() {
 
     ivec3 cell;
     vec4 colour;
-    if (mode == LatticeViewModeBeacon) {
+    if (mode == LatticeViewModeTerrain) {
+        // The ground, drawn as its own small pass over the bottom course rather
+        // than as part of the block field. Two reasons, and the second is the
+        // one that matters: terrain is not work, so it should not be see-through
+        // when work is -- and a floor plane seen edge-on is the worst possible
+        // thing to put through a blended pass, because every pixel of it costs a
+        // fragment whatever is in front of it.
+        const uint width = uint(view.lattice.x);
+        const uint local = uint(gl_InstanceIndex);
+        cell = ivec3(int(local % width), 0, int(local / width));
+        const uint height = uint(view.lattice.y);
+        const uint cellsPerWorld = uint(view.lattice.x * view.lattice.y * view.lattice.z);
+        // x + y * width + z * width * height, with y nailed to the bottom course.
+        const uint groundCell = uint(cell.x) + uint(cell.z) * width * height;
+        if (structures[uint(view.beacon.w) * cellsPerWorld + groundCell] >= 0) {
+            hide();
+            return;
+        }
+        colour = vec4(0.30, 0.31, 0.33, 1.0);
+    } else if (mode == LatticeViewModeBeacon) {
         cell = view.beacon.xyz;
         // Not on the nearness ramp: the beacon is what nearness is measured
         // against, so giving it a place on that scale would be circular.
@@ -84,7 +115,9 @@ void main() {
         const uint local = uint(gl_InstanceIndex);
         const uint cellsPerWorld = uint(view.lattice.x * view.lattice.y * view.lattice.z);
         const int builder = structures[uint(view.beacon.w) * cellsPerWorld + local];
-        if (builder == 0) {
+        // Empty, or terrain: the ground has its own pass, so skipping it here is
+        // what keeps it out of the transparent one.
+        if (builder <= 0) {
             hide();
             return;
         }
@@ -92,13 +125,15 @@ void main() {
         const uint height = uint(view.lattice.y);
         cell = ivec3(int(local % width), int((local / width) % height),
                      int(local / (width * height)));
-        const float elevation = float(cell.y + 1) / float(max(view.lattice.y, 1));
-        const float maker = fract(float(builder) * 0.61803398875);
-        const vec3 clay = vec3(0.46, 0.16, 0.07);
-        const vec3 sun = vec3(1.00, 0.66, 0.20);
-        vec3 block = mix(clay, sun, pow(elevation, 0.55));
-        block *= 0.90 + 0.16 * maker;
-        colour = vec4(block, 1.0);
+        {
+            const float elevation = float(cell.y + 1) / float(max(view.lattice.y, 1));
+            const float maker = fract(float(builder) * 0.61803398875);
+            const vec3 clay = vec3(0.46, 0.16, 0.07);
+            const vec3 sun = vec3(1.00, 0.66, 0.20);
+            vec3 block = mix(clay, sun, pow(elevation, 0.55));
+            block *= 0.90 + 0.16 * maker;
+            colour = vec4(block, 1.0);
+        }
     } else {
         const uint agentIndex =
             uint(view.beacon.w) + uint(gl_InstanceIndex) * latticeViewAgentStride();
@@ -115,7 +150,13 @@ void main() {
         colour = vec4(body, 1.0);
     }
 
-    if (!latticeCellVisible(cell)) {
+    // The objective is exempt from the slab, as it is from transparency, and for
+    // the same reason: it is the one thing in the box whose position is the
+    // question rather than the answer. It also keeps it agreeing with its own
+    // guide, which is drawn as lines and was never sliced -- a cube that
+    // vanished while its plumb line stayed reads as a bug in the world rather
+    // than as a setting on the view.
+    if (mode != LatticeViewModeBeacon && !latticeCellVisible(cell)) {
         hide();
         return;
     }

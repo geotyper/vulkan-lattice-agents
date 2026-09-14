@@ -14,8 +14,6 @@ namespace kern = ::vkexp::lattice::kernel;
 // 91 can be computed without having computed the beacon of world 90.
 // The shared one, so the resource the shader places and the beacon the host
 // places cannot drift onto different hashes.
-[[nodiscard]] std::uint32_t mix(const std::uint32_t value) { return kern::latticeMix(value); }
-
 [[nodiscard]] std::uint32_t mix(const std::uint32_t first, const std::uint32_t second) {
     return kern::latticeMix(first, second);
 }
@@ -41,9 +39,14 @@ namespace kern = ::vkexp::lattice::kernel;
                 static_cast<std::int32_t>(index / plane), 0};
 }
 
-[[nodiscard]] Int4 floorCellFromIndex(const SimulationStep& settings, const std::uint32_t index) {
-    return Int4{static_cast<std::int32_t>(index % settings.latticeWidth), 0,
-                static_cast<std::int32_t>(index / settings.latticeWidth), 0};
+// Standing on the ground rather than in it: the bedrock course occupies height
+// zero, so a building world's group starts one level up, and only over columns
+// that have ground under them.
+// Indexes the ground plan rather than the whole floor: over a chasm the open
+// columns are not candidates, so the run is groundWidth by depth.
+[[nodiscard]] Int4 floorCellFromIndex(const std::uint32_t groundWidth, const std::uint32_t index) {
+    return Int4{static_cast<std::int32_t>(index % groundWidth), 1,
+                static_cast<std::int32_t>(index / groundWidth), 0};
 }
 
 } // namespace
@@ -60,10 +63,40 @@ Int4 beaconCell(const SimulationStep& settings, const std::uint32_t world) {
 
 Int4 resourceCell(const SimulationStep& settings, const std::uint32_t world) {
     const std::uint32_t hash = kern::latticeResourceHash(world, settings.beaconSeed);
-    return Int4{kern::latticeResourceX(hash, settings.latticeWidth),
-                kern::latticeResourceY(settings.resourceHeight, settings.latticeHeight),
+    return Int4{kern::latticeResourceX(hash, settings.latticeWidth, latticeGroundWidth(settings)),
+                kern::latticeResourceY(hash, settings.resourceHeightLow,
+                                       settings.resourceHeightHigh, settings.latticeHeight),
                 kern::latticeResourceZ(hash, settings.latticeWidth, settings.latticeDepth),
                 static_cast<std::int32_t>(world)};
+}
+
+std::vector<std::int32_t> makeTerrain(const SimulationStep& settings,
+                                      const std::uint32_t worldCount) {
+    const std::uint32_t cells = latticeCellsPerWorld(settings);
+    std::vector<std::int32_t> field(static_cast<std::size_t>(cells) * worldCount,
+                                    kern::LatticeNoStructure);
+    if (!worldBuilds(settings.worldMode)) {
+        return field;
+    }
+    // A course of bedrock where there is ground, and nothing where there is a
+    // chasm. Every building world gets one, because support no longer assumes a
+    // floor: what an agent stands on is always a block, and terrain is only the
+    // blocks that were there before anybody built.
+    const std::uint32_t ground = latticeGroundWidth(settings);
+    for (std::uint32_t world = 0; world < worldCount; ++world) {
+        const std::size_t base = static_cast<std::size_t>(world) * cells;
+        for (std::uint32_t z = 0; z < settings.latticeDepth; ++z) {
+            for (std::uint32_t x = 0; x < settings.latticeWidth; ++x) {
+                if (!kern::latticeGroundColumn(static_cast<int>(x), ground)) {
+                    continue;
+                }
+                field[base + kern::latticeCellIndex(static_cast<int>(x), 0, static_cast<int>(z),
+                                                    settings.latticeWidth,
+                                                    settings.latticeHeight)] = kern::LatticeBedrock;
+            }
+        }
+    }
+    return field;
 }
 
 std::vector<AgentState> makeInitialAgents(const SimulationStep& settings,
@@ -108,15 +141,16 @@ std::vector<AgentState> makeInitialAgents(const SimulationStep& settings,
         // nearly full is exactly the configuration worth being able to run.
         const std::uint32_t start = mix(settings.beaconSeed ^ 0x5CA1EDU, world * 1021U + slot);
         const bool construction = worldBuilds(settings.worldMode);
+        const std::uint32_t groundWidth = latticeGroundWidth(settings);
         const std::uint32_t candidateCount =
-            construction ? settings.latticeWidth * settings.latticeDepth : cells;
+            construction ? groundWidth * settings.latticeDepth : cells;
         const std::uint32_t base = construction
                                        ? start % candidateCount
                                        : cellIndex(settings, cellFromHash(settings, start));
         const std::size_t worldBase = static_cast<std::size_t>(world) * cells;
         for (std::uint32_t probe = 0; probe < candidateCount; ++probe) {
             const std::uint32_t candidate = (base + probe) % candidateCount;
-            Int4 cell = construction ? floorCellFromIndex(settings, candidate)
+            Int4 cell = construction ? floorCellFromIndex(groundWidth, candidate)
                                      : cellFromIndex(settings, candidate);
             const std::uint32_t candidateCell = cellIndex(settings, cell);
             // Never on the beacon: an agent that starts on the objective has

@@ -110,14 +110,15 @@ void main() {
     }
 
     agent.metrics.z += (moved ? 1.0 : 0.0) + fitnessSignalCostFactor(params.fitness) * agent.signal.x;
-    if (params.worldMode == LatticeWorldHarvest) {
+    if (latticeWorldHarvests(params.worldMode)) {
         // Pick up at the resource, score on the floor. Fetching rather than
         // touching: a load that has to come back down makes a route pay off
         // every time it is used, so what is selected for is a path rather than
         // one lucky scramble. See PLAN.md.
         const uint hash = latticeResourceHash(uint(agent.beacon.w), params.beaconSeed);
-        const int resourceX = latticeResourceX(hash, params.latticeWidth);
-        const int resourceY = latticeResourceY(params.resourceHeight, params.latticeHeight);
+        const int resourceX = latticeResourceX(hash, params.latticeWidth, params.groundWidth);
+        const int resourceY = latticeResourceY(hash, params.resourceHeightLow,
+                                               params.resourceHeightHigh, params.latticeHeight);
         const int resourceZ = latticeResourceZ(hash, params.latticeWidth, params.latticeDepth);
         const uint distance = latticeStepDistance(params.neighborhood, resourceX - agent.cell.x,
                                                   resourceY - agent.cell.y,
@@ -130,7 +131,12 @@ void main() {
             if (latticeBeaconReached(distance, params.beaconContactRadius)) {
                 agent.memory.w = 1.0;
             }
-        } else if (agent.cell.y == 0) {
+        } else if (latticeGroundColumn(agent.cell.x, params.groundWidth) &&
+                   agent.cell.y <= 1) {
+            // Scored on the ground the group started from, not on any floor: a
+            // load dropped at the far end would otherwise pay without the walk
+            // back, and it is the walk back that makes a route worth building
+            // well rather than once.
             agent.memory.w = 0.0;
             agent.metrics.w += 1.0;
         }

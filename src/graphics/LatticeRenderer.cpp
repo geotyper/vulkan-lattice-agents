@@ -103,13 +103,16 @@ struct Vec3 {
 }
 
 constexpr std::uint32_t cubeVertexCount = 36;    // six faces of two triangles
-constexpr std::uint32_t boxEdgeVertexCount = 24; // twelve edges of a line list
+constexpr std::uint32_t boxEdgeVertexCount = 24;   // twelve edges of a line list
+constexpr std::uint32_t goalGuideVertexCount = 6;  // a plumb line and a floor cross
 
 constexpr std::uint32_t modeAgents = 0;
 constexpr std::uint32_t modeBeacon = 1;
 constexpr std::uint32_t modeBounds = 2;
 constexpr std::uint32_t modeTrail = 3;
 constexpr std::uint32_t modeStructure = 4;
+constexpr std::uint32_t modeGoal = 5;
+constexpr std::uint32_t modeTerrain = 6;
 
 // Mirrors the push constant block in shaders/lattice/lattice_view.glsl. Exactly
 // the 128 bytes Vulkan guarantees, with nothing spare: the mode, the slice axis
@@ -498,7 +501,7 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
     // cannot drift from the simulated one. Reading it off an agent record would
     // have meant a readback for a number that is already computable.
     // The one cell in the box the trial is about, whichever world this is.
-    const Int4 beacon = settings.worldMode == WorldMode::Harvest
+    const Int4 beacon = worldHarvests(settings.worldMode)
                             ? lattice::resourceCell(settings, state_.worlds.selectedWorld)
                             : lattice::beaconCell(settings, state_.worlds.selectedWorld);
 
@@ -626,14 +629,25 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
     vkCmdSetScissor(commands, 0, 1, &scissor);
     vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, voxelLayout_.get(), 0, 1,
                             &agentSet, 0, nullptr);
-    if (display.bounds) {
+    // Both are line lists, so they share one pipeline and one bind. The guide is
+    // drawn wherever the objective is drawn, and for the same reason: it is the
+    // one thing in the box whose position is the question.
+    const bool drawObjective = display.beacons && settings.worldMode != WorldMode::Construction;
+    if (display.bounds || drawObjective) {
         vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, boundsPipeline_.get());
-        pushWord(modeBounds);
-        push();
-        vkCmdDraw(commands, boxEdgeVertexCount, 1, 0, 0);
+        if (display.bounds) {
+            pushWord(modeBounds);
+            push();
+            vkCmdDraw(commands, boxEdgeVertexCount, 1, 0, 0);
+        }
+        if (drawObjective) {
+            pushWord(modeGoal);
+            push();
+            vkCmdDraw(commands, goalGuideVertexCount, 1, 0, 0);
+        }
     }
     vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, voxelPipeline_.get());
-    if (display.beacons && settings.worldMode != WorldMode::Construction) {
+    if (drawObjective) {
         // Always opaque, and a little larger than a cell. It is the one thing in
         // the box whose position is the question rather than the answer, so it
         // should not be the thing that disappears when transparency is on. In
@@ -650,6 +664,25 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
     // device, and empty instances collapse in the vertex shader without a
     // compaction pass or readback. A tiny seam keeps a tower legible as masonry
     // instead of one featureless prism.
+    // The ground, always opaque and always drawn, over the bottom course alone:
+    // one instance per floor cell rather than per lattice cell, which is the
+    // whole box divided by its height. It is drawn separately from the block
+    // field because terrain is not work -- it should not go see-through when
+    // work does, and a floor plane is the most expensive thing there is to put
+    // through a blended pass, since every pixel of it costs a fragment whatever
+    // stands in front of it.
+    const auto drawTerrain = [&] {
+        const std::array<std::int32_t, 4> savedBeacon = parameters.beacon;
+        const float savedScale = parameters.camera[3];
+        parameters.beacon[3] = static_cast<std::int32_t>(state_.worlds.selectedWorld);
+        parameters.camera[3] = 1.0F;
+        pushWord(modeTerrain);
+        push();
+        vkCmdDraw(commands, cubeVertexCount, settings.latticeWidth * settings.latticeDepth, 0, 0);
+        parameters.beacon = savedBeacon;
+        parameters.camera[3] = savedScale;
+    };
+
     const auto drawStructureField = [&] {
         const std::array<std::int32_t, 4> savedBeacon = parameters.beacon;
         const float savedScale = parameters.camera[3];
@@ -662,6 +695,9 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
         parameters.camera[3] = savedScale;
     };
 
+    if (drawStructures) {
+        drawTerrain();
+    }
     if (drawStructures && !transparent) {
         drawStructureField();
     }

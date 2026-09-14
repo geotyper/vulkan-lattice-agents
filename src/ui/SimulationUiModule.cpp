@@ -134,15 +134,18 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
 
     ImGui::SeparatorText("The lattice");
     int worldMode = static_cast<int>(state_.settings.worldMode);
-    constexpr const char* worldModes[] = {"Beacon", "Construction", "Harvest"};
+    constexpr const char* worldModes[] = {"Beacon", "Construction", "Harvest", "Chasm"};
     static_assert(std::size(worldModes) == worldModeCount);
     if (ImGui::Combo("World", &worldMode, worldModes, static_cast<int>(worldModeCount))) {
         state_.settings.worldMode = static_cast<WorldMode>(worldMode);
+        applyWorldDefaults(state_.settings);
         state_.controls.resetRequested = true;
     }
-    ImGui::SetItemTooltip("Construction starts every agent on the floor, enables supported blocks, "
-                          "climbing and falling, and scores every genome in a world by the same "
-                          "height. Beacon keeps the navigation task.");
+    ImGui::SetItemTooltip("Beacon is the navigation task. The other three build: every agent "
+                          "starts on the bedrock course, climbs, falls and places supported "
+                          "blocks. Construction scores height alone; harvest scores loads fetched "
+                          "from a hanging resource; the chasm takes half the floor away, so the "
+                          "resource can only be reached across something the group builds.");
 
     int requestedAgentsPerWorld = static_cast<int>(state_.worlds.requestedAgentsPerWorld);
     // The ceiling is whichever runs out first: genomes, or cells to stand them
@@ -222,32 +225,85 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                           "whatever it thinks, and near one it has to commit.");
 
     if (worldBuilds(state_.settings.worldMode)) {
-        if (state_.settings.worldMode == WorldMode::Harvest) {
-            int resourceHeight = static_cast<int>(state_.settings.resourceHeight);
-            if (ImGui::SliderInt("Resource height", &resourceHeight, 1,
-                                 static_cast<int>(state_.settings.latticeHeight) - 1, "%d levels")) {
-                state_.settings.resourceHeight = static_cast<std::uint32_t>(resourceHeight);
+        if (worldHarvests(state_.settings.worldMode)) {
+            const int ceiling = std::max(static_cast<int>(state_.settings.latticeHeight), 2) - 1;
+            std::array<int, 2> band{static_cast<int>(state_.settings.resourceHeightLow),
+                                    static_cast<int>(state_.settings.resourceHeightHigh)};
+            if (ImGui::SliderInt2("Resource band", band.data(), 1, ceiling, "%d levels")) {
+                state_.settings.resourceHeightLow =
+                    static_cast<std::uint32_t>(std::clamp(band[0], 1, ceiling));
+                state_.settings.resourceHeightHigh = static_cast<std::uint32_t>(
+                    std::clamp(band[1], static_cast<int>(state_.settings.resourceHeightLow),
+                               ceiling));
             }
-            ImGui::SetItemTooltip("How far above the floor the resource sits. Nobody leaves the "
-                                  "floor without a structure to climb, so this is how much has to "
-                                  "be built before anything is collected at all.");
+            ImGui::SetItemTooltip("The band of heights the resource hangs in, drawn per world. A "
+                                  "band and not a height: a fixed height is a number a genome can "
+                                  "learn to count to rather than a place it has to find.");
+        }
+        if (state_.settings.worldMode == WorldMode::Chasm) {
+            int ground = static_cast<int>(latticeGroundWidth(state_.settings));
+            if (ImGui::SliderInt("Ground columns", &ground, 1,
+                                 static_cast<int>(state_.settings.latticeWidth) - 1, "%d of %d")) {
+                state_.settings.chasmGroundWidth = static_cast<std::uint32_t>(ground);
+            }
+            ImGui::SetItemTooltip("How much of the floor is solid, counted along x from the near "
+                                  "edge. Everything beyond is open air all the way down, and the "
+                                  "resource hangs over it -- so the only route is one the group "
+                                  "builds out from the edge.");
+            ImGui::TextDisabled("Side support is forced on: without a cantilever the far half "
+                                "cannot be reached at all.");
         }
         int buildInterval = static_cast<int>(state_.settings.buildIntervalTicks);
         if (ImGui::SliderInt("Build interval", &buildInterval, 1, 120, "%d ticks")) {
             state_.settings.buildIntervalTicks = static_cast<std::uint32_t>(buildInterval);
         }
         ImGui::SliderFloat("Build threshold", &state_.settings.buildThreshold, 0.0F, 0.95F, "%.2f");
-        bool allowSideSupport = state_.settings.allowSideSupportedBlocks != 0U;
+
+        // The foundation rule. Off in the chasm, and not as a default the user
+        // may override: a cantilever has nothing beneath it, so this test would
+        // refuse every block of a bridge and leave that world unsolvable.
+        ImGui::BeginDisabled(!lattice::kernel::latticeWorldFrontier(
+            static_cast<std::uint32_t>(state_.settings.worldMode)));
+        float courseFillPercent = state_.settings.constructionCourseFill * 100.0F;
+        if (ImGui::SliderFloat("Course fill", &courseFillPercent, 5.0F, 100.0F, "%.0f%%",
+                               ImGuiSliderFlags_AlwaysClamp)) {
+            state_.settings.constructionCourseFill = courseFillPercent * 0.01F;
+        }
+        ImGui::SetItemTooltip("How full a level must be, around a build site, before it counts "
+                              "as something to stand on.");
+        int supportRadius = static_cast<int>(state_.settings.constructionSupportRadius);
+        if (ImGui::SliderInt("Support radius", &supportRadius, 0, 16, "%d cells")) {
+            state_.settings.constructionSupportRadius = static_cast<std::uint32_t>(supportRadius);
+        }
+        ImGui::SetItemTooltip("How wide the fill question is asked. Zero asks only about the "
+                              "column itself; a radius that spans the floor asks about the whole "
+                              "world, which is the old global course frontier. In between, one "
+                              "corner of a world may run ahead of another.");
+        int heightLead = static_cast<int>(state_.settings.constructionHeightLead);
+        if (ImGui::SliderInt("Height above foundation", &heightLead, 1, 16, "%d levels")) {
+            state_.settings.constructionHeightLead = static_cast<std::uint32_t>(heightLead);
+        }
+        ImGui::SetItemTooltip("A block cannot be placed more than this many levels above the "
+                              "nearest level below it that is filled enough to stand on.");
+        ImGui::EndDisabled();
+        if (state_.settings.worldMode == WorldMode::Chasm) {
+            ImGui::TextDisabled("The foundation rule is off here: a bridge block has nothing "
+                                "under it, so the test would refuse every one of them.");
+        }
+        bool allowSideSupport = state_.settings.allowSideSupportedBlocks != 0U ||
+                                state_.settings.worldMode == WorldMode::Chasm;
+        ImGui::BeginDisabled(state_.settings.worldMode == WorldMode::Chasm);
         if (ImGui::Checkbox("Side-supported bridges", &allowSideSupport)) {
             state_.settings.allowSideSupportedBlocks = allowSideSupport ? 1U : 0U;
         }
         ImGui::SetItemTooltip("Allow a block to hang from a cardinal x/z face. Diagonal edge or "
                               "corner contact never supports it.");
+        ImGui::EndDisabled();
         ImGui::SliderFloat("Boundary penalty", &state_.settings.fitness.boundaryPenalty, 0.0F,
                            0.05F, "%.4f");
         ImGui::SetItemTooltip("Group charge per agent and tick spent on the x/z perimeter. The "
                               "height ceiling is not penalised.");
-        if (state_.settings.worldMode == WorldMode::Harvest) {
+        if (worldHarvests(state_.settings.worldMode)) {
             ImGui::TextWrapped(
                 "Fitness is loads delivered, plus how near anyone got to the resource. Blocks "
                 "score nothing: a block is time spent, and spending it well is the problem. A "
@@ -432,7 +488,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::Text("Median fitness: %.4f", state_.statistics.medianFitness);
     ImGui::Text("Mean fitness:   %.4f", state_.statistics.meanFitness);
     drawBestWorld();
-    if (state_.settings.worldMode == WorldMode::Harvest) {
+    if (worldHarvests(state_.settings.worldMode)) {
         ImGui::Text("Delivered a load: %.1f%% of agents", state_.statistics.arrivalRatio * 100.0F);
         drawStructureShapes();
         drawBuildOutcomes();
@@ -714,10 +770,10 @@ void SimulationUiModule::drawBuildOutcomes() {
     const std::size_t visible = std::min<std::size_t>(state_.worlds.selectedWorld, worlds - 1);
 
     ImGui::SeparatorText("Why the builders stopped");
-    static constexpr std::array<const char*, 9> names{
-        "Cooling",    "Unwilling",  "No facing", "Off the lattice", "Blocked",
-        "No support", "In the way", "Placed",    "Lost the cell"};
-    std::array<std::uint64_t, 9> total{};
+    static constexpr std::array<const char*, 10> names{
+        "Cooling",    "Unwilling",      "No facing",  "Off the lattice", "Blocked",
+        "No support", "Above frontier", "In the way", "Placed",          "Lost the cell"};
+    std::array<std::uint64_t, 10> total{};
     std::uint64_t attempts = 0;
     for (std::size_t world = 0; world < worlds; ++world) {
         for (std::size_t reason = 0; reason < count; ++reason) {
@@ -834,16 +890,18 @@ void SimulationUiModule::drawViewControls() {
     if (ImGui::Combo("Slice axis", &axis, axes, static_cast<int>(std::size(axes)))) {
         display.sliceAxis = static_cast<std::uint32_t>(axis);
         display.sliceLow = 0;
-        display.sliceHigh = extents[static_cast<std::size_t>(axis)] - 1;
+        display.sliceHigh = latticeMaximumExtent;
     }
     const auto extent = static_cast<int>(extents[static_cast<std::size_t>(axis)]);
     int low = std::clamp(static_cast<int>(display.sliceLow), 0, extent - 1);
     int high = std::clamp(static_cast<int>(display.sliceHigh), low, extent - 1);
-    // Extents can shrink on a simulation reset. Persist the clamp even when the
-    // user does not touch this control; otherwise the slider shows the last
-    // cell while the renderer still receives the old, now-empty slab.
-    display.sliceLow = static_cast<std::uint32_t>(low);
-    display.sliceHigh = static_cast<std::uint32_t>(high);
+    // Clamped for the slider, never written back. The renderer clamps the slab
+    // for itself, so persisting it here bought nothing and cost the one state
+    // worth keeping: "show all of it". Writing the clamp back turned an open
+    // slab into a fixed number the moment any lattice was smaller, and then a
+    // world that grew -- picking the chasm, which is a 32-cube -- kept showing
+    // the old half. Half a lattice looks exactly like a lattice, which is what
+    // makes this worth a comment rather than a clamp.
     if (ImGui::DragIntRange2("Slice", &low, &high, 0.25F, 0, extent - 1, "%d", "%d")) {
         display.sliceLow = static_cast<std::uint32_t>(low);
         display.sliceHigh = static_cast<std::uint32_t>(high);
@@ -851,7 +909,9 @@ void SimulationUiModule::drawViewControls() {
     ImGui::SameLine();
     if (ImGui::SmallButton("All")) {
         display.sliceLow = 0;
-        display.sliceHigh = static_cast<std::uint32_t>(extent - 1);
+        // Not extent - 1: the point of this button is a slab that stays open
+        // when the lattice changes under it.
+        display.sliceHigh = latticeMaximumExtent;
     }
 
     LatticeCamera& camera = display.camera;

@@ -1,5 +1,7 @@
 #include "vkexp/simulation/CpuLattice.hpp"
 
+#include "vkexp/lattice/LatticeWorld.hpp"
+
 #include "vkexp/lattice/LatticeKernel.hpp"
 #include "vkexp/simulation/LatticeSensors.hpp"
 
@@ -30,10 +32,13 @@ namespace kern = lattice::kernel;
     return cell < structures.size() && structures[cell] != kern::LatticeNoStructure;
 }
 
+// Mirrors constructionSupported in lattice_step.comp. There is no special case
+// for height zero: the floor is a course of bedrock in the block field, so
+// "something below me" is the whole of the rule.
 [[nodiscard]] bool constructionSupported(const std::span<const std::int32_t> structures,
                                          const SimulationStep& settings, const int x, const int y,
                                          const int z) {
-    return y <= 0 || hasStructure(structures, settings, x, y - 1, z) ||
+    return hasStructure(structures, settings, x, y - 1, z) ||
            hasStructure(structures, settings, x - 1, y, z) ||
            hasStructure(structures, settings, x + 1, y, z) ||
            hasStructure(structures, settings, x, y, z - 1) ||
@@ -43,7 +48,7 @@ namespace kern = lattice::kernel;
 [[nodiscard]] bool constructionBlockSupported(const std::span<const std::int32_t> structures,
                                               const SimulationStep& settings, const int x,
                                               const int y, const int z) {
-    if (y <= 0 || hasStructure(structures, settings, x, y - 1, z)) {
+    if (hasStructure(structures, settings, x, y - 1, z)) {
         return true;
     }
     return settings.allowSideSupportedBlocks != 0U &&
@@ -53,11 +58,13 @@ namespace kern = lattice::kernel;
             hasStructure(structures, settings, x, y, z + 1));
 }
 
+// Mirrors constructionLandingY in lattice_step.comp, including the -1 that says
+// this column has no bottom at all.
 [[nodiscard]] int constructionLandingY(const std::span<const std::int32_t> structures,
                                        const SimulationStep& settings, const int x, const int y,
                                        const int z) {
     int landing = std::clamp(y, 0, static_cast<int>(settings.latticeHeight) - 1);
-    while (landing > 0 && !constructionSupported(structures, settings, x, landing, z)) {
+    while (landing >= 0 && !constructionSupported(structures, settings, x, landing, z)) {
         --landing;
     }
     return landing;
@@ -71,6 +78,35 @@ namespace kern = lattice::kernel;
 }
 
 } // namespace
+
+std::uint32_t constructionLocalFoundation(const std::span<const std::int32_t> worldStructures,
+                                          const SimulationStep& settings, const int x,
+                                          const int buildY, const int z) {
+    const auto radius = static_cast<int>(settings.constructionSupportRadius);
+    const float fill = std::clamp(settings.constructionCourseFill, 0.0F, 1.0F);
+    for (int y = buildY - 1; y >= 0; --y) {
+        std::uint32_t sampled = 0;
+        std::uint32_t filled = 0;
+        for (int dz = -radius; dz <= radius; ++dz) {
+            for (int dx = -radius; dx <= radius; ++dx) {
+                const int nx = x + dx;
+                const int nz = z + dz;
+                if (nx < 0 || nz < 0 || nx >= static_cast<int>(settings.latticeWidth) ||
+                    nz >= static_cast<int>(settings.latticeDepth)) {
+                    continue;
+                }
+                ++sampled;
+                filled += hasStructure(worldStructures, settings, nx, y, nz) ? 1U : 0U;
+            }
+        }
+        const auto required = std::max(
+            static_cast<std::uint32_t>(std::ceil(static_cast<float>(sampled) * fill)), 1U);
+        if (filled >= required) {
+            return static_cast<std::uint32_t>(y) + 1U;
+        }
+    }
+    return 0;
+}
 
 void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& settings) {
     const std::uint32_t cells = latticeCellsPerWorld(settings);
@@ -176,8 +212,14 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                         attempted = false;
                     }
                 } else {
-                    wantedY =
-                        constructionLandingY(worldStructures, settings, wantedX, wantedY, wantedZ);
+                    const int landing = constructionLandingY(worldStructures, settings, wantedX,
+                                                             wantedY, wantedZ);
+                    if (landing < 0) {
+                        agent.intent.w = 1;
+                        attempted = false;
+                    } else {
+                        wantedY = landing;
+                    }
                 }
             } else if (stepY > 0) {
                 const auto [faceX, faceZ] = constructionFacing(settings, aimDriveX, aimDriveZ);
@@ -194,23 +236,38 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                     attempted = false;
                 }
             } else if (stepY < 0) {
-                wantedY =
-                    constructionLandingY(worldStructures, settings, wantedX, wantedY - 1, wantedZ);
+                const int landing = constructionLandingY(worldStructures, settings, wantedX,
+                                                         wantedY - 1, wantedZ);
+                if (landing < 0) {
+                    agent.intent.w = 1;
+                    attempted = false;
+                } else {
+                    wantedY = landing;
+                }
             } else if (!constructionSupported(worldStructures, settings, wantedX, wantedY,
                                               wantedZ)) {
-                wantedY =
-                    constructionLandingY(worldStructures, settings, wantedX, wantedY - 1, wantedZ);
-                attempted = true;
+                const int landing = constructionLandingY(worldStructures, settings, wantedX,
+                                                         wantedY - 1, wantedZ);
+                if (landing < 0) {
+                    agent.intent.w = 1;
+                    attempted = false;
+                } else {
+                    wantedY = landing;
+                    attempted = true;
+                }
             }
 
             if (!attempted && agent.intent.w == 0 &&
                 !constructionSupported(worldStructures, settings, agent.cell.x, agent.cell.y,
                                        agent.cell.z)) {
-                wantedX = agent.cell.x;
-                wantedY = constructionLandingY(worldStructures, settings, agent.cell.x,
-                                               agent.cell.y - 1, agent.cell.z);
-                wantedZ = agent.cell.z;
-                attempted = true;
+                const int landing = constructionLandingY(worldStructures, settings, agent.cell.x,
+                                                         agent.cell.y - 1, agent.cell.z);
+                if (landing >= 0) {
+                    wantedX = agent.cell.x;
+                    wantedY = landing;
+                    wantedZ = agent.cell.z;
+                    attempted = true;
+                }
             }
 
             if (attempted && agent.intent.w == 0 &&
@@ -267,6 +324,13 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                         outcome = kern::LatticeBuildBlocked;
                     } else if (!supported) {
                         outcome = kern::LatticeBuildUnsupported;
+                    } else if (kern::latticeWorldFrontier(
+                                   static_cast<std::uint32_t>(settings.worldMode)) &&
+                               static_cast<std::uint32_t>(buildY) >=
+                                   constructionLocalFoundation(worldStructures, settings, buildX,
+                                                               buildY, buildZ) +
+                                       std::max(settings.constructionHeightLead, 1U)) {
+                        outcome = kern::LatticeBuildAboveFrontier;
                     } else if (worldOccupancy[target] != kern::LatticeNoOccupant) {
                         outcome = kern::LatticeBuildInTheWay;
                     } else {
@@ -387,26 +451,21 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
 
         agent.metrics.z +=
             (moved ? 1.0F : 0.0F) + settings.fitness.signalCostFactor * agent.signal.x;
-        if (settings.worldMode == WorldMode::Harvest) {
+        if (worldHarvests(settings.worldMode)) {
             // Mirrors the harvest block of lattice_resolve.comp: pick up at the
             // resource, score on the floor.
-            const std::uint32_t hash =
-                kern::latticeResourceHash(world, settings.beaconSeed);
-            const int resourceX = kern::latticeResourceX(hash, settings.latticeWidth);
-            const int resourceY =
-                kern::latticeResourceY(settings.resourceHeight, settings.latticeHeight);
-            const int resourceZ =
-                kern::latticeResourceZ(hash, settings.latticeWidth, settings.latticeDepth);
+            const Int4 resource = lattice::resourceCell(settings, world);
             const std::uint32_t distance = kern::latticeStepDistance(
-                static_cast<std::uint32_t>(settings.neighborhood), resourceX - agent.cell.x,
-                resourceY - agent.cell.y, resourceZ - agent.cell.z);
+                static_cast<std::uint32_t>(settings.neighborhood), resource.x - agent.cell.x,
+                resource.y - agent.cell.y, resource.z - agent.cell.z);
             agent.metrics.x = std::max(agent.metrics.x,
                                        kern::latticeNearness(distance, maximumDistance));
             if (agent.memory.w <= 0.0F) {
                 if (kern::latticeBeaconReached(distance, settings.beaconContactRadius)) {
                     agent.memory.w = 1.0F;
                 }
-            } else if (agent.cell.y == 0) {
+            } else if (kern::latticeGroundColumn(agent.cell.x, latticeGroundWidth(settings)) &&
+                       agent.cell.y <= 1) {
                 agent.memory.w = 0.0F;
                 agent.metrics.w += 1.0F;
             }

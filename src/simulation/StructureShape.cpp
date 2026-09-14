@@ -39,7 +39,9 @@ StructureShape measureStructureShape(const std::span<const std::int32_t> field,
                 const std::size_t index = kern::latticeCellIndex(static_cast<int>(x),
                                                                  static_cast<int>(y),
                                                                  static_cast<int>(z), width, height);
-                if (field[index] == kern::LatticeNoStructure) {
+                // Terrain is not architecture: bedrock is negative and skipped,
+                // so a floor does not read as a footprint the group laid.
+                if (field[index] <= kern::LatticeNoStructure) {
                     continue;
                 }
                 ++filled;

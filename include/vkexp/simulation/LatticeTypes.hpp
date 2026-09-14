@@ -35,11 +35,17 @@ enum class WorldMode : std::uint32_t {
     Beacon = lattice::kernel::LatticeWorldBeacon,
     Construction = lattice::kernel::LatticeWorldConstruction,
     Harvest = lattice::kernel::LatticeWorldHarvest,
+    Chasm = lattice::kernel::LatticeWorldChasm,
 };
 
 // Whether this world has a block field and the movement rules that go with it.
 [[nodiscard]] constexpr bool worldBuilds(const WorldMode mode) {
     return lattice::kernel::latticeWorldBuilds(static_cast<std::uint32_t>(mode));
+}
+
+// Whether its reward is a load fetched and carried back.
+[[nodiscard]] constexpr bool worldHarvests(const WorldMode mode) {
+    return lattice::kernel::latticeWorldHarvests(static_cast<std::uint32_t>(mode));
 }
 
 inline constexpr std::size_t worldModeCount = lattice::kernel::LatticeWorldCount;
@@ -323,10 +329,38 @@ struct SimulationStep {
     // construction experiment below.
     std::uint32_t buildIntervalTicks{12};
     float buildThreshold{0.55F};
-    // Harvest: how far above the floor the resource sits. Four rather than one,
-    // because a resource an agent could walk to would make the building
-    // optional, and the whole of this world is that it is not.
-    std::uint32_t resourceHeight{4};
+    // How full a level has to be, around a build site, before it counts as
+    // something to stand on. The area asked about is the square of
+    // constructionSupportRadius cells around the site, clipped at the walls.
+    //
+    // Half rather than the quarter it was first tried at. A quarter, with the
+    // five-level lead below, refused five attempts out of two and a half
+    // million: one block underneath already filled a quarter of a small window,
+    // so the foundation was almost always the level immediately below and the
+    // lead was never spent. Half asks for a mass rather than a neighbour.
+    float constructionCourseFill{0.5F};
+    // The highest legal target is this many levels above that foundation. This
+    // is the "go up by five" of the original idea: build freely within the lead,
+    // and to go higher, widen what is underneath first.
+    std::uint32_t constructionHeightLead{5};
+    // How wide the question is. Zero asks only about the column itself; a
+    // radius that spans the floor asks about the whole world and reproduces the
+    // old global course frontier, which is why that rule needs no switch of its
+    // own. In between, one corner of a world may run ahead of another -- which
+    // is the whole reason the frontier stopped being global: a rule that makes
+    // every part of the world wait for every other part can only produce a
+    // layer cake.
+    std::uint32_t constructionSupportRadius{2};
+    // Harvest and chasm: the band the resource hangs in, inclusive. A band and
+    // not a height, because a fixed height is a number a genome can learn to
+    // count to rather than a place it has to find.
+    std::uint32_t resourceHeightLow{4};
+    std::uint32_t resourceHeightHigh{8};
+    // Chasm: how many columns of floor, from x = 0, are solid ground. Everything
+    // beyond is open air all the way down, and the resource hangs over it. Zero
+    // means half the lattice, which is what the world is for; the other building
+    // worlds ignore this and get a floor all the way across.
+    std::uint32_t chasmGroundWidth{};
     // Opt-in cantilevers: a block may use a cardinal x/z face as support. Edge
     // and corner contact remain insufficient.
     std::uint32_t allowSideSupportedBlocks{};
@@ -366,9 +400,45 @@ struct SimulationStep {
 // their default corner, standing inside each other, which breaks the one
 // invariant the whole arbitration rests on. So the number is named here and
 // clamped once, where the settings are known.
+// The defaults a world wants when it is chosen. A chasm has to be crossed one
+// cantilevered block at a time, and twelve ticks of cooldown per block makes a
+// sixteen-cell reach a matter of thousands of ticks that pay nothing until the
+// last one lands -- so it builds four times as fast. Only defaults: every one of
+// them stays a slider afterwards.
+constexpr void applyWorldDefaults(SimulationStep& settings) {
+    if (settings.worldMode == WorldMode::Chasm) {
+        settings.buildIntervalTicks = 3;
+        settings.allowSideSupportedBlocks = 1;
+        // A cube, and deliberately not the default 32x32x16. The span to cross
+        // is half the width, so width is the number that sets the difficulty,
+        // and a shallow box makes the far side a wall rather than a far side.
+        // Height has to clear the resource band with room to build under it.
+        settings.latticeWidth = 32;
+        settings.latticeHeight = 32;
+        settings.latticeDepth = 32;
+    }
+}
+
+// How many columns of floor are solid ground, counted from x=0. Only the chasm
+// world takes anything away; the others get a floor all the way across, and a
+// chasm asking for zero gets half the lattice, which is the world it was built
+// to be.
+[[nodiscard]] constexpr std::uint32_t latticeGroundWidth(const SimulationStep& settings) {
+    const std::uint32_t width = std::max(settings.latticeWidth, 1U);
+    if (settings.worldMode != WorldMode::Chasm) {
+        return width;
+    }
+    if (settings.chasmGroundWidth == 0) {
+        return std::max(width / 2U, 1U);
+    }
+    return std::clamp(settings.chasmGroundWidth, 1U, width);
+}
+
 [[nodiscard]] constexpr std::uint32_t latticeSpawnCapacity(const SimulationStep& settings) {
     if (worldBuilds(settings.worldMode)) {
-        return std::max(settings.latticeWidth * settings.latticeDepth, 1U);
+        // Only the columns that have ground under them: a building world stands
+        // its group on the bedrock course, and over a chasm there is none.
+        return std::max(latticeGroundWidth(settings) * settings.latticeDepth, 1U);
     }
     return std::max(latticeCellsPerWorld(settings), 2U) - 1U;
 }
@@ -432,9 +502,16 @@ struct alignas(16) GpuStepParameters {
     std::uint32_t worldMode{};
     std::uint32_t buildIntervalTicks{};
     float buildThreshold{};
+    float constructionCourseFill{};
+    std::uint32_t constructionHeightLead{};
+    std::uint32_t constructionSupportRadius{};
     std::uint32_t allowSideSupportedBlocks{};
-    std::uint32_t resourceHeight{};
-    // Only the harvest world reads it, and only to place its resource. On the
+    std::uint32_t resourceHeightLow{};
+    std::uint32_t resourceHeightHigh{};
+    // Resolved, never the raw setting: the shader is told where the ground stops
+    // in this world, not which world it is and how to work it out.
+    std::uint32_t groundWidth{};
+    // Only the fetching worlds read it, and only to place their resource. On the
     // device rather than mirrored onto the agent because a resource belongs to
     // the world, and the lanes that would carry it are the per-step build
     // intent.
@@ -442,15 +519,15 @@ struct alignas(16) GpuStepParameters {
     GpuFitnessWeights fitness;
 };
 
-static_assert(sizeof(GpuStepParameters) == 128);
+static_assert(sizeof(GpuStepParameters) == 144);
 static_assert(offsetof(GpuStepParameters, latticeWidth) == 28);
-// The one offset the GLSL mirror cannot derive for itself. Twenty-three scalars
-// come to 92 bytes and both languages round this block up to 96 -- but only
+// The one offset the GLSL mirror cannot derive for itself. Twenty-five scalars
+// come to 100 bytes and both languages round this block up to 112 -- but only
 // because the shader's copy is declared as vec4s, which std430 aligns to 16
 // just as `alignas(16)` does here. Eight floats there would align to 4, and the
-// two strides would then differ by a word: invisible at step index zero and
-// total nonsense at every index after it.
-static_assert(offsetof(GpuStepParameters, fitness) == 96);
+// two strides would then differ by three words: invisible at step index zero
+// and total nonsense at every index after it.
+static_assert(offsetof(GpuStepParameters, fitness) == 112);
 static_assert(offsetof(GpuStepParameters, neuronModel) == 56);
 
 // The network this run actually builds. The two ends are the lattice's own: how

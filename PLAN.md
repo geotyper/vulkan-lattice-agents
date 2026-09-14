@@ -392,12 +392,72 @@ world builds one path or several. A run where deliveries rise while block count
 falls is the result worth having, because it means the group found a cheaper
 route rather than a bigger pile.
 
-**One rule fewer than construction started with.** The construction frontier --
-whether a block may stand this far above the filled part of the world -- was
-removed after the refusal counters showed it rejecting five attempts in two and
-a half million. Support from below already refuses everything it refused, so it
-was a second statement of the first rule with its own three sliders. Height is
-now limited by what holds a block up, and by the ceiling.
+**The construction frontier is off here, and that is a rule rather than a
+default.** Whether a block may stand this far above the filled part of the world
+is a fair question in a world built on ground and a nonsensical one over a hole:
+a cantilever has nothing at all beneath it, so the test refuses every block of a
+bridge. Construction and harvest ask it; the chasm does not, and the panel says
+so instead of offering a slider that would quietly make this world unsolvable.
+
+## A fourth world: the chasm
+
+The harvest world hangs its resource above the floor, and the way up is a
+structure. The chasm takes the floor away.
+
+**The ground is blocks now.** Both support rules used to answer "yes" for
+anything at height zero, so the floor was solid everywhere and a hole in it was
+inexpressible -- and, worse, would have been invisible: an empty cell at height
+zero and a cell over a drop read identically to a sensor, which is the same
+mistake a wall and a block were making until recently. So height zero is a
+course of bedrock in the block field, support means "something below me" with no
+special case, and a chasm is where that course is missing. No new rule, no new
+buffer, no new sensor: the drop is visible because bedrock is visible. Bedrock
+is negative, so fitness, the shape descriptors and the renderer all tell terrain
+from work by its sign.
+
+**Half the floor, and the resource over the other half.** The group starts on
+the ground; the resource hangs in a band of heights over the open half, hashed
+per world like everything else that is placed. Walking there is impossible, and
+climbing there is impossible, because there is nothing under it to climb. The
+only route is one the group builds out from the edge.
+
+The split runs along x, and the world defaults to a 32x32x32 cube. Which axis is
+arbitrary to the simulation and not to the eye: the camera starts side-on to the
+widest horizontal edge, so a chasm cut along x is the one you are already
+looking across. The cube follows from that -- the span to cross is half the
+width, so width is the number that sets the difficulty, and a shallow box would
+make the far side read as a wall rather than as a far side.
+
+**The objective is drawn as a place, not as a cube.** One cube hanging in air
+has no depth cue: at thirty-two cells deep, a resource at the near edge and one
+at the far edge project to nearly the same pixels, and which column the group
+has to reach is the whole question. So the objective also gets a plumb line down
+to the floor plane and a cross on it -- which doubles as the answer to whether
+there is floor under it or a hole.
+
+**The sequence that solves it already exists.** An agent standing on bedrock
+builds beside itself, supported from below. It walks to the edge and aims into
+the air: no support below, and the placement falls back a level onto the side
+face of the block it just made. It steps onto that block, which puts it one
+level up, and aims forward again -- unsupported at its own height, so the
+fallback drops the target to the level of the cantilever, where a side face
+holds it. That fallback was written for exactly this and the comment beside it
+says so. The world is not new behaviour; it is a task for behaviour that had
+nowhere to be useful.
+
+**Side support is forced on and the build interval defaults to three.** A world
+whose objective needs a cantilever must not be startable without one. And a
+crossing is a long run of placements that pay nothing until the last one lands,
+so twelve ticks of cooldown per block would price it out of reach; three does
+not. Both stay sliders.
+
+**What it will produce is a bridge, not an arch.** There is no load model, so a
+cantilever may run forever and the cheapest crossing is a plank one block thick.
+That is already a functional structure and a long way from a dense pile, and the
+descriptors will show it -- overhangs up, compactness down. An arch needs a
+reason to curve, and the cheap one is a limit on how far a side-supported block
+may sit from a column-supported one. That limit interacts directly with how wide
+the chasm is, so it is a knob for later, not a rule for now.
 
 **What is deliberately not in the first version.** A depleting resource,
 several resource nodes, a resource that has to be carried to a particular

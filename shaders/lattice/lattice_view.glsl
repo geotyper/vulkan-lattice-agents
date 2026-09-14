@@ -23,6 +23,8 @@ const uint LatticeViewModeBeacon = 1u;
 const uint LatticeViewModeBounds = 2u;
 const uint LatticeViewModeTrail = 3u;
 const uint LatticeViewModeStructure = 4u;
+const uint LatticeViewModeGoal = 5u;
+const uint LatticeViewModeTerrain = 6u;
 
 uint latticeViewMode() { return uint(view.lattice.w) & 0xffu; }
 uint latticeViewSliceAxis() { return (uint(view.lattice.w) >> 8u) & 0xffu; }
@@ -90,6 +92,29 @@ vec3 latticeBoxEdgeVertex(uint vertex) {
     const vec3 unitCorner =
         vec3(float(corner & 1u), float((corner >> 1u) & 1u), float((corner >> 2u) & 1u));
     return (unitCorner - vec3(0.5)) * latticeExtent();
+}
+
+// Where the objective is, drawn as a place rather than as a floating cube. Six
+// vertices of a line list: a plumb line from the objective down to the floor
+// plane, and a cross on that plane under it.
+//
+// One cube alone has no depth cue. In a box thirty-two cells deep, a cube at
+// (4, 7, 28) and a cube at (4, 7, 4) project to nearly the same pixels, so the
+// eye cannot say which column the group has to reach -- and in the chasm world
+// that column is the whole question. The plumb line answers it, and the cross
+// says whether there is floor under the answer or a hole.
+const uint LatticeGoalGuideVertexCount = 6u;
+
+vec3 latticeGoalGuideVertex(uint vertex, vec3 centre) {
+    const float floorY = -latticeExtent().y * 0.5;
+    const float arm = 2.5;
+    if (vertex < 2u) {
+        return vec3(centre.x, vertex == 0u ? floorY : centre.y, centre.z);
+    }
+    if (vertex < 4u) {
+        return vec3(centre.x + (vertex == 2u ? -arm : arm), floorY, centre.z);
+    }
+    return vec3(centre.x, floorY, centre.z + (vertex == 4u ? -arm : arm));
 }
 
 // Far from the beacon to on top of it. Blue reads as cold at a glance and the

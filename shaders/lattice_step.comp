@@ -52,7 +52,10 @@ bool hasStructure(uint worldBase, int x, int y, int z) {
 // An agent may stand on the floor or a block, and may hang on a vertical face
 // while climbing. Edge and corner contact are deliberately not support.
 bool constructionSupported(uint worldBase, int x, int y, int z) {
-    if (y <= 0 || hasStructure(worldBase, x, y - 1, z)) {
+    // No special case for the floor: the floor is a course of bedrock in the
+    // block field, so "something below me" is the whole of the rule and a chasm
+    // is simply where that course is missing.
+    if (hasStructure(worldBase, x, y - 1, z)) {
         return true;
     }
     return hasStructure(worldBase, x - 1, y, z) || hasStructure(worldBase, x + 1, y, z) ||
@@ -63,7 +66,7 @@ bool constructionSupported(uint worldBase, int x, int y, int z) {
 // explicit experiment switch and only a shared face on x/z counts; a diagonal
 // edge or corner never does.
 bool constructionBlockSupported(uint worldBase, int x, int y, int z) {
-    if (y <= 0 || hasStructure(worldBase, x, y - 1, z)) {
+    if (hasStructure(worldBase, x, y - 1, z)) {
         return true;
     }
     return params.allowSideSupportedBlocks != 0u &&
@@ -71,9 +74,61 @@ bool constructionBlockSupported(uint worldBase, int x, int y, int z) {
             hasStructure(worldBase, x, y, z - 1) || hasStructure(worldBase, x, y, z + 1));
 }
 
+// How much foundation stands under one build site.
+//
+// The question is asked of a neighbourhood, not of the world: of the cells
+// within `constructionSupportRadius` of this column at level y, clipped at the
+// walls, how many are filled? The highest level below the target that answers
+// "enough" is what the target is standing on, and the height lead is measured
+// from there. Levels need not be consecutive, because standing on a roof is
+// standing on something whatever is under the roof.
+//
+// A radius that spans the floor reproduces a global course frontier, in which
+// no corner of the world may rise until every other corner has been filled --
+// a rule that can only produce a layer cake. That is why the radius is a knob
+// and not a switch.
+//
+// The scan runs downward and returns at the first level that qualifies, so the
+// common case -- a broad mass immediately below -- costs one level's sampling.
+//
+// Mirrors vkexp::lattice::constructionLocalFoundation.
+uint constructionLocalFoundation(uint worldBase, int x, int buildY, int z) {
+    const int radius = int(params.constructionSupportRadius);
+    const float fill = clamp(params.constructionCourseFill, 0.0, 1.0);
+    for (int y = buildY - 1; y >= 0; --y) {
+        uint sampled = 0u;
+        uint filled = 0u;
+        for (int dz = -radius; dz <= radius; ++dz) {
+            for (int dx = -radius; dx <= radius; ++dx) {
+                const int nx = x + dx;
+                const int nz = z + dz;
+                if (nx < 0 || nz < 0 || nx >= int(params.latticeWidth) ||
+                    nz >= int(params.latticeDepth)) {
+                    continue;
+                }
+                ++sampled;
+                const uint cell =
+                    latticeCellIndex(nx, y, nz, params.latticeWidth, params.latticeHeight);
+                filled += structures[worldBase + cell] != LatticeNoStructure ? 1u : 0u;
+            }
+        }
+        if (filled >= max(uint(ceil(float(sampled) * fill)), 1u)) {
+            return uint(y) + 1u;
+        }
+    }
+    return 0u;
+}
+
+// Where a body falling down this column comes to rest, or -1 if nothing in it
+// holds one. The search used to stop at height zero, which was correct while
+// every column had solid floor there and became a second, invisible floor the
+// moment one did not: an agent that walked off the edge landed on the bottom of
+// the chasm and could then walk along it, which is the one thing the world
+// exists to forbid. A column with no bottom is not a place to fall to, so it is
+// not a place to step into either -- every caller refuses the move instead.
 int constructionLandingY(uint worldBase, int x, int y, int z) {
     int landing = clamp(y, 0, int(params.latticeHeight) - 1);
-    while (landing > 0 && !constructionSupported(worldBase, x, landing, z)) {
+    while (landing >= 0 && !constructionSupported(worldBase, x, landing, z)) {
         --landing;
     }
     return landing;
@@ -98,8 +153,9 @@ void constructionFacing(float aimX, float aimZ, out int faceX, out int faceZ) {
 // sensor that will, once a world index is off by one somewhere.
 ivec3 harvestResourceCell(uint world) {
     const uint hash = latticeResourceHash(world, params.beaconSeed);
-    return ivec3(latticeResourceX(hash, params.latticeWidth),
-                 latticeResourceY(params.resourceHeight, params.latticeHeight),
+    return ivec3(latticeResourceX(hash, params.latticeWidth, params.groundWidth),
+                 latticeResourceY(hash, params.resourceHeightLow, params.resourceHeightHigh,
+                                  params.latticeHeight),
                  latticeResourceZ(hash, params.latticeWidth, params.latticeDepth));
 }
 
@@ -156,7 +212,7 @@ void senseLattice(Agent agent, uint world, uint worldBase, out float sensed[Brai
         // numbers. Where the cell is differs: a beacon is mirrored onto the
         // agent, and a resource is derived from the world.
         ivec3 objective = agent.beacon.xyz;
-        if (params.worldMode == LatticeWorldHarvest) {
+        if (latticeWorldHarvests(params.worldMode)) {
             objective = harvestResourceCell(world);
         }
         const int deltaX = objective.x - agent.cell.x;
@@ -168,7 +224,7 @@ void senseLattice(Agent agent, uint world, uint worldBase, out float sensed[Brai
         sensed[brainBeaconInputIndex(1u)] = latticeDirectionComponent(deltaY, distanceToObjective);
         sensed[brainBeaconInputIndex(2u)] = latticeDirectionComponent(deltaZ, distanceToObjective);
         sensed[brainBeaconInputIndex(3u)] = latticeNearness(steps, params.maximumDistance);
-        if (params.worldMode == LatticeWorldHarvest) {
+        if (latticeWorldHarvests(params.worldMode)) {
             sensed[brainBeaconInputIndex(4u)] = agent.signal.z <= 0.0 ? 1.0 : 0.0;
             sensed[brainBeaconInputIndex(5u)] = clamp(agent.memory.w, 0.0, 1.0);
         }
@@ -266,7 +322,16 @@ void main() {
                     attempted = false; // structure contact is not penalised
                 }
             } else {
-                wantedY = constructionLandingY(worldBase, wantedX, wantedY, wantedZ);
+                const int landing = constructionLandingY(worldBase, wantedX, wantedY, wantedZ);
+                if (landing < 0) {
+                    // The far side of a chasm edge. Refused like the edge of the
+                    // lattice, and counted as a refusal for the same reason:
+                    // from the agent's side the two are the same answer.
+                    agent.intent.w = 1;
+                    attempted = false;
+                } else {
+                    wantedY = landing;
+                }
             }
         } else if (stepY > 0) {
             int faceX;
@@ -285,10 +350,22 @@ void main() {
                 attempted = false;
             }
         } else if (stepY < 0) {
-            wantedY = constructionLandingY(worldBase, wantedX, wantedY - 1, wantedZ);
+            const int landing = constructionLandingY(worldBase, wantedX, wantedY - 1, wantedZ);
+            if (landing < 0) {
+                agent.intent.w = 1;
+                attempted = false;
+            } else {
+                wantedY = landing;
+            }
         } else if (!constructionSupported(worldBase, wantedX, wantedY, wantedZ)) {
-            wantedY = constructionLandingY(worldBase, wantedX, wantedY - 1, wantedZ);
-            attempted = true;
+            const int landing = constructionLandingY(worldBase, wantedX, wantedY - 1, wantedZ);
+            if (landing < 0) {
+                agent.intent.w = 1;
+                attempted = false;
+            } else {
+                wantedY = landing;
+                attempted = true;
+            }
         }
 
         // A failed climb cannot leave the agent suspended above the end of a
@@ -296,10 +373,17 @@ void main() {
         // this tick just as it does when no movement was requested.
         if (!attempted && agent.intent.w == 0 &&
             !constructionSupported(worldBase, agent.cell.x, agent.cell.y, agent.cell.z)) {
-            wantedX = agent.cell.x;
-            wantedY = constructionLandingY(worldBase, agent.cell.x, agent.cell.y - 1, agent.cell.z);
-            wantedZ = agent.cell.z;
-            attempted = true;
+            const int landing =
+                constructionLandingY(worldBase, agent.cell.x, agent.cell.y - 1, agent.cell.z);
+            // Nothing below at all should now be unreachable, since no move into
+            // such a column is allowed. Staying put is the honest answer if it
+            // happens anyway: there is no cell to fall to.
+            if (landing >= 0) {
+                wantedX = agent.cell.x;
+                wantedY = landing;
+                wantedZ = agent.cell.z;
+                attempted = true;
+            }
         }
 
         if (attempted && agent.intent.w == 0 &&
@@ -355,6 +439,11 @@ void main() {
                     outcome = LatticeBuildBlocked;
                 } else if (!supported) {
                     outcome = LatticeBuildUnsupported;
+                } else if (latticeWorldFrontier(params.worldMode) &&
+                           uint(buildY) >= constructionLocalFoundation(worldBase, buildX, buildY,
+                                                                      buildZ) +
+                                               max(params.constructionHeightLead, 1u)) {
+                    outcome = LatticeBuildAboveFrontier;
                 } else if (occupancy[worldBase + target] != LatticeNoOccupant) {
                     outcome = LatticeBuildInTheWay;
                 } else {
