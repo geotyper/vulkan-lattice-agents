@@ -110,13 +110,13 @@ const uint BrainActuatorOutputCount =
 // shader's scratch buffers, and the state block on the agent record. A plan
 // chooses how to spend the total; it cannot raise it.
 //
-// 32 rather than 20, and three layers rather than one. The cost of the headroom
+// 52 rather than 20, and three layers rather than one. The cost of the headroom
 // is paid in the genome stride, which is sized for the widest plan the capacity
-// allows -- one 32-wide layer -- so a run using fewer neurons carries weights it
+// allows -- one 52-wide layer -- so a run using fewer neurons carries weights it
 // never reads. That is the same trade the gate block already makes, and for the
 // same reason: one buffer size and one genome length means a population stays
 // loadable across plans, and comparing two plans stays possible at all.
-const uint BrainHiddenNeuronCapacity = 32u;
+const uint BrainHiddenNeuronCapacity = 52u;
 const uint BrainHiddenLayerCapacity = 3u;
 
 // The one hidden layer this network had before plans existed, and still what a
@@ -182,6 +182,48 @@ VKEXP_BRAIN_FN uint brainBeaconInputIndex(uint channel) { return BrainBeaconOffs
 // controller that has to hold decisions, and it can already oscillate through a
 // recurrent loop with two different time constants when it wants to.
 VKEXP_BRAIN_MATH_FN float brainActivation(float value) { return tanh(value); }
+
+// A hidden layer's squash, which a plan may choose per layer. The output layer
+// is not offered the choice and never will be: every threshold in the rules
+// reads an output as "how far, and which way", and that only means anything
+// under something monotone and bounded.
+//
+// The reservations above are real and none of them are answered by putting the
+// choice in the plan; what the plan does is let a run be compared against
+// itself. Sine is offered on hidden layers because the objections weigh
+// differently in the middle of a network than at its ends: a periodic unit deep
+// in a stack is a basis function rather than a decision, which is what CPPNs and
+// SIREN use them for, and a layer of them still feeds a tanh output that has to
+// commit.
+//
+// It measures well, which was not the expected answer. Four generations of
+// construction under the reactive model on a 35+15 plan, three seeds, against
+// the same plan with tanh throughout: three times the blocks and four times the
+// median score, and the ticks spent walking going from 10% to 30%. The reason
+// looks like the same one that made spiking outrun every tanh model here. A
+// layer of tanh units driven hard all sit at +-1, so the output reading them
+// sums twenty numbers of the same size and saturates in its turn; a layer of
+// sine units spreads over [-1, 1] with plenty near zero, so the sum stays small
+// and the output lands in the band that means "walk" instead of pinned at an
+// extreme. It desaturates the network without touching what a threshold means,
+// which is what the initialisation experiment tried to do and could not.
+//
+// What four generations cannot see is the objection that matters most -- a
+// controller that cannot commit -- so this is offered and not imposed.
+//
+// Under the spiking model it does nothing at all: a spiking neuron writes 1 or 0
+// directly and never reaches a squash. That is not an oversight to fix, it is
+// what "integrate and fire" means, but it does mean --hidden-squash and the
+// spiking model do not combine.
+const uint BrainActivationTanh = 0u;
+const uint BrainActivationSine = 1u;
+
+VKEXP_BRAIN_MATH_FN float brainLayerActivate(uint activation, float value) {
+    if (activation == BrainActivationSine) {
+        return sin(value);
+    }
+    return brainActivation(value);
+}
 
 // --- neuron time constants ---------------------------------------------------
 //
@@ -282,9 +324,36 @@ const uint NeuronModelCount = 4u;
 const uint BrainLayerSizeMask = 0x3fu;
 const uint BrainLayerSizeBits = 6u;
 
+// Which squash a hidden layer uses, two bits each, above the three widths. In
+// the same word because the word is what already crosses into GLSL: a layer's
+// activation is part of what the network is, and carrying it anywhere else would
+// mean a second thing to pass, a second thing to store in a file, and a second
+// thing to forget.
+const uint BrainLayerActivationBits = 2u;
+const uint BrainLayerActivationMask = 0x3u;
+const uint BrainLayerActivationShift = 3u * BrainLayerSizeBits;
 VKEXP_BRAIN_FN uint brainPackHiddenLayers(uint first, uint second, uint third) {
     return (first & BrainLayerSizeMask) | ((second & BrainLayerSizeMask) << BrainLayerSizeBits) |
            ((third & BrainLayerSizeMask) << (2u * BrainLayerSizeBits));
+}
+
+// The activations folded into a packed plan. Separate from the widths so that
+// every existing caller keeps meaning what it meant -- zero is tanh, which is
+// what a plan that says nothing about activations has always used.
+VKEXP_BRAIN_FN uint brainWithLayerActivations(uint layers, uint first, uint second, uint third) {
+    return layers | ((first & BrainLayerActivationMask) << BrainLayerActivationShift) |
+           ((second & BrainLayerActivationMask)
+            << (BrainLayerActivationShift + BrainLayerActivationBits)) |
+           ((third & BrainLayerActivationMask)
+            << (BrainLayerActivationShift + 2u * BrainLayerActivationBits));
+}
+
+VKEXP_BRAIN_FN uint brainLayerActivation(uint layers, uint layer) {
+    if (layer >= BrainHiddenLayerCapacity) {
+        return BrainActivationTanh;
+    }
+    return (layers >> (BrainLayerActivationShift + layer * BrainLayerActivationBits)) &
+           BrainLayerActivationMask;
 }
 
 VKEXP_BRAIN_FN uint brainHiddenLayerSize(uint layers, uint layer) {
@@ -292,6 +361,13 @@ VKEXP_BRAIN_FN uint brainHiddenLayerSize(uint layers, uint layer) {
         return 0u;
     }
     return (layers >> (layer * BrainLayerSizeBits)) & BrainLayerSizeMask;
+}
+
+// Only the widths, with any activation bits dropped. What sizes a genome and
+// what names a layer plan: two runs that differ only in a squash read the same
+// weights, so they must agree on where every weight is.
+VKEXP_BRAIN_FN uint brainLayerWidths(uint layers) {
+    return layers & ((1u << BrainLayerActivationShift) - 1u);
 }
 
 // Layers are dense from the front, so the count is where the widths stop.

@@ -65,6 +65,11 @@ struct BrainShape {
     std::size_t outputCount{};
     std::size_t secondHiddenCount{};
     std::size_t thirdHiddenCount{};
+    // Which squash each hidden layer uses -- kernel::BrainActivationTanh unless
+    // a plan says otherwise, which is what every plan written before this field
+    // existed meant. Last in the struct so that every `{inputs, hidden, outputs}`
+    // written anywhere still names the same three things.
+    std::array<std::uint32_t, Topology::hiddenLayerCount> hiddenActivation{};
 
     [[nodiscard]] constexpr std::size_t hiddenLayer(const std::size_t layer) const {
         if (layer == 0) {
@@ -98,13 +103,22 @@ struct BrainShape {
     }
 
     [[nodiscard]] constexpr std::uint32_t packedLayers() const {
-        return kernel::brainPackHiddenLayers(static_cast<kernel::uint>(hiddenCount),
-                                             static_cast<kernel::uint>(secondHiddenCount),
-                                             static_cast<kernel::uint>(thirdHiddenCount));
+        return kernel::brainWithLayerActivations(
+            kernel::brainPackHiddenLayers(static_cast<kernel::uint>(hiddenCount),
+                                          static_cast<kernel::uint>(secondHiddenCount),
+                                          static_cast<kernel::uint>(thirdHiddenCount)),
+            hiddenActivation[0], hiddenActivation[1], hiddenActivation[2]);
+    }
+
+    // The widths alone. What a genome is laid out by, and deliberately not the
+    // packed plan: two runs that differ only in a squash read the same weights
+    // and must agree on where every one of them is.
+    [[nodiscard]] constexpr std::uint32_t packedWidths() const {
+        return kernel::brainLayerWidths(packedLayers());
     }
 
     [[nodiscard]] constexpr std::size_t weightCount() const {
-        return kernel::brainWeightCount(static_cast<kernel::uint>(inputCount), packedLayers(),
+        return kernel::brainWeightCount(static_cast<kernel::uint>(inputCount), packedWidths(),
                                         static_cast<kernel::uint>(outputCount));
     }
 

@@ -63,6 +63,11 @@ struct BrainDescription {
     // needs no arithmetic.
     std::uint32_t hiddenCount{};
     std::vector<std::uint32_t> hiddenLayers;
+    // The squash each of those layers uses, by name. Recorded beside the widths
+    // rather than derived from them, because two files with the same widths and
+    // different squashes hold weights that mean different things, and a reader
+    // that cannot see the difference would load one into the other.
+    std::vector<std::string> hiddenActivations;
     std::uint32_t outputCount{};
     std::uint32_t weightCount{};
     // Which integrator the weights are read under. The gate block is carried by

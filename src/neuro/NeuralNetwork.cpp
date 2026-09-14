@@ -34,6 +34,7 @@ Outputs evaluate(const std::span<const float> weights, const Inputs& inputs,
     for (kernel::uint layer = 0; layer < layerCount; ++layer) {
         const kernel::uint width = kernel::brainHiddenLayerSize(layers, layer);
         const kernel::uint stateOffset = kernel::brainHiddenLayerStateOffset(layers, layer);
+        const kernel::uint squash = kernel::brainLayerActivation(layers, layer);
         std::array<float, Topology::hiddenNeuronCapacity> produced{};
         for (kernel::uint neuron = 0; neuron < width; ++neuron) {
             float activation =
@@ -77,7 +78,7 @@ Outputs evaluate(const std::span<const float> weights, const Inputs& inputs,
                     }
                 }
             } else {
-                produced[neuron] = kernel::brainActivation(state[global]);
+                produced[neuron] = kernel::brainLayerActivate(squash, state[global]);
             }
         }
         for (kernel::uint neuron = 0; neuron < width; ++neuron) {

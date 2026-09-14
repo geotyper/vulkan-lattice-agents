@@ -62,6 +62,7 @@ struct Options {
     std::string describeBrain;
     // Empty means the default hidden layers.
     std::vector<std::uint32_t> hiddenLayers;
+    std::vector<std::uint32_t> hiddenSquashes;
     std::string loadPopulation;
     std::string saveRun;
     std::string loadRun;
@@ -117,7 +118,13 @@ void printHelp(const char* executable) {
                  "                           it to the step; spiking uses leaky\n"
                  "                           integrate-and-fire pulses; gated recomputes it\n"
                  "                           from inputs (default time)\n"
-                 "  --hidden <a[,b[,c]]>     hidden layer widths, front to back\n\n"
+                 "  --hidden <a[,b[,c]]>     hidden layer widths, front to back\n"
+                 "  --hidden-squash <a[,b[,c]]>\n"
+                 "                           tanh|sin per hidden layer (default tanh). Outputs\n"
+                 "                           are always tanh -- every threshold in the rules\n"
+                 "                           reads one as how far and which way. Has no effect\n"
+                 "                           under --neuron-model spiking, which writes 1 or 0\n"
+                 "                           and never reaches a squash\n\n"
                  "Fitness shaping (sweepable without rebuilding):\n"
                  "  --tracking-reward <x>    worth of the nearest it ever got (default 1.0)\n"
                  "  --objective-bonus <x>    score per step within the contact radius (0.02)\n"
@@ -175,6 +182,35 @@ template <typename T> T parseNumber(const std::string_view text, const std::stri
              " widths, front to back");
     }
     return widths;
+}
+
+// The squash each hidden layer uses, in the same front-to-back order as the
+// widths beside it.
+[[nodiscard]] std::vector<std::uint32_t> parseHiddenSquashes(const std::string_view text) {
+    std::vector<std::uint32_t> squashes;
+    std::size_t start = 0;
+    while (start <= text.size()) {
+        const std::size_t comma = text.find(',', start);
+        const std::string_view piece = text.substr(
+            start, comma == std::string_view::npos ? std::string_view::npos : comma - start);
+        if (piece == "tanh") {
+            squashes.push_back(vkexp::neuro::kernel::BrainActivationTanh);
+        } else if (piece == "sin" || piece == "sine") {
+            squashes.push_back(vkexp::neuro::kernel::BrainActivationSine);
+        } else {
+            fail("Unknown hidden squash '" + std::string{piece} + "', expected tanh or sin");
+        }
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        start = comma + 1;
+    }
+    if (squashes.empty() || squashes.size() > vkexp::neuro::Topology::hiddenLayerCount) {
+        fail("--hidden-squash takes 1 to " +
+             std::to_string(vkexp::neuro::Topology::hiddenLayerCount) +
+             " names, front to back");
+    }
+    return squashes;
 }
 
 // "32x32x16". Three numbers rather than three options because the box is one
@@ -397,6 +433,8 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.saveChampion = next(index, argument);
         } else if (argument == "--hidden") {
             options.hiddenLayers = parseHiddenLayers(next(index, argument));
+        } else if (argument == "--hidden-squash") {
+            options.hiddenSquashes = parseHiddenSquashes(next(index, argument));
         } else if (argument == "--describe-brain") {
             options.describeBrain = next(index, argument);
         } else if (argument == "--load-population") {
@@ -424,6 +462,9 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
 // and the run options around it are not even validated.
 void describeBrainAndExit(const Options& options) {
     vkexp::SimulationStep settings{};
+    for (std::size_t layer = 0; layer < options.hiddenSquashes.size(); ++layer) {
+        settings.hiddenActivation[layer] = options.hiddenSquashes[layer];
+    }
     for (std::size_t layer = 0; layer < options.hiddenLayers.size(); ++layer) {
         settings.hiddenLayers[layer] = options.hiddenLayers[layer];
     }
@@ -484,6 +525,9 @@ int run(const Options& options) {
         state.settings.beaconContactRadius = *options.contactRadius;
     }
     state.settings.fitness = options.fitness;
+    for (std::size_t layer = 0; layer < options.hiddenSquashes.size(); ++layer) {
+        state.settings.hiddenActivation[layer] = options.hiddenSquashes[layer];
+    }
     for (std::size_t layer = 0; layer < options.hiddenLayers.size(); ++layer) {
         state.settings.hiddenLayers[layer] = options.hiddenLayers[layer];
     }

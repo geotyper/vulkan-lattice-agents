@@ -1320,10 +1320,12 @@ void runGenomeAddressingProbe(vkexp::HeadlessComputeContext& context) {
 // The same trajectory under a three-layer plan. Split out rather than folded
 // into the loop above because the plan changes the genome length, and a case
 // that changed two things at once would not say which one drifted.
-void runDeepPlanParity(vkexp::HeadlessComputeContext& context) {
+void runDeepPlanParity(vkexp::HeadlessComputeContext& context,
+                       const std::array<std::uint32_t, 3>& squashes, const char* what) {
     vkexp::SimulationStep settings =
         paritySettings(vkexp::Neighborhood::Moore, vkexp::NeuronModel::Gated);
     settings.hiddenLayers = {12, 8, 8};
+    settings.hiddenActivation = squashes;
     const vkexp::lattice::PopulationLayout layout{12, 10, 2};
     const vkexp::neuro::BrainShape brain = vkexp::resolvedBrain(settings);
     require(brain.hiddenLayerCount() == 3, "The deep parity case did not get three layers");
@@ -1356,7 +1358,7 @@ void runDeepPlanParity(vkexp::HeadlessComputeContext& context) {
                 "Deep plan parity: the occupancy grids diverged at step " + std::to_string(step));
     }
     const double worst = worstDrift(drift);
-    std::cout << "  drift[12 -> 8 -> 8, gated] = " << worst << '\n';
+    std::cout << "  drift[12 -> 8 -> 8, gated, " << what << "] = " << worst << '\n';
     require(std::abs(worst) <= accumulatedDriftBudget,
             "Deep plan parity accumulated a systematic CPU/GPU drift of " + std::to_string(worst));
 }
@@ -1396,7 +1398,14 @@ int runAll() {
     // against the one in vkexp::neuro::evaluate rather than only its first
     // layer. Drift accumulates through the layers, which is exactly what a
     // single-layer case cannot see.
-    runDeepPlanParity(context);
+    runDeepPlanParity(context, {0U, 0U, 0U}, "tanh");
+    // And the same plan with a periodic squash in the middle. Worth its own case
+    // rather than trusting the one above: sine is maximally sensitive to input
+    // error exactly where tanh is least -- at a large argument -- so if a
+    // hidden layer can push the two implementations apart, this is the shape
+    // that does it, and the drift budget is the thing that would notice.
+    runDeepPlanParity(context, {0U, vkexp::neuro::kernel::BrainActivationSine, 0U},
+                      "sine in the middle");
 
     std::cout << "Lattice parity: CPU and GPU agree\n";
     return 0;

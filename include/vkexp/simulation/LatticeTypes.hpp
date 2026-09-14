@@ -208,7 +208,7 @@ struct alignas(16) AgentState {
 };
 
 static_assert(std::is_trivially_copyable_v<AgentState>);
-static_assert(sizeof(AgentState) == 224);
+static_assert(sizeof(AgentState) == 304);
 static_assert(offsetof(AgentState, intent) == 16);
 static_assert(offsetof(AgentState, beacon) == 32);
 static_assert(offsetof(AgentState, signal) == 48);
@@ -376,6 +376,10 @@ struct SimulationStep {
     // business: how many sensors a lattice offers and how many actuators it
     // needs are statements about the world, not about how much brain to spend.
     std::array<std::uint32_t, neuro::kernel::BrainHiddenLayerCapacity> hiddenLayers{};
+    // Which squash each of those layers uses: 0 tanh, 1 sine. All zero is what
+    // every run before this setting existed did, and still the default -- see
+    // brainLayerActivate for why the offer is limited to hidden layers.
+    std::array<std::uint32_t, neuro::kernel::BrainHiddenLayerCapacity> hiddenActivation{};
     FitnessWeights fitness{};
     // Where a hidden neuron's time constant comes from. Reactive pins it to
     // deltaTime, which makes the update y = activation and reproduces the
@@ -541,6 +545,7 @@ static_assert(offsetof(GpuStepParameters, neuronModel) == 56);
         shape.secondHiddenCount = settings.hiddenLayers[1];
         shape.thirdHiddenCount = settings.hiddenLayers[2];
     }
+    shape.hiddenActivation = settings.hiddenActivation;
     return shape;
 }
 

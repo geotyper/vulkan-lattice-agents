@@ -49,7 +49,9 @@ Movement:   turn threshold 0.25, beacon reached within 1 cell(s)
   forward by definition;
 - two recurrent memory cells fed back, 2 inputs;
 - `78 inputs -> 20 tanh neurons -> 6 outputs` by default, with the hidden layers
-  configurable from the Brain window: up to three of them, 32 neurons in total;
+  configurable from the Brain window: up to three of them, 52 neurons in total,
+  and each may use `tanh` or `sin` (`--hidden-squash`). Outputs are always tanh,
+  because every threshold in the rules reads one as how far and which way;
 - every hidden neuron holds its own state and a time constant that is evolved,
   recomputed from the inputs each step, or pinned to the step, so a memory is
   measured in seconds and can be held until something says to let go;

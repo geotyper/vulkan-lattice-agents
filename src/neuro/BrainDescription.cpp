@@ -317,6 +317,8 @@ BrainDescription describeBrain(const BrainShape shape, const std::string_view ne
     description.hiddenCount = static_cast<uint>(shape.hiddenTotal());
     for (std::size_t layer = 0; layer < shape.hiddenLayerCount(); ++layer) {
         description.hiddenLayers.push_back(static_cast<uint>(shape.hiddenLayer(layer)));
+        description.hiddenActivations.emplace_back(
+            shape.hiddenActivation[layer] == kernel::BrainActivationSine ? "sin" : "tanh");
     }
     description.outputCount = outputCount;
     description.weightCount = bk::brainWeightCount(inputCount, shape.packedLayers(), outputCount);
@@ -418,6 +420,12 @@ std::string brainDescriptionToJson(const BrainDescription& description) {
         out += std::to_string(description.hiddenLayers[layer]);
     }
     out += " ],\n";
+    out += "  \"hidden_activations\": [";
+    for (std::size_t layer = 0; layer < description.hiddenActivations.size(); ++layer) {
+        out += layer == 0 ? " " : ", ";
+        appendEscaped(out, description.hiddenActivations[layer]);
+    }
+    out += " ],\n";
     out += "  \"outputs_count\": " + std::to_string(description.outputCount) + ",\n";
     out += "  \"weight_count\": " + std::to_string(description.weightCount) + ",\n";
     out += "  \"neuron_model\": ";
@@ -449,6 +457,14 @@ BrainDescription parseBrainDescription(const std::string_view json) {
                 if (!reader.consume(']')) {
                     do {
                         description.hiddenLayers.push_back(reader.readNumber());
+                    } while (reader.consume(','));
+                    reader.expect(']');
+                }
+            } else if (key == "hidden_activations") {
+                reader.expect('[');
+                if (!reader.consume(']')) {
+                    do {
+                        description.hiddenActivations.push_back(reader.readString());
                     } while (reader.consume(','));
                     reader.expect(']');
                 }
@@ -504,6 +520,21 @@ std::vector<std::string> compareBrainDescriptions(const BrainDescription& expect
         };
         differences.emplace_back("hidden layers are " + describe(actual.hiddenLayers) +
                                  ", this build has " + describe(expected.hiddenLayers));
+    }
+    // A file written with an older description has no activations at all, and
+    // that is not a difference: tanh everywhere is what such a file meant.
+    if (!actual.hiddenActivations.empty() &&
+        expected.hiddenActivations != actual.hiddenActivations) {
+        const auto describe = [](const std::vector<std::string>& squashes) {
+            std::string text;
+            for (const std::string& squash : squashes) {
+                text += text.empty() ? "" : "+";
+                text += squash;
+            }
+            return text.empty() ? std::string{"none"} : text;
+        };
+        differences.emplace_back("hidden activations are " + describe(actual.hiddenActivations) +
+                                 ", this build has " + describe(expected.hiddenActivations));
     }
     compareCount("output count", expected.outputCount, actual.outputCount);
     compareBlockList("input", expected.inputs, actual.inputs, differences);

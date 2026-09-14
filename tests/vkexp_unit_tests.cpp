@@ -1105,6 +1105,49 @@ void testRunSnapshotRoundTrip() {
     std::filesystem::remove(path, removeError);
 }
 
+void testLayerActivation() {
+    namespace bk = vkexp::neuro::kernel;
+
+    // The squash rides in the same word as the widths, so the first thing to
+    // establish is that it does not disturb them. A plan whose widths shifted
+    // when a layer changed its squash would be a genome laid out differently for
+    // two networks that must read the same weights.
+    const vkexp::neuro::BrainShape plain{40, 12, 6, 8, 0};
+    vkexp::neuro::BrainShape sine = plain;
+    sine.hiddenActivation = {bk::BrainActivationTanh, bk::BrainActivationSine,
+                             bk::BrainActivationTanh};
+    check(plain.packedLayers() != sine.packedLayers(),
+          "A layer's squash is part of the packed plan");
+    check(plain.packedWidths() == sine.packedWidths(),
+          "and it is not part of the widths, which is what lays a genome out");
+    check(plain.weightCount() == sine.weightCount(),
+          "so two plans that differ only in a squash are the same length");
+    for (std::uint32_t layer = 0; layer < 3; ++layer) {
+        check(bk::brainHiddenLayerSize(sine.packedLayers(), layer) ==
+                  bk::brainHiddenLayerSize(plain.packedLayers(), layer),
+              "and every layer is still as wide as it was");
+    }
+    check(bk::brainLayerActivation(sine.packedLayers(), 0) == bk::BrainActivationTanh &&
+              bk::brainLayerActivation(sine.packedLayers(), 1) == bk::BrainActivationSine &&
+              bk::brainLayerActivation(sine.packedLayers(), 2) == bk::BrainActivationTanh,
+          "The squash reads back out of the plan, layer by layer");
+    check(bk::brainLayerActivation(plain.packedLayers(), 1) == bk::BrainActivationTanh,
+          "A plan that says nothing about squashes means tanh, which is what every "
+          "plan written before they existed meant");
+
+    // And the squash itself. Sine is offered on hidden layers only; the check
+    // that matters about it is that it is not tanh, at a value where the two
+    // would otherwise be easy to confuse.
+    check(closeTo(bk::brainLayerActivate(bk::BrainActivationTanh, 0.5F), std::tanh(0.5F)),
+          "Tanh is what it always was");
+    check(closeTo(bk::brainLayerActivate(bk::BrainActivationSine, 0.5F), std::sin(0.5F)),
+          "and sine is sine");
+    check(bk::brainLayerActivate(bk::BrainActivationSine, 3.0F) <
+              bk::brainLayerActivate(bk::BrainActivationSine, 1.0F),
+          "Sine is not monotone, which is the whole objection to it and the reason it "
+          "is offered rather than imposed");
+}
+
 void testRandomWeights() {
     namespace bk = vkexp::neuro::kernel;
     const vkexp::neuro::BrainShape shape{40, 12, 6, 8, 0};
@@ -2743,6 +2786,7 @@ int main() {
     testGenomeArchiveRoundTrip();
     testGroupFitnessSharing();
     testRunSnapshotRoundTrip();
+    testLayerActivation();
     testRandomWeights();
     testPopulationReload();
     testStepParameterPacking();

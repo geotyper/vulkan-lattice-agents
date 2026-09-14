@@ -61,7 +61,7 @@ constexpr std::uint32_t settingsFloatCount = 11;
 // SimulationStep, and this is what notices when a new tunable is added and
 // quietly not saved. If it fires: add the field to one of the two lists above,
 // bump runSnapshotVersion, then update this number.
-static_assert(sizeof(SimulationStep) == 116,
+static_assert(sizeof(SimulationStep) == 128,
               "SimulationStep changed shape -- update the run snapshot field lists");
 
 // The fields that are not floats, kept apart so the float list above stays a
@@ -76,6 +76,9 @@ struct SettingsIntegers {
     std::uint32_t firstHiddenLayer{};
     std::uint32_t secondHiddenLayer{};
     std::uint32_t thirdHiddenLayer{};
+    std::uint32_t firstHiddenActivation{};
+    std::uint32_t secondHiddenActivation{};
+    std::uint32_t thirdHiddenActivation{};
     std::uint32_t neuronModel{};
     std::uint32_t worldMode{};
     std::uint32_t buildIntervalTicks{};
@@ -87,7 +90,7 @@ struct SettingsIntegers {
     std::uint32_t chasmGroundWidth{};
 };
 
-static_assert(sizeof(SettingsIntegers) == 72);
+static_assert(sizeof(SettingsIntegers) == 84);
 
 void readExactly(std::ifstream& stream, void* destination, const std::size_t bytes,
                  const std::filesystem::path& path) {
@@ -147,6 +150,9 @@ void saveRunSnapshot(const std::filesystem::path& path, const RunSnapshot& snaps
                                     settings.hiddenLayers[0],
                                     settings.hiddenLayers[1],
                                     settings.hiddenLayers[2],
+                                    settings.hiddenActivation[0],
+                                    settings.hiddenActivation[1],
+                                    settings.hiddenActivation[2],
                                     static_cast<std::uint32_t>(settings.neuronModel),
                                     static_cast<std::uint32_t>(settings.worldMode),
                                     settings.buildIntervalTicks,
@@ -273,6 +279,9 @@ RunSnapshot loadRunSnapshot(const std::filesystem::path& path) {
     snapshot.settings.beaconContactRadius = integers.beaconContactRadius;
     snapshot.settings.beaconSeed = integers.beaconSeed;
     snapshot.settings.neighborhood = static_cast<Neighborhood>(integers.neighborhood);
+    snapshot.settings.hiddenActivation = {integers.firstHiddenActivation,
+                                          integers.secondHiddenActivation,
+                                          integers.thirdHiddenActivation};
     snapshot.settings.hiddenLayers = {integers.firstHiddenLayer, integers.secondHiddenLayer,
                                       integers.thirdHiddenLayer};
     snapshot.settings.neuronModel = static_cast<NeuronModel>(integers.neuronModel);

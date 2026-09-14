@@ -461,6 +461,19 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::Text("%zu inputs -> %s tanh -> %zu outputs", brain.inputCount, layerText.c_str(),
                 brain.outputCount);
     ImGui::TextDisabled("%zu weights per genome", brain.weightCount());
+    {
+        std::string squashes;
+        for (std::size_t layer = 0; layer < brain.hiddenLayerCount(); ++layer) {
+            squashes += squashes.empty() ? "" : "+";
+            squashes += brain.hiddenActivation[layer] == neuro::kernel::BrainActivationSine
+                            ? "sin"
+                            : "tanh";
+        }
+        ImGui::TextDisabled("hidden squash %s, outputs tanh", squashes.c_str());
+        ImGui::SetItemTooltip("Outputs are always tanh: every threshold in the rules reads one "
+                              "as how far and which way. A spiking run ignores this -- it writes "
+                              "1 or 0 and never reaches a squash.");
+    }
     if (state_.settings.neuronModel != NeuronModel::Reactive) {
         ImGui::TextDisabled("gate block %zu of %zu genes",
                             brain.hiddenTotal() * (brain.inputCount + 1), brain.weightCount());
