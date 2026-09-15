@@ -149,6 +149,40 @@ const uint BrainActivationReluUnit = 5u;
 // Not a kind: what the kinds are counted by, for a menu and for the bits below.
 const uint BrainActivationCount = 6u;
 
+// Measured, and the answer is half of one. Three hundred steps of construction
+// on random genomes, one layer of 35, the instrument in scratchpad/activations:
+//
+//   plan                     |h|   silent   output |z|   walk  build  turn
+//   tanh        (reactive)   0.73    4%        2.22      28%    28%    42%
+//   relu-unit   (reactive)   0.40   53%        1.28      34%    25%    39%
+//   relu-unit-3 (reactive)   ----   ---        0.62      56%    21%    22%
+//   spiking                  0.03   97%        0.60      56%    17%    25%
+//
+// where relu-unit-3 is the same rectified layer with three subtracted from every
+// hidden bias, which for a rectifier is a firing threshold. Read down the
+// columns: sparsity alone reproduces the spiking model's decisions almost
+// exactly. Same output magnitude, same split between walking, building and
+// turning, to a point or two. So what the spiking hidden layer sells the output
+// layer is silence -- an output whose pre-activation is a sum over the few units
+// that fired, rather than over thirty-five that are all shouting -- and a
+// rectifier with a threshold buys the same thing.
+//
+// What it does not buy is churn. Spiking holds a decision 2.58 ticks on average,
+// median 1, ninety-ninth percentile 19. The rectified layer at the same sparsity
+// holds 4.69 ticks, median 2, ninety-ninth percentile 53 -- and under the
+// time-constant model 6.62 and 65. Sparsity makes the output quiet, and a quiet
+// output is also a steady one: the two properties pull against each other in
+// every model here. The spiking neuron gets both because its state resets on
+// firing, which is a source of change inside the neuron rather than in what it
+// reads.
+//
+// Which is worth knowing before reaching for a gate. A GRU reset gate decides
+// how much history to carry given the input; it does not make a neuron let go of
+// its own accord. If the field runs keep showing what they show -- spiking
+// walking 20-25% of ticks where the others record 1-3% -- then the variable to
+// chase is how long a refused decision persists, and the reset is the thing in
+// the spiking neuron that answers it.
+
 // What a world means when it does not say otherwise: one hidden layer of 35,
 // squashed by sine. Separate from the capacity on purpose -- raising how many
 // neurons there *may* be must not quietly widen every world's brain, which is

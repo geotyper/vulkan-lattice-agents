@@ -161,8 +161,13 @@ const char* decisionName(const int decision) {
     }
 }
 
+// biasOffset shifts every hidden bias down, which for a rectified layer is a
+// firing threshold: the neuron is silent unless its input clears the offset. It
+// is how this asks whether sparsity alone accounts for the spiking model,
+// without adopting the spiking neuron. Zero leaves the draw as it was.
 void run(const char* label, const std::array<std::uint32_t, 3>& squashes,
-         const std::array<std::uint32_t, 3>& widths, const vkexp::NeuronModel model) {
+         const std::array<std::uint32_t, 3>& widths, const vkexp::NeuronModel model,
+         const float biasOffset = 0.0F) {
     vkexp::SimulationStep settings{};
     settings.worldMode = vkexp::WorldMode::Construction;
     settings.latticeWidth = 32;
@@ -180,7 +185,17 @@ void run(const char* label, const std::array<std::uint32_t, 3>& squashes,
     std::vector<float> weights;
     weights.reserve(std::size_t(stride) * layout.genomeCount);
     for (std::uint32_t genome = 0; genome < layout.genomeCount; ++genome) {
-        const vkexp::neuro::Weights drawn = vkexp::neuro::randomWeights(brain, random, false);
+        vkexp::neuro::Weights drawn = vkexp::neuro::randomWeights(brain, random, false);
+        if (biasOffset != 0.0F) {
+            const bk::uint layers = brain.packedLayers();
+            for (std::size_t layer = 0; layer < brain.hiddenLayerCount(); ++layer) {
+                for (std::size_t neuron = 0; neuron < brain.hiddenLayer(layer); ++neuron) {
+                    drawn[bk::brainLayerBiasIndex(0U, static_cast<bk::uint>(brain.inputCount),
+                                                  layers, static_cast<bk::uint>(layer),
+                                                  static_cast<bk::uint>(neuron))] += biasOffset;
+                }
+            }
+        }
         weights.insert(weights.end(), drawn.begin(), drawn.end());
     }
 
@@ -308,17 +323,15 @@ void run(const char* label, const std::array<std::uint32_t, 3>& squashes,
 } // namespace
 
 int main() {
-    const std::array<std::uint32_t, 3> deep{35, 15, 0};
-    run("35-15 tanh,tanh  (reactive)", {bk::BrainActivationTanh, bk::BrainActivationTanh, 0},
-        deep, vkexp::NeuronModel::Reactive);
-    run("35-15 sin,sin    (reactive)", {bk::BrainActivationSine, bk::BrainActivationSine, 0}, deep,
+    const std::array<std::uint32_t, 3> flat{35, 0, 0};
+    run("35 relu-unit -3 (time)", {bk::BrainActivationReluUnit, 0, 0}, flat,
+        vkexp::NeuronModel::TimeConstant, -3.0F);
+    run("35 tanh       (reactive)", {bk::BrainActivationTanh, 0, 0}, flat,
         vkexp::NeuronModel::Reactive);
-    run("35-15 tanh/√n    (reactive)",
-        {bk::BrainActivationTanhScaled, bk::BrainActivationTanhScaled, 0}, deep,
+    run("35 relu-unit  (reactive)", {bk::BrainActivationReluUnit, 0, 0}, flat,
         vkexp::NeuronModel::Reactive);
-    run("35-15 softsign   (reactive)",
-        {bk::BrainActivationSoftsign, bk::BrainActivationSoftsign, 0}, deep,
-        vkexp::NeuronModel::Reactive);
-    run("20 tanh          (spiking)", {0, 0, 0}, {20, 0, 0}, vkexp::NeuronModel::Spiking);
+    run("35 relu-unit -3 (reactive)", {bk::BrainActivationReluUnit, 0, 0}, flat,
+        vkexp::NeuronModel::Reactive, -3.0F);
+    run("35            (spiking)", {0, 0, 0}, flat, vkexp::NeuronModel::Spiking);
     return 0;
 }
