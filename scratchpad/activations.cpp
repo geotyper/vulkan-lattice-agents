@@ -236,17 +236,27 @@ void run(const char* label, const std::array<std::uint32_t, 3>& squashes,
             const std::span<const float> genomeWeights{weights.data() + std::size_t(genome) * stride,
                                                        stride};
             vkexp::neuro::HiddenState state{};
+            vkexp::neuro::HiddenState auxLane{};
+            vkexp::neuro::HiddenState emittedLane{};
             for (std::size_t neuron = 0; neuron < brain.hiddenTotal(); ++neuron) {
                 state[neuron] = vkexp::agentHiddenState(agents[index], neuron);
+                auxLane[neuron] = vkexp::agentHiddenAux(agents[index], neuron);
+                emittedLane[neuron] = vkexp::agentHiddenOut(agents[index], neuron);
             }
             vkexp::neuro::HiddenState truthState = state;
-            const vkexp::neuro::Outputs truth =
-                vkexp::neuro::evaluate(genomeWeights, inputs, truthState, settings.deltaTime,
-                                       static_cast<bk::uint>(settings.neuronModel), brain);
+            const vkexp::neuro::Outputs truth = vkexp::neuro::evaluate(
+                genomeWeights, inputs, truthState, auxLane, emittedLane, settings.deltaTime,
+                static_cast<bk::uint>(settings.neuronModel), brain);
             // Only a sample: three hundred steps times seven hundred agents is
             // more numbers than the question needs, and the first world is as
-            // representative as any other.
-            if (index < 16) {
+            // representative as any other. The probe below carries its own copy
+            // of the forward pass, which knows the three squashed models and not
+            // the ones that fire, so it is skipped for those: their decisions
+            // and their hold lengths still come from the real evaluator above.
+            const bool probeable = settings.neuronModel == vkexp::NeuronModel::Reactive ||
+                                   settings.neuronModel == vkexp::NeuronModel::TimeConstant ||
+                                   settings.neuronModel == vkexp::NeuronModel::Gated;
+            if (index < 16 && probeable) {
                 instrument(genomeWeights, inputs, state, settings.deltaTime,
                            static_cast<bk::uint>(settings.neuronModel), brain, probe, truth);
             }
@@ -324,14 +334,12 @@ void run(const char* label, const std::array<std::uint32_t, 3>& squashes,
 
 int main() {
     const std::array<std::uint32_t, 3> flat{35, 0, 0};
+    run("35 tanh        (time)", {bk::BrainActivationTanh, 0, 0}, flat,
+        vkexp::NeuronModel::TimeConstant);
     run("35 relu-unit -3 (time)", {bk::BrainActivationReluUnit, 0, 0}, flat,
         vkexp::NeuronModel::TimeConstant, -3.0F);
-    run("35 tanh       (reactive)", {bk::BrainActivationTanh, 0, 0}, flat,
-        vkexp::NeuronModel::Reactive);
-    run("35 relu-unit  (reactive)", {bk::BrainActivationReluUnit, 0, 0}, flat,
-        vkexp::NeuronModel::Reactive);
-    run("35 relu-unit -3 (reactive)", {bk::BrainActivationReluUnit, 0, 0}, flat,
-        vkexp::NeuronModel::Reactive, -3.0F);
     run("35            (spiking)", {0, 0, 0}, flat, vkexp::NeuronModel::Spiking);
+    run("35           (adaptive)", {0, 0, 0}, flat, vkexp::NeuronModel::Adaptive);
+    run("35         (oscillator)", {0, 0, 0}, flat, vkexp::NeuronModel::Oscillator);
     return 0;
 }
