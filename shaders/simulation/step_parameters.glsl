@@ -45,6 +45,7 @@ struct StepParameters {
     uint brainGenomeStride;
     uint worldMode;
     uint buildIntervalTicks;
+    uint wastedBuildTicks;
     float buildThreshold;
     float constructionCourseFill;
     uint constructionHeightLead;

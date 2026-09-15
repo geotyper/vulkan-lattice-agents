@@ -282,6 +282,14 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                 }
             }
 
+            // Mirrors the same charge in lattice_step.comp: only the two
+            // outcomes the agent could have seen coming, and read off the
+            // funnel's verdict before gravity or the bid can refile the tick.
+            if (outcome == kern::LatticeBuildBlocked ||
+                outcome == kern::LatticeBuildOffLattice) {
+                agent.signal.z = static_cast<float>(settings.wastedBuildTicks);
+            }
+
             if (stepping) {
                 wantedX += forwardX;
                 wantedZ += forwardZ;

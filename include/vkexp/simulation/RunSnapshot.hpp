@@ -55,7 +55,7 @@ struct RunSnapshot {
 // field.
 // It is not a continuation of the old 2D format: the agent record, settings and
 // world all changed at once, and that format has different magic.
-inline constexpr std::uint32_t runSnapshotVersion = 13;
+inline constexpr std::uint32_t runSnapshotVersion = 14;
 
 // Versioned and little-endian, like the genome archive, and just as strict: a
 // file from another brain topology or another agent layout is rejected rather

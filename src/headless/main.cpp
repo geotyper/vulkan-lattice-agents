@@ -45,6 +45,7 @@ struct Options {
     vkexp::Neighborhood neighborhood{vkexp::Neighborhood::Moore};
     vkexp::WorldMode worldMode{vkexp::WorldMode::Beacon};
     std::optional<std::uint32_t> buildIntervalTicks;
+    std::uint32_t wastedBuildTicks{4};
     float buildThreshold{0.55F};
     std::uint32_t resourceHeightLow{4};
     std::uint32_t resourceHeightHigh{8};
@@ -106,6 +107,8 @@ void printHelp(const char* executable) {
                  "                           hangs in, inclusive (4-8), hashed per world\n"
                  "  --ground-width <n>       chasm: columns of solid floor from x=0.\n"
                  "                           0 means half the lattice\n"
+                 "  --wasted-swing <n>       cooldown for a build aimed at an occupied cell\n"
+                 "                           or past a wall (4). 0 charges nothing\n"
                  "  --course-fill <x>        fill a level needs, locally, to be stood on (0.5)\n"
                  "  --support-radius <n>     cells around a site that question covers (2). A\n"
                  "                           radius spanning the floor is the old global rule\n"
@@ -403,6 +406,8 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.resourceHeightLow = parseNumber<std::uint32_t>(band.substr(0, dash), argument);
             options.resourceHeightHigh =
                 parseNumber<std::uint32_t>(band.substr(dash + 1), argument);
+        } else if (argument == "--wasted-swing") {
+            options.wastedBuildTicks = parseNumber<std::uint32_t>(next(index, argument), argument);
         } else if (argument == "--course-fill") {
             options.constructionCourseFill = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--support-radius") {
@@ -516,6 +521,7 @@ int run(const Options& options) {
     state.settings.resourceHeightHigh =
         std::clamp(options.resourceHeightHigh, state.settings.resourceHeightLow, ceiling);
     state.settings.chasmGroundWidth = options.chasmGroundWidth;
+    state.settings.wastedBuildTicks = options.wastedBuildTicks;
     state.settings.constructionCourseFill = std::clamp(options.constructionCourseFill, 0.0F, 1.0F);
     state.settings.constructionHeightLead =
         std::clamp(options.constructionHeightLead, 1U, vkexp::latticeMaximumExtent);
@@ -647,7 +653,9 @@ int run(const Options& options) {
                       << (state.settings.allowSideSupportedBlocks != 0U
                               ? "a block directly below, or a cardinal side face"
                               : "a block directly below")
-                      << '\n';
+                      << '\n'
+                      << "Wasted swing: " << state.settings.wastedBuildTicks
+                      << " tick(s) of cooldown for aiming at an occupied cell or past a wall\n";
             if (vkexp::lattice::kernel::latticeWorldFrontier(
                     static_cast<std::uint32_t>(state.settings.worldMode))) {
                 std::cout << "Frontier:   " << state.settings.constructionCourseFill * 100.0F
