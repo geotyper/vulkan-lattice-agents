@@ -922,6 +922,7 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
     });
 
     require(placed > 0, "Construction parity probe never placed a block, so it compared nothing");
+
     // And the gate is doing something: every cell filled would mean the local
     // fill test waved through anything, which is the failure mode a parity
     // check alone cannot see, because both sides would be wrong together.

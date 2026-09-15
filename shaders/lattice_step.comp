@@ -327,14 +327,25 @@ void main() {
         const int forwardX = latticeFacingX(heading);
         const int forwardZ = latticeFacingZ(heading);
         bool stepping = !turning;
+        // Whether this tick already has a reason. Only the cooldown sets it: a
+        // cooling agent walks, and without this the walk would file the tick
+        // under itself and the cooldown counter would read zero forever -- which
+        // is exactly what it did, through 1.8 million ticks of a live run,
+        // because both implementations were wrong in the same way and parity
+        // compares them against each other.
+        bool attributed = false;
 
         if (!turning && action > 0) {
             stepping = false;
             if (agent.signal.z > 0.0) {
                 // Still on the cooldown from the last block. The swing is not
                 // free: the tick is spent, and the agent walks it off rather
-                // than standing in place waiting for the counter.
+                // than standing in place waiting for the counter. The tick is
+                // filed under the cooldown and not under the walk, because
+                // "wanted to build and could not" is the thing worth counting;
+                // `attributed` is what stops the walk overwriting it.
                 outcome = LatticeBuildCooling;
+                attributed = true;
                 stepping = true;
             } else {
                 const int buildX = agent.cell.x + forwardX;
@@ -415,8 +426,10 @@ void main() {
                 wantedY = agent.cell.y;
                 wantedZ = agent.cell.z;
                 agent.intent.w = 1;
-                outcome = refusal;
-            } else {
+                if (!attributed) {
+                    outcome = refusal;
+                }
+            } else if (!attributed) {
                 outcome = LatticeActionWalking;
             }
         }
@@ -444,7 +457,9 @@ void main() {
                 atomicMin(claims[worldBase + wanted], int(id));
             } else if (structures[worldBase + wanted] == LatticeNoStructure) {
                 agent.intent.w = 1; // another agent, not a wall
-                outcome = LatticeActionCrowded;
+                if (!attributed) {
+                    outcome = LatticeActionCrowded;
+                }
             }
         }
     } else if (!turning) {

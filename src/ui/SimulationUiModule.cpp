@@ -458,7 +458,9 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
         layerText += layerText.empty() ? "" : " -> ";
         layerText += std::to_string(brain.hiddenLayer(layer));
     }
-    ImGui::Text("%zu inputs -> %s tanh -> %zu outputs", brain.inputCount, layerText.c_str(),
+    // No squash named here: it is per layer now, and a summary that says "tanh"
+    // whatever the plan carries is a line that contradicts the one below it.
+    ImGui::Text("%zu inputs -> %s -> %zu outputs", brain.inputCount, layerText.c_str(),
                 brain.outputCount);
     ImGui::TextDisabled("%zu weights per genome", brain.weightCount());
     {

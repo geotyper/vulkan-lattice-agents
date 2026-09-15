@@ -216,6 +216,11 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
             const int forwardX = kern::latticeFacingX(heading);
             const int forwardZ = kern::latticeFacingZ(heading);
             bool stepping = !turning;
+            // Whether this tick already has a reason. Only the cooldown sets it:
+            // a cooling agent walks, and without this the walk files the tick
+            // under itself and the cooldown counter reads zero forever. Mirrors
+            // lattice_step.comp, where the same mistake hid behind parity.
+            bool attributed = false;
 
             agent.beacon.x = -1;
             agent.beacon.y = -1;
@@ -226,8 +231,11 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                 if (agent.signal.z > 0.0F) {
                     // Still on the cooldown from the last block. The tick is
                     // spent either way, so the agent walks it off rather than
-                    // standing in place waiting for the counter.
+                    // standing in place waiting for the counter -- and is filed
+                    // under the cooldown, because "wanted to build and could
+                    // not" is the thing worth counting.
                     outcome = kern::LatticeBuildCooling;
+                    attributed = true;
                     stepping = true;
                 } else {
                     const int buildX = agent.cell.x + forwardX;
@@ -310,8 +318,10 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                     wantedY = agent.cell.y;
                     wantedZ = agent.cell.z;
                     agent.intent.w = 1;
-                    outcome = refusal;
-                } else {
+                    if (!attributed) {
+                        outcome = refusal;
+                    }
+                } else if (!attributed) {
                     outcome = kern::LatticeActionWalking;
                 }
             }
@@ -337,7 +347,9 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                         population.claims[worldBase + wanted], static_cast<std::int32_t>(index));
                 } else if (!hasStructure(worldStructures, settings, wantedX, wantedY, wantedZ)) {
                     agent.intent.w = 1; // another agent, not a wall
-                    outcome = kern::LatticeActionCrowded;
+                    if (!attributed) {
+                        outcome = kern::LatticeActionCrowded;
+                    }
                 }
             }
         } else if (!turning) {

@@ -2610,6 +2610,95 @@ void testConstructionLocalFoundation() {
 // it is what lets an agent go up a wall at all -- so an agent may hang on the
 // cliff and move along it. It may not leave it, which is the difference between
 // hugging an edge and walking across a hole.
+// The build cooldown, and specifically that the tick it costs is recorded as the
+// cooldown rather than as whatever the agent did instead.
+//
+// This is not a hypothetical. A cooling agent walks the tick off, and the walk
+// used to file the tick under itself, so the counter read exactly zero through
+// 1.8 million ticks of a live run -- while 5.7% of ticks were placements, each
+// buying four cooled ticks. Parity could not see it: both implementations
+// overwrote the same way, and comparing them against each other agreed. Only a
+// fixture that knows what the answer should be can catch a funnel that is wrong
+// on both sides.
+void testBuildCooldown() {
+    vkexp::SimulationStep settings{};
+    settings.worldMode = vkexp::WorldMode::Construction;
+    settings.latticeWidth = 6;
+    settings.latticeHeight = 5;
+    settings.latticeDepth = 5;
+    settings.neuronModel = vkexp::NeuronModel::Reactive;
+    settings.buildIntervalTicks = 4;
+    // Negative, so an untrained output of zero still clears it: what is under
+    // test is the counter, and an agent that never asks to build would test
+    // nothing. The turn threshold stays where it is, and two zero turn votes
+    // agree on nothing, so the agent never spends a tick turning either.
+    settings.buildThreshold = -0.5F;
+    settings.allowSideSupportedBlocks = 0;
+
+    const vkexp::lattice::PopulationLayout layout{1, 1, 1};
+    const vkexp::neuro::BrainShape brain = vkexp::resolvedBrain(settings);
+    const auto stride = static_cast<std::uint32_t>(brain.weightCount());
+    const std::vector<float> weights(static_cast<std::size_t>(stride) * layout.genomeCount, 0.0F);
+
+    std::vector<vkexp::AgentState> agents(1);
+    agents[0].cell = {1, 1, 2, 0}; // on the bedrock course, facing +x
+    agents[0].beacon = {-1, -1, -1, 0};
+    agents[0].intent = {agents[0].cell.x, agents[0].cell.y, agents[0].cell.z, 0};
+
+    std::vector<std::int32_t> structures =
+        vkexp::lattice::makeTerrain(settings, layout.worldCount());
+    const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
+    std::vector<std::int32_t> occupancy(static_cast<std::size_t>(cells) * layout.worldCount());
+    vkexp::lattice::buildOccupancy(agents, settings, layout, occupancy);
+    std::vector<std::int32_t> claims(occupancy.size());
+    std::vector<std::uint32_t> outcomes(static_cast<std::size_t>(layout.worldCount()) *
+                                        lk::LatticeBuildOutcomeCount);
+
+    const auto step = [&] {
+        std::fill(outcomes.begin(), outcomes.end(), 0U);
+        vkexp::stepLatticeCpu({agents, occupancy, claims, weights, stride, layout.groupSize(),
+                               layout.trialsPerGenome, structures, outcomes},
+                              settings);
+    };
+    const auto counted = [&](const std::uint32_t reason) {
+        return outcomes[reason];
+    };
+
+    step();
+    check(counted(lk::LatticeBuildPlaced) == 1,
+          "The first tick places a block in front, which is what starts a cooldown");
+    check(closeTo(agents[0].signal.z, static_cast<float>(settings.buildIntervalTicks)),
+          "and the cooldown is charged for the interval the settings name");
+
+    // Every tick until the counter runs out is the agent asking again and being
+    // told to wait. It walks the tick off -- and the tick is still the
+    // cooldown's, not the walk's. One fewer than the interval, because the
+    // counter is decremented at the top of the tick that reads it: an interval
+    // of four is a placement every four ticks, which is what it says.
+    for (std::uint32_t tick = 0; tick + 1 < settings.buildIntervalTicks; ++tick) {
+        step();
+        const std::string where = " on cooldown tick " + std::to_string(tick);
+        check(counted(lk::LatticeBuildCooling) == 1,
+              "A tick spent waiting out the cooldown is recorded as the cooldown" + where);
+        check(counted(lk::LatticeActionWalking) == 0 && counted(lk::LatticeActionCeiling) == 0,
+              "and not as the walk it also did, which is how it read zero for a whole project" +
+                  where);
+    }
+
+    step();
+    check(counted(lk::LatticeBuildCooling) == 0 && counted(lk::LatticeBuildPlaced) == 1,
+          "and the tick the counter reaches zero on is a placement again, so the interval is "
+          "the period it claims to be");
+
+    // And the invariant the whole funnel rests on: one reason per agent per
+    // tick. A cooldown filed twice would pass every check above.
+    std::uint32_t total = 0;
+    for (const std::uint32_t reason : outcomes) {
+        total += reason;
+    }
+    check(total == agents.size(), "Exactly one outcome per agent per tick, cooldown included");
+}
+
 void testChasmEdge() {
     vkexp::SimulationStep settings{};
     settings.worldMode = vkexp::WorldMode::Chasm;
@@ -2816,6 +2905,7 @@ int main() {
     testLatticeMoveRule();
     testCameraSpin();
     testConstructionLocalFoundation();
+    testBuildCooldown();
     testChasmEdge();
     testLatticeSpawn();
     testLatticeSensing();
