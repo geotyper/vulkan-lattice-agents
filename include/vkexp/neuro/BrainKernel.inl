@@ -119,11 +119,41 @@ const uint BrainActuatorOutputCount =
 const uint BrainHiddenNeuronCapacity = 52u;
 const uint BrainHiddenLayerCapacity = 3u;
 
-// The one hidden layer this network had before plans existed, and still what a
-// world means when it does not say otherwise. Separate from the capacity on
-// purpose: raising how many neurons there *may* be must not quietly widen every
-// world's brain, which is exactly what sharing one constant would have done.
-const uint BrainDefaultHiddenWidth = 20u;
+const uint BrainActivationTanh = 0u;
+const uint BrainActivationSine = 1u;
+// tanh of the sum divided by the square root of how many things it sums. Costs
+// no parameters and is the textbook answer to a layer whose pre-activation grows
+// with its width -- which is the control this project needed and did not have:
+// if a squash that only rescales catches up with sine, then what sine bought was
+// scale and not periodicity.
+const uint BrainActivationTanhScaled = 2u;
+// x / (1 + |x|). Saturates, so a neuron can still hold a decision, but reaches
+// its asymptote an order of magnitude more slowly than tanh, so a layer of them
+// does not all pile up at the extremes. The middle of the same axis.
+const uint BrainActivationSoftsign = 3u;
+
+// What a world means when it does not say otherwise: two layers, 35 then 15,
+// both squashed by sine. Separate from the capacity on purpose -- raising how
+// many neurons there *may* be must not quietly widen every world's brain, which
+// is exactly what sharing one constant would have done.
+//
+// It was one layer of twenty under tanh for the whole life of this project, and
+// it is a default and not a conclusion. Four generations of construction under
+// the reactive model, three seeds, is what moved it:
+//
+//   35+15 squash    walk   blocks    median
+//   tanh, tanh     10.1%    37-49     45-51
+//   sin,  tanh     16.4%    63-84     81-97
+//   tanh, sin      20.9%   104-134   125-133
+//   sin,  sin      29.9%   136-144   218-234
+//
+// The order holds under the time-constant model too, at a third of the scores.
+// Sine in the first layer alone is the weakest of the three sine placements,
+// which is worth saying because the obvious guess is the other way round: it is
+// the layer feeding the output that gains most from not being nearly binary.
+const uint BrainDefaultHiddenWidth = 35u;
+const uint BrainDefaultSecondHiddenWidth = 15u;
+const uint BrainDefaultHiddenSquash = BrainActivationSine;
 
 // --- derived layout: never edited by hand ------------------------------------
 
@@ -249,18 +279,6 @@ VKEXP_BRAIN_MATH_FN float brainActivation(float value) { return tanh(value); }
 // directly and never reaches a squash. That is not an oversight to fix, it is
 // what "integrate and fire" means, but it does mean --hidden-squash and the
 // spiking model do not combine.
-const uint BrainActivationTanh = 0u;
-const uint BrainActivationSine = 1u;
-// tanh of the sum divided by the square root of how many things it sums. Costs
-// no parameters and is the textbook answer to a layer whose pre-activation grows
-// with its width -- which is the control this project needed and did not have:
-// if a squash that only rescales catches up with sine, then what sine bought was
-// scale and not periodicity.
-const uint BrainActivationTanhScaled = 2u;
-// x / (1 + |x|). Saturates, so a neuron can still hold a decision, but reaches
-// its asymptote an order of magnitude more slowly than tanh, so a layer of them
-// does not all pile up at the extremes. The middle of the same axis.
-const uint BrainActivationSoftsign = 3u;
 
 VKEXP_BRAIN_MATH_FN float brainLayerActivate(uint activation, float value, uint sources) {
     if (activation == BrainActivationSine) {

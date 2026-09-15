@@ -1003,10 +1003,14 @@ void SimulationUiModule::drawBrainWindow(const neuro::BrainShape& brain) {
     // genome layout, so it can only take effect on a reset, and a slider that
     // silently did nothing until later would be worse than one that says so.
     auto& draft = state_.controls.hiddenLayerDraft;
-    const bool defaulted = state_.settings.hiddenLayers[0] == 0;
+    auto& squashDraft = state_.controls.hiddenSquashDraft;
+    const bool defaulted = state_.settings.hiddenLayers[0] == 0 &&
+                           state_.settings.hiddenActivation ==
+                               neuro::defaultBrainShape.hiddenActivation;
     if (draft[0] == 0) {
         for (std::size_t layer = 0; layer < draft.size(); ++layer) {
             draft[layer] = static_cast<int>(brain.hiddenLayer(layer));
+            squashDraft[layer] = static_cast<int>(brain.hiddenActivation[layer]);
         }
     }
     int layerCount = 0;
@@ -1046,6 +1050,19 @@ void SimulationUiModule::drawBrainWindow(const neuro::BrainShape& brain) {
             }
         }
         ImGui::SliderInt(label, &draft[slot], 1, std::max(capacity - spentElsewhere, 1));
+        // The squash beside the width, because they are one decision about one
+        // layer. Sine is the default on the first two and it is not a
+        // conclusion: it measured three times the blocks of tanh over four
+        // generations of construction, and four generations is where a run
+        // starts, not where it gets to.
+        static constexpr std::array<const char*, 4> squashNames{"tanh", "sin", "tanh / sqrt(n)",
+                                                                "softsign"};
+        ImGui::SetNextItemWidth(ImGui::CalcItemWidth() * 0.6F);
+        ImGui::Combo("##squash", &squashDraft[slot], squashNames.data(),
+                     static_cast<int>(squashNames.size()));
+        ImGui::SetItemTooltip("What squashes this layer. Outputs are always tanh: every threshold "
+                              "in the rules reads one as how far and which way. A spiking run "
+                              "ignores this -- it writes 1 or 0 and never reaches a squash.");
         ImGui::PopID();
         total += draft[slot];
     }
@@ -1057,6 +1074,10 @@ void SimulationUiModule::drawBrainWindow(const neuro::BrainShape& brain) {
     planned.hiddenCount = static_cast<std::size_t>(draft[0]);
     planned.secondHiddenCount = static_cast<std::size_t>(draft[1]);
     planned.thirdHiddenCount = static_cast<std::size_t>(draft[2]);
+    for (std::size_t layer = 0; layer < squashDraft.size(); ++layer) {
+        planned.hiddenActivation[layer] =
+            static_cast<std::uint32_t>(std::max(squashDraft[layer], 0));
+    }
     const bool fits = planned.fitsCapacity();
     // The genome is exactly as long as the plan needs, so this number is what a
     // run actually costs and what a file of it will hold -- not a share of some
@@ -1070,12 +1091,14 @@ void SimulationUiModule::drawBrainWindow(const neuro::BrainShape& brain) {
 
     const bool changed = planned.hiddenCount != brain.hiddenCount ||
                          planned.secondHiddenCount != brain.secondHiddenCount ||
-                         planned.thirdHiddenCount != brain.thirdHiddenCount;
+                         planned.thirdHiddenCount != brain.thirdHiddenCount ||
+                         planned.hiddenActivation != brain.hiddenActivation;
     ImGui::BeginDisabled(!fits || !changed);
     if (ImGui::Button("Apply and reset")) {
         state_.settings.hiddenLayers = {static_cast<std::uint32_t>(draft[0]),
                                         static_cast<std::uint32_t>(draft[1]),
                                         static_cast<std::uint32_t>(draft[2])};
+        state_.settings.hiddenActivation = planned.hiddenActivation;
         state_.controls.resetRequested = true;
     }
     ImGui::EndDisabled();
@@ -1086,12 +1109,14 @@ void SimulationUiModule::drawBrainWindow(const neuro::BrainShape& brain) {
     ImGui::BeginDisabled(defaulted);
     if (ImGui::Button("Back to the default")) {
         state_.settings.hiddenLayers = {};
+        state_.settings.hiddenActivation = neuro::defaultBrainShape.hiddenActivation;
         draft = {};
+        squashDraft = {-1, -1, -1};
         state_.controls.resetRequested = true;
     }
     ImGui::EndDisabled();
-    ImGui::SetItemTooltip("One hidden layer of twenty, which is what a fresh run uses and what "
-                          "every measurement so far was taken on.");
+    ImGui::SetItemTooltip("Two hidden layers, 35 then 15, both squashed by sine -- what a fresh "
+                          "run uses and what the measurements in BrainKernel.inl chose.");
 
     if (changed) {
         ImGui::TextColored(ImVec4{0.95F, 0.75F, 0.25F, 1.0F}, "not applied yet");

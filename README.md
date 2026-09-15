@@ -26,7 +26,7 @@ logical world.
 
 ```
 Lattice:    32x32x16 = 16384 cells per world, Moore (26)
-Brain:      78 -> 20 -> 6
+Brain:      78 -> 35 -> 15 -> 6
 Trial:      900 steps = 15.0 s at 60.0 Hz
 Population: 512 genomes x 4 trials = 2048 agents in 172 lattices
 Movement:   turn threshold 0.25, beacon reached within 1 cell(s)
@@ -48,10 +48,12 @@ Movement:   turn threshold 0.25, beacon reached within 1 cell(s)
   been standing still. No heading channel -- in a body frame the agent faces
   forward by definition;
 - two recurrent memory cells fed back, 2 inputs;
-- `78 inputs -> 20 tanh neurons -> 6 outputs` by default, with the hidden layers
-  configurable from the Brain window: up to three of them, 52 neurons in total,
-  and each may use `tanh` or `sin` (`--hidden-squash`). Outputs are always tanh,
-  because every threshold in the rules reads one as how far and which way;
+- `78 inputs -> 35 -> 15 -> 6 outputs` by default, both hidden layers squashed
+  by `sin`. The plan is editable in the Brain window and by flag: up to three
+  layers, 52 neurons in total, each choosing `tanh`, `sin`, `tanh-scaled` or
+  `softsign` (`--hidden --hidden-squash`). Outputs are always tanh, because
+  every threshold in the rules reads one as how far and which way. The default
+  is a measurement and not a conclusion -- see BrainKernel.inl;
 - every hidden neuron holds its own state and a time constant that is evolved,
   recomputed from the inputs each step, or pinned to the step, so a memory is
   measured in seconds and can be held until something says to let go;
@@ -524,8 +526,9 @@ vklat_headless --neuron-model gated --describe-brain brain.json
 
 ```json
 {
-  "inputs_count": 78, "hidden_count": 20, "outputs_count": 6,
-  "weight_count": 3306, "neuron_model": "gated",
+  "inputs_count": 78, "hidden_count": 50, "outputs_count": 6,
+  "hidden_layers": [ 35, 15 ], "hidden_activations": [ "sin", "sin" ],
+  "weight_count": 6756, "neuron_model": "gated",
   "inputs": [
     { "name": "neighbourhood", "offset": 0, "count": 68, "rows": 17, "columns": 4 },
     { "name": "task", "offset": 68, "count": 6 },
@@ -539,8 +542,8 @@ vklat_headless --neuron-model gated --describe-brain brain.json
     { "name": "memory_out", "offset": 4, "count": 2 }
   ],
   "weights": [
-    { "name": "hidden0_weights", "offset": 0, "count": 1560,
-      "from": "inputs", "to": "hidden0", "rows": 20, "columns": 78 },
+    { "name": "hidden0_weights", "offset": 0, "count": 2730,
+      "from": "inputs", "to": "hidden0", "rows": 35, "columns": 78 },
     ...
   ]
 }

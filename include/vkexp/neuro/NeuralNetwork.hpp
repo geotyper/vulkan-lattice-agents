@@ -30,6 +30,7 @@ struct Topology {
     static constexpr std::size_t hiddenLayerCount = kernel::BrainHiddenLayerCapacity;
     // What a world gets when it does not ask for anything else.
     static constexpr std::size_t defaultHiddenCount = kernel::BrainDefaultHiddenWidth;
+    static constexpr std::size_t defaultSecondHiddenCount = kernel::BrainDefaultSecondHiddenWidth;
     static constexpr std::size_t turnOutputCount = kernel::BrainTurnOutputCount;
     static constexpr std::size_t actuatorOutputCount = kernel::BrainActuatorOutputCount;
     static constexpr std::size_t outputCount = kernel::BrainOutputCapacity;
@@ -154,12 +155,18 @@ struct BrainShape {
 inline constexpr BrainShape maximumBrainShape{Topology::inputCount, Topology::hiddenNeuronCapacity,
                                               Topology::outputCount};
 
-// Every sensor, every actuator, and the one hidden layer of twenty this network
-// had before plans existed. This is what a world means by "the full brain", and
-// it is deliberately not the maximum: widening the capacity must not widen every
-// world's brain behind its back.
-inline constexpr BrainShape defaultBrainShape{Topology::inputCount, Topology::defaultHiddenCount,
-                                              Topology::outputCount};
+// Every sensor, every actuator, and the hidden plan a world runs when it does
+// not ask for another: 35 then 15, both sine. Deliberately not the maximum --
+// widening the capacity must not widen every world's brain behind its back --
+// and see BrainDefaultHiddenWidth for the measurement that chose it.
+inline constexpr BrainShape defaultBrainShape{
+    Topology::inputCount,
+    Topology::defaultHiddenCount,
+    Topology::outputCount,
+    Topology::defaultSecondHiddenCount,
+    0,
+    {kernel::BrainDefaultHiddenSquash, kernel::BrainDefaultHiddenSquash,
+     kernel::BrainActivationTanh}};
 
 [[nodiscard]] constexpr std::uint32_t packBrainLayout(const BrainShape shape) {
     return kernel::brainPackLayout(static_cast<kernel::uint>(shape.inputCount),

@@ -49,6 +49,10 @@ struct SimulationControls {
     // SimulationStep, and these two differing is exactly what "not applied yet"
     // means. All zero means "not started editing".
     std::array<int, 3> hiddenLayerDraft{};
+    // The squash each of those layers would use, edited beside the widths and
+    // applied by the same button. -1 means "not started editing", the same way
+    // a zero width does, so the two drafts begin and end together.
+    std::array<int, 3> hiddenSquashDraft{-1, -1, -1};
 
     // Watching rather than training. The generation is still scored and
     // reported -- that is how loaded weights get judged -- but nothing is

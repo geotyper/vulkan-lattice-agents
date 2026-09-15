@@ -376,10 +376,13 @@ struct SimulationStep {
     // business: how many sensors a lattice offers and how many actuators it
     // needs are statements about the world, not about how much brain to spend.
     std::array<std::uint32_t, neuro::kernel::BrainHiddenLayerCapacity> hiddenLayers{};
-    // Which squash each of those layers uses: 0 tanh, 1 sine. All zero is what
-    // every run before this setting existed did, and still the default -- see
-    // brainLayerActivate for why the offer is limited to hidden layers.
-    std::array<std::uint32_t, neuro::kernel::BrainHiddenLayerCapacity> hiddenActivation{};
+    // Which squash each of those layers uses. Seeded from the default plan rather
+    // than from zero, so that a run which names its own widths and says nothing
+    // about activations gets the ones the default was measured with -- and so
+    // that the default lives in exactly one place. See brainLayerActivate for
+    // why the offer is limited to hidden layers.
+    std::array<std::uint32_t, neuro::kernel::BrainHiddenLayerCapacity> hiddenActivation{
+        neuro::defaultBrainShape.hiddenActivation};
     FitnessWeights fitness{};
     // Where a hidden neuron's time constant comes from. Reactive pins it to
     // deltaTime, which makes the update y = activation and reproduces the
@@ -545,6 +548,9 @@ static_assert(offsetof(GpuStepParameters, neuronModel) == 56);
         shape.secondHiddenCount = settings.hiddenLayers[1];
         shape.thirdHiddenCount = settings.hiddenLayers[2];
     }
+    // A plan of one's own keeps the default squash unless the settings name one,
+    // because widths and squashes are separate questions: asking for a narrower
+    // layer is not asking for a different activation in it.
     // A spiking neuron writes 1 or 0 and never reaches a squash, so under that
     // model the choice is inert -- and an inert setting must not reach the plan.
     // The plan is what the archive's structure block records and what a loaded
@@ -558,9 +564,9 @@ static_assert(offsetof(GpuStepParameters, neuronModel) == 56);
     // squash the settings carried, which is an activation it never trained
     // under. That is visible rather than hidden -- the Brain window and the
     // structure block both say which squash a run is using.
-    if (settings.neuronModel != NeuronModel::Spiking) {
-        shape.hiddenActivation = settings.hiddenActivation;
-    }
+    shape.hiddenActivation =
+        settings.neuronModel == NeuronModel::Spiking ? decltype(shape.hiddenActivation){}
+                                                     : settings.hiddenActivation;
     return shape;
 }
 

@@ -291,8 +291,12 @@ void testNeuralNetworkContract() {
               plan.outputCount == vkexp::neuro::Topology::outputCount,
           "The default plan uses the lattice's own input and output widths");
     check(plan.hiddenCount == vkexp::neuro::Topology::defaultHiddenCount &&
-              plan.hiddenLayerCount() == 1,
-          "The default plan is one hidden layer of the default width");
+              plan.secondHiddenCount == vkexp::neuro::Topology::defaultSecondHiddenCount &&
+              plan.hiddenLayerCount() == 2,
+          "The default plan is the two hidden layers the default names");
+    check(plan.hiddenActivation[0] == vkexp::neuro::kernel::BrainDefaultHiddenSquash &&
+              plan.hiddenActivation[1] == vkexp::neuro::kernel::BrainDefaultHiddenSquash,
+          "and both of them carry the squash it was measured with");
 
     vkexp::SimulationStep deep{};
     deep.hiddenLayers = {12, 8, 8};
@@ -347,19 +351,25 @@ void testBrainForwardPass() {
     // Uniform everything. With every weight and bias set to w and every input to
     // x, the whole network collapses to a chain that can be written down:
     //
-    //   a0 = w * (1 + n_inputs * x)         h0 = tanh(a0)
-    //   ak = w * (1 + n_(k-1) * h_(k-1))    hk = tanh(ak)
+    //   a0 = w * (1 + n_inputs * x)         h0 = squash_0(a0)
+    //   ak = w * (1 + n_(k-1) * h_(k-1))    hk = squash_k(ak)
     //   y  = tanh(w * (1 + n_last * h_last))
     //
     // The counts in it are exactly the connectivity: a layer reading the wrong
     // number of sources, or reading the input vector when it should read the
-    // layer before it, moves the answer.
+    // layer before it, moves the answer. Each hidden layer is squashed by the
+    // one its plan names, so a case with a sine layer walks the sine path; the
+    // output is tanh whatever the plan says, which is the one thing a plan may
+    // not choose.
     const auto uniformExpectation = [](const vkexp::neuro::BrainShape& shape, const float w,
                                        const float x) {
         float signal = static_cast<float>(shape.inputCount) * x;
+        auto sources = static_cast<bk::uint>(shape.inputCount);
         for (std::size_t layer = 0; layer < shape.hiddenLayerCount(); ++layer) {
-            const float activation = std::tanh(w * (1.0F + signal));
+            const float activation =
+                bk::brainLayerActivate(shape.hiddenActivation[layer], w * (1.0F + signal), sources);
             signal = static_cast<float>(shape.hiddenLayer(layer)) * activation;
+            sources = static_cast<bk::uint>(shape.hiddenLayer(layer));
         }
         return std::tanh(w * (1.0F + signal));
     };
@@ -371,9 +381,15 @@ void testBrainForwardPass() {
     // Several topologies, and deliberately not only the shipping ones: a one
     // neuron layer and a widening plan are where an off-by-one in a source count
     // shows up as something other than a rounding difference.
-    const std::array<Case, 6> cases{{
-        {vkexp::neuro::defaultBrainShape, "the default 78 -> 20 -> 6"},
+    const std::array<Case, 8> cases{{
+        {vkexp::neuro::defaultBrainShape, "the default 78 -> 35 -> 15 -> 6"},
         {{57, 20, 5}, "a trimmed 57 -> 20 -> 5"},
+        // One of each squash, so the hand-computed chain walks all four rather
+        // than only the one the default happens to use.
+        {{20, 6, 5, 4, 0, {bk::BrainActivationSine, bk::BrainActivationTanhScaled, 0U}},
+         "a sine layer over a scaled one"},
+        {{20, 6, 5, 4, 0, {bk::BrainActivationSoftsign, bk::BrainActivationTanh, 0U}},
+         "a softsign layer over a plain one"},
         {{8, 4, 5}, "a small 8 -> 4 -> 5"},
         {{4, 1, 5}, "a single hidden neuron"},
         {{8, 4, 5, 3, 2}, "three layers narrowing"},
@@ -622,11 +638,11 @@ void testLayeredBrain() {
           "Neurons in the second layer carry state of their own");
     // The regression this constant exists to prevent, asserted rather than
     // remembered: raising how many neurons there *may* be must not widen any
-    // world's brain behind its back. A run gets twenty hidden neurons unless it
-    // is asked for something else, and the capacity is a separate number that
+    // world's brain behind its back. A run gets the default plan unless it is
+    // asked for something else, and the capacity is a separate number that
     // happens to be larger.
-    check(vkexp::neuro::defaultBrainShape.hiddenTotal() == 20 &&
-              vkexp::neuro::Topology::hiddenNeuronCapacity > 20,
+    check(vkexp::neuro::defaultBrainShape.hiddenTotal() <
+              vkexp::neuro::Topology::hiddenNeuronCapacity,
           "The default width and the neuron capacity are different numbers");
 
     // And the genome is as long as the plan reading it, not as long as the
