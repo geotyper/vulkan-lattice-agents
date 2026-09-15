@@ -108,4 +108,13 @@ void main() {
     echo[at++] = floatBitsToUint(agent.hidden[AgentHiddenVectorCount - 1u].y);
     echo[at++] = floatBitsToUint(agent.hidden[AgentHiddenVectorCount - 1u].z);
     echo[at++] = floatBitsToUint(agent.hidden[AgentHiddenVectorCount - 1u].w);
+    // The auxiliary lane, first and last vector, for the same reason.
+    echo[at++] = floatBitsToUint(agent.hiddenAux[0].x);
+    echo[at++] = floatBitsToUint(agent.hiddenAux[0].y);
+    echo[at++] = floatBitsToUint(agent.hiddenAux[0].z);
+    echo[at++] = floatBitsToUint(agent.hiddenAux[0].w);
+    echo[at++] = floatBitsToUint(agent.hiddenAux[AgentHiddenVectorCount - 1u].x);
+    echo[at++] = floatBitsToUint(agent.hiddenAux[AgentHiddenVectorCount - 1u].y);
+    echo[at++] = floatBitsToUint(agent.hiddenAux[AgentHiddenVectorCount - 1u].z);
+    echo[at++] = floatBitsToUint(agent.hiddenAux[AgentHiddenVectorCount - 1u].w);
 }

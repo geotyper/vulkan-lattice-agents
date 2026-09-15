@@ -5,6 +5,7 @@
 // nothing. See BrainKernel.inl for the rules the shared source follows.
 #define VKEXP_BRAIN_FN
 #define VKEXP_BRAIN_MATH_FN
+#define VKEXP_BRAIN_INOUT inout float
 #include "vkexp/neuro/BrainKernel.inl"
 
 #endif

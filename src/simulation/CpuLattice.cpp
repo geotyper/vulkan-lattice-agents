@@ -154,14 +154,17 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
             static_cast<std::size_t>(genome) * population.genomeStride, population.genomeStride);
 
         neuro::HiddenState hidden{};
+        neuro::HiddenState aux{};
         for (std::size_t neuron = 0; neuron < neuronCount; ++neuron) {
             hidden[neuron] = agentHiddenState(agent, neuron);
+            aux[neuron] = agentHiddenAux(agent, neuron);
         }
         const neuro::Outputs output = neuro::evaluate(
             weights, sampleAgentInputs(agent, signals, worldOccupancy, settings, worldStructures),
-            hidden, settings.deltaTime, static_cast<brain::uint>(settings.neuronModel), shape);
+            hidden, aux, settings.deltaTime, static_cast<brain::uint>(settings.neuronModel), shape);
         for (std::size_t neuron = 0; neuron < neuronCount; ++neuron) {
             setAgentHiddenState(agent, neuron, hidden[neuron]);
+            setAgentHiddenAux(agent, neuron, aux[neuron]);
         }
 
         agent.signal.x = std::clamp(output[brain::BrainSignalIntensityOutput], 0.0F, 1.0F);

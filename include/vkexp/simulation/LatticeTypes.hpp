@@ -17,9 +17,18 @@ enum class NeuronModel : std::uint32_t {
     TimeConstant = neuro::kernel::NeuronModelTimeConstant,
     Gated = neuro::kernel::NeuronModelGated,
     Spiking = neuro::kernel::NeuronModelSpiking,
+    Adaptive = neuro::kernel::NeuronModelAdaptive,
 };
 
 inline constexpr std::size_t neuronModelCount = neuro::kernel::NeuronModelCount;
+
+// Whether a model emits pulses rather than a squashed state. Both of these
+// write 1 or 0 and never reach a squash, so both must have their activation
+// bits canonicalised: a run that carried "sin" in its plan would write an
+// archive claiming a network it was never trained as.
+[[nodiscard]] constexpr bool neuronModelFires(const NeuronModel model) {
+    return model == NeuronModel::Spiking || model == NeuronModel::Adaptive;
+}
 
 // Which cells an agent may step into. Declared in LatticeKernel.inl so the
 // shader reads the same numbers; see there for why the input vector keeps its
@@ -205,10 +214,17 @@ struct alignas(16) AgentState {
     // Four neurons per vector, derived from the preset rather than sized by
     // hand, and mirrored by shaders/simulation/agent_layout.glsl.
     std::array<Float4, agentHiddenVectorCount> hidden{};
+    // A second lane per neuron, whose meaning is the neuron model's. Under
+    // Adaptive it is how far that neuron's firing threshold currently sits above
+    // the resting one; under every other model it stays zero and costs only the
+    // room. One lane rather than a block per model because no two of the models
+    // that want one can be selected at once, and because a record that grows a
+    // field per experiment is a record nobody dares add to.
+    std::array<Float4, agentHiddenVectorCount> hiddenAux{};
 };
 
 static_assert(std::is_trivially_copyable_v<AgentState>);
-static_assert(sizeof(AgentState) == 304);
+static_assert(sizeof(AgentState) == 512);
 static_assert(offsetof(AgentState, intent) == 16);
 static_assert(offsetof(AgentState, beacon) == 32);
 static_assert(offsetof(AgentState, signal) == 48);
@@ -232,6 +248,39 @@ static_assert(offsetof(AgentState, hidden) == 96,
         return block.z;
     default:
         return block.w;
+    }
+}
+
+// The auxiliary lane, addressed exactly like the state beside it.
+[[nodiscard]] inline float agentHiddenAux(const AgentState& agent, const std::size_t neuron) {
+    const Float4& block = agent.hiddenAux[neuron / 4];
+    switch (neuron % 4) {
+    case 0:
+        return block.x;
+    case 1:
+        return block.y;
+    case 2:
+        return block.z;
+    default:
+        return block.w;
+    }
+}
+
+inline void setAgentHiddenAux(AgentState& agent, const std::size_t neuron, const float value) {
+    Float4& block = agent.hiddenAux[neuron / 4];
+    switch (neuron % 4) {
+    case 0:
+        block.x = value;
+        break;
+    case 1:
+        block.y = value;
+        break;
+    case 2:
+        block.z = value;
+        break;
+    default:
+        block.w = value;
+        break;
     }
 }
 
@@ -578,8 +627,8 @@ static_assert(offsetof(GpuStepParameters, neuronModel) == 56);
     // under. That is visible rather than hidden -- the Brain window and the
     // structure block both say which squash a run is using.
     shape.hiddenActivation =
-        settings.neuronModel == NeuronModel::Spiking ? decltype(shape.hiddenActivation){}
-                                                     : settings.hiddenActivation;
+        neuronModelFires(settings.neuronModel) ? decltype(shape.hiddenActivation){}
+                                              : settings.hiddenActivation;
     return shape;
 }
 

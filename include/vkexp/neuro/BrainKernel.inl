@@ -394,6 +394,19 @@ VKEXP_BRAIN_MATH_FN float brainTimeConstant(float gene) {
            pow(BrainTimeConstantMaximum / BrainTimeConstantMinimum, unit);
 }
 
+// What a neuron fires at when nothing has happened yet, and the most an
+// adapting threshold can be raised by one discharge. The rest is the spiking
+// neuron's constant, so the two models are the same neuron at bump zero.
+const float BrainThresholdRest = 1.0f;
+const float BrainAdaptationBumpMaximum = 2.0f;
+
+// The bump a discharge adds, from an unbounded gene. Bounded above because a
+// threshold that can be raised without limit is a neuron that fires once and
+// then never again, which is a dead unit dressed as an adapting one.
+VKEXP_BRAIN_MATH_FN float brainAdaptationBump(float gene) {
+    return BrainAdaptationBumpMaximum / (1.0f + exp(-gene));
+}
+
 // One step of the continuous-time update, shared so the CPU evaluator and the
 // shader cannot integrate the neuron differently. The ratio is clamped at 1 so
 // a time constant shorter than the step cannot overshoot into oscillation --
@@ -402,6 +415,32 @@ VKEXP_BRAIN_MATH_FN float brainIntegrateNeuron(float state, float activation, fl
                                                float deltaTime) {
     const float rate = clamp(deltaTime / timeConstant, 0.0f, 1.0f);
     return state + rate * (activation - state);
+}
+
+// One discharge, shared the way the integrator is. `state` and `excess` are
+// read and written: state is the membrane, excess is how far this neuron's
+// threshold currently sits above the resting one, and is zero for every model
+// but Adaptive. The return value is what the neuron emits, 1 or 0.
+//
+// The order matters and is the one thing a second implementation could get
+// subtly right-looking and wrong: the threshold this tick is the one the last
+// tick left behind, the bump lands after the comparison, and the relaxation
+// runs last. Bump before compare would make a neuron unable to fire twice in a
+// row even at bump zero, which is the spiking model it has to reduce to.
+VKEXP_BRAIN_MATH_FN float brainDischarge(VKEXP_BRAIN_INOUT state, VKEXP_BRAIN_INOUT excess,
+                                         float bump, float relaxTimeConstant, float deltaTime) {
+    float emitted = 0.0f;
+    if (state >= BrainThresholdRest + excess) {
+        emitted = 1.0f;
+        state = 0.0f;
+        excess += bump;
+    } else if (state < -1.0f) {
+        // Inhibition has a floor, so a unit driven hard negative recovers in
+        // bounded time instead of being switched off for the rest of the trial.
+        state = -1.0f;
+    }
+    excess = brainIntegrateNeuron(excess, 0.0f, relaxTimeConstant, deltaTime);
+    return emitted;
 }
 
 // --- neuron models -----------------------------------------------------------
@@ -433,7 +472,22 @@ const uint NeuronModelReactive = 0u;
 const uint NeuronModelTimeConstant = 1u;
 const uint NeuronModelGated = 2u;
 const uint NeuronModelSpiking = 3u;
-const uint NeuronModelCount = 4u;
+// Spiking with a threshold that is not a constant. Every discharge raises it,
+// and it relaxes back towards the resting threshold on a time constant of its
+// own. A neuron that has just fired is therefore harder to fire again, which is
+// a second timescale the neuron owns rather than one its inputs hand it.
+//
+// Here because of what the rectified layer measured: sparsity reproduced the
+// spiking model's decisions and not its churn, and the property left over is
+// change that comes from inside the neuron. The reset is one such source; an
+// adapting threshold is the same idea given a knob, so a genome can choose how
+// long a unit stays quiet after speaking rather than always the same tick.
+//
+// Strictly generalises Spiking, the way Gated generalises TimeConstant: the
+// bump gene runs to zero, and a neuron whose bump is zero has a constant
+// threshold of one and is the spiking neuron exactly.
+const uint NeuronModelAdaptive = 4u;
+const uint NeuronModelCount = 5u;
 
 // --- genome addressing: one dense network laid out flat ----------------------
 //
@@ -581,10 +635,19 @@ VKEXP_BRAIN_FN uint brainLastHiddenSize(uint layers) {
     return brainHiddenLayerSize(layers, count - 1u);
 }
 
+// Two genes per hidden neuron: how much a discharge raises the threshold, and
+// the time constant the raise relaxes on. Carried by every genome whatever model
+// is selected, for the same reason the gate block is -- switching a model is a
+// parameter change and not a reinterpretation of the population.
+const uint BrainAdaptationGeneCount = 2u;
+const uint BrainAdaptationBumpGene = 0u;
+const uint BrainAdaptationDecayGene = 1u;
+
 VKEXP_BRAIN_FN uint brainWeightCount(uint inputCount, uint layers, uint outputCount) {
     const uint forward = brainForwardBlockSize(inputCount, layers);
     return forward + brainLastHiddenSize(layers) * outputCount + outputCount +
-           brainHiddenNeuronCount(layers) + forward;
+           brainHiddenNeuronCount(layers) + forward +
+           brainHiddenNeuronCount(layers) * BrainAdaptationGeneCount;
 }
 
 // Start of a layer's own weights, walking the layers before it.
@@ -643,6 +706,20 @@ VKEXP_BRAIN_FN uint brainGateWeightIndex(uint base, uint inputCount, uint layers
                                          uint layer, uint neuron, uint sourceIndex) {
     return brainLayerWeightIndex(brainGateBlockOffset(base, inputCount, layers, outputCount),
                                  inputCount, layers, layer, neuron, sourceIndex);
+}
+
+VKEXP_BRAIN_FN uint brainAdaptationBlockOffset(uint base, uint inputCount, uint layers,
+                                              uint outputCount) {
+    return brainGateBlockOffset(base, inputCount, layers, outputCount) +
+           brainForwardBlockSize(inputCount, layers);
+}
+
+// Neurons numbered across all layers end to end, the same way the states and
+// the time constants are.
+VKEXP_BRAIN_FN uint brainAdaptationGeneIndex(uint base, uint inputCount, uint layers,
+                                             uint outputCount, uint neuron, uint gene) {
+    return brainAdaptationBlockOffset(base, inputCount, layers, outputCount) +
+           neuron * BrainAdaptationGeneCount + gene;
 }
 
 VKEXP_BRAIN_FN uint brainGateBiasIndex(uint base, uint inputCount, uint layers, uint outputCount,

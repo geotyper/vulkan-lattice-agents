@@ -27,10 +27,18 @@ struct Agent {
     // at the start of a generation, which is the whole of the reset semantics:
     // an agent begins each trial with no memory of the last one.
     vec4 hidden[AgentHiddenVectorCount];
+    // A second lane per neuron, whose meaning is the neuron model's: under
+    // Adaptive it is how far that neuron's threshold sits above the resting one,
+    // and under every other model it stays zero.
+    vec4 hiddenAux[AgentHiddenVectorCount];
 };
 
 float agentHiddenState(Agent agent, uint neuron) {
     return agent.hidden[neuron >> 2u][neuron & 3u];
+}
+
+float agentHiddenAux(Agent agent, uint neuron) {
+    return agent.hiddenAux[neuron >> 2u][neuron & 3u];
 }
 
 #endif

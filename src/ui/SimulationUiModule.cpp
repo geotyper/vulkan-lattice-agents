@@ -427,11 +427,13 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     }
 
     ImGui::SeparatorText("Brain contract");
-    // One integrator, four sources for the rate it runs at, and the same genome
-    // under all of them -- so this is a live ablation rather than a choice
-    // between networks, and a population stays meaningful across a switch.
+    // One integrator, and every model below is a different answer to where its
+    // rate comes from or how its state is read -- so this is a live ablation
+    // rather than a choice between networks, and a population stays meaningful
+    // across a switch.
     int neuronModel = static_cast<int>(state_.settings.neuronModel);
-    constexpr const char* neuronModels[] = {"Reactive", "Time constant", "Gated", "Spiking (LIF)"};
+    constexpr const char* neuronModels[] = {"Reactive", "Time constant", "Gated", "Spiking (LIF)",
+                                            "Adaptive (ALIF)"};
     static_assert(std::size(neuronModels) == neuronModelCount);
     if (ImGui::Combo("Neuron model", &neuronModel, neuronModels,
                      static_cast<int>(neuronModelCount))) {
@@ -458,6 +460,13 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     case NeuronModel::Spiking:
         ImGui::SetItemTooltip("Leaky Integrate-and-Fire: the state accumulates input and decays, "
                               "and a neuron emits a discrete pulse when it crosses threshold.");
+        break;
+    case NeuronModel::Adaptive:
+        ImGui::SetItemTooltip("Adaptive LIF: the same pulse, but every discharge raises that "
+                              "neuron's threshold and the raise relaxes back on a time constant "
+                              "of its own. A unit that has just spoken is harder to make speak "
+                              "again. Both genes run to zero, and at zero bump this is the row "
+                              "above, exactly.");
         break;
     }
     const neuro::BrainShape brain = resolvedBrain(state_.settings);

@@ -65,16 +65,25 @@ void brainForward(inout Agent agent, float sensed[BrainInputCapacity], uint base
             }
             float state = brainIntegrateNeuron(agentHiddenState(agent, global), activation,
                                                timeConstant, deltaTime);
-            if (neuronModel == NeuronModelSpiking) {
-                if (state >= 1.0) {
-                    hidden[neuron] = 1.0;
-                    state = 0.0;
-                } else {
-                    hidden[neuron] = 0.0;
-                    if (state < -1.0) {
-                        state = -1.0;
-                    }
+            if (neuronModel == NeuronModelSpiking || neuronModel == NeuronModelAdaptive) {
+                // Spiking is the bump-free case of the same discharge, so both
+                // models take the same call and differ only in what they feed
+                // it. A spiking neuron has no auxiliary lane of its own: it is
+                // handed a zero and writes one back.
+                float excess =
+                    neuronModel == NeuronModelAdaptive ? agentHiddenAux(agent, global) : 0.0;
+                float bump = 0.0;
+                float relax = deltaTime;
+                if (neuronModel == NeuronModelAdaptive) {
+                    bump = brainAdaptationBump(weights[brainAdaptationGeneIndex(
+                        base, inputCount, layers, outputCount, global,
+                        BrainAdaptationBumpGene)]);
+                    relax = brainTimeConstant(weights[brainAdaptationGeneIndex(
+                        base, inputCount, layers, outputCount, global,
+                        BrainAdaptationDecayGene)]);
                 }
+                hidden[neuron] = brainDischarge(state, excess, bump, relax, deltaTime);
+                agent.hiddenAux[global >> 2u][global & 3u] = excess;
             } else {
                 hidden[neuron] = brainLayerActivate(squash, state, sourceCount);
             }

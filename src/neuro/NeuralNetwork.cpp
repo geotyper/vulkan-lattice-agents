@@ -7,8 +7,8 @@
 namespace vkexp::neuro {
 
 Outputs evaluate(const std::span<const float> weights, const Inputs& inputs,
-                 HiddenState& state, const float deltaTime, const kernel::uint model,
-                 const BrainShape shape) {
+                 HiddenState& state, HiddenState& aux, const float deltaTime,
+                 const kernel::uint model, const BrainShape shape) {
     if (!shape.fitsCapacity()) {
         throw std::invalid_argument("Neural-network shape exceeds genome capacity");
     }
@@ -67,16 +67,26 @@ Outputs evaluate(const std::span<const float> weights, const Inputs& inputs,
             }
             state[global] =
                 kernel::brainIntegrateNeuron(state[global], activation, timeConstant, deltaTime);
-            if (model == kernel::NeuronModelSpiking) {
-                if (state[global] >= 1.0F) {
-                    produced[neuron] = 1.0F;
-                    state[global] = 0.0F;
-                } else {
-                    produced[neuron] = 0.0F;
-                    if (state[global] < -1.0F) {
-                        state[global] = -1.0F;
-                    }
+            if (model == kernel::NeuronModelSpiking || model == kernel::NeuronModelAdaptive) {
+                // Spiking is the bump-free case of the same discharge, so both
+                // models take the same call and differ only in what they feed
+                // it. A spiking neuron has no auxiliary lane of its own: it is
+                // handed a zero and writes one back.
+                float excess = model == kernel::NeuronModelAdaptive ? aux[global] : 0.0F;
+                float bump = 0.0F;
+                float relax = deltaTime;
+                if (model == kernel::NeuronModelAdaptive) {
+                    bump = kernel::brainAdaptationBump(
+                        weights[kernel::brainAdaptationGeneIndex(base, inputCount, layers,
+                                                                 outputCount, global,
+                                                                 kernel::BrainAdaptationBumpGene)]);
+                    relax = kernel::brainTimeConstant(weights[kernel::brainAdaptationGeneIndex(
+                        base, inputCount, layers, outputCount, global,
+                        kernel::BrainAdaptationDecayGene)]);
                 }
+                produced[neuron] =
+                    kernel::brainDischarge(state[global], excess, bump, relax, deltaTime);
+                aux[global] = excess;
             } else {
                 produced[neuron] = kernel::brainLayerActivate(squash, state[global], sourceCount);
             }
@@ -104,9 +114,10 @@ Outputs evaluate(const std::span<const float> weights, const Inputs& inputs,
 Outputs evaluate(const std::span<const float> weights, const Inputs& inputs,
                  const BrainShape shape) {
     HiddenState state{};
+    HiddenState aux{};
     // Any positive step works: the reactive model assigns the activation
     // outright, so the value cannot reach the result.
-    return evaluate(weights, inputs, state, 1.0F, kernel::NeuronModelReactive, shape);
+    return evaluate(weights, inputs, state, aux, 1.0F, kernel::NeuronModelReactive, shape);
 }
 
 
@@ -194,6 +205,13 @@ Weights randomWeights(const BrainShape shape, std::mt19937& random, const bool f
     for (kernel::uint neuron = 0; neuron < neurons; ++neuron) {
         weights[kernel::brainTimeConstantGeneIndex(0U, inputCount, layers, outputCount, neuron)] =
             draw(spread);
+        // The adaptation pair, always at the full spread like the time constant
+        // beside it: both enter their range through a squash, so narrowing them
+        // for a fan-in policy would narrow a range and not a sum.
+        for (kernel::uint gene = 0; gene < kernel::BrainAdaptationGeneCount; ++gene) {
+            weights[kernel::brainAdaptationGeneIndex(0U, inputCount, layers, outputCount, neuron,
+                                                     gene)] = draw(spread);
+        }
     }
     return weights;
 }

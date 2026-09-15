@@ -467,7 +467,8 @@ private:
 // stack. Naming the number next to the thing it counts is what stops that
 // happening again the next lane.
 constexpr std::size_t agentDriftScalarCount = 12;
-using AgentDrift = std::array<double, agentDriftScalarCount + vkexp::agentHiddenVectorCount * 4>;
+using AgentDrift =
+    std::array<double, agentDriftScalarCount + vkexp::agentHiddenVectorCount * 8>;
 constexpr double accumulatedDriftBudget = 1.0e-3;
 
 // Cells and occupancy are compared exactly. They are integers, and the whole
@@ -537,6 +538,16 @@ void compareAgents(const vkexp::AgentState& expected, const vkexp::AgentState& a
         same(expected.hidden[index].z, actual.hidden[index].z, "hidden.z");
         same(expected.hidden[index].w, actual.hidden[index].w, "hidden.w");
     }
+    // The adaptive lane, which is a whole neuron model's memory: a threshold
+    // that diverged between the two sides would leave every other number equal
+    // for a while and then not, which is the hardest kind of difference to find
+    // afterwards and the cheapest to catch here.
+    for (std::size_t index = 0; index < expected.hiddenAux.size(); ++index) {
+        same(expected.hiddenAux[index].x, actual.hiddenAux[index].x, "hiddenAux.x");
+        same(expected.hiddenAux[index].y, actual.hiddenAux[index].y, "hiddenAux.y");
+        same(expected.hiddenAux[index].z, actual.hiddenAux[index].z, "hiddenAux.z");
+        same(expected.hiddenAux[index].w, actual.hiddenAux[index].w, "hiddenAux.w");
+    }
 }
 
 [[nodiscard]] double worstDrift(const AgentDrift& drift) {
@@ -559,6 +570,8 @@ void compareAgents(const vkexp::AgentState& expected, const vkexp::AgentState& a
         return "gated";
     case vkexp::NeuronModel::Spiking:
         return "spiking";
+    case vkexp::NeuronModel::Adaptive:
+        return "adaptive";
     }
     return "?";
 }
@@ -1200,6 +1213,8 @@ void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
     expectFloat4("agent.memory", agent.memory);
     expectFloat4("agent.hidden.front", agent.hidden.front());
     expectFloat4("agent.hidden.back", agent.hidden.back());
+    expectFloat4("agent.hiddenAux.front", agent.hiddenAux.front());
+    expectFloat4("agent.hiddenAux.back", agent.hiddenAux.back());
 
     constexpr VkMemoryPropertyFlags hostMemory =
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
@@ -1419,7 +1434,8 @@ int runAll() {
          {vkexp::Neighborhood::Moore, vkexp::Neighborhood::Faces}) {
         for (const vkexp::NeuronModel model :
              {vkexp::NeuronModel::Reactive, vkexp::NeuronModel::TimeConstant,
-              vkexp::NeuronModel::Gated, vkexp::NeuronModel::Spiking}) {
+              vkexp::NeuronModel::Gated, vkexp::NeuronModel::Spiking,
+              vkexp::NeuronModel::Adaptive}) {
             runLatticeTrajectoryParity(context, neighborhood, model, 120);
         }
     }

@@ -258,9 +258,15 @@ using HiddenState = std::array<float, Topology::hiddenNeuronCapacity>;
 // chooses where the time constant comes from; the integrator is the same one in
 // every case, which is what makes switching models an ablation rather than a
 // swap between two networks. `model` is a kernel::NeuronModel* value.
+//
+// `aux` is the second per-neuron lane, and is left alone by every model but
+// Adaptive, which keeps each neuron's raised firing threshold there. It is a
+// parameter and not an optional one on purpose: a model handed nowhere to keep
+// its threshold would run as a plain spiking network and say nothing about it,
+// which is the class of silent difference this project's parity exists to stop.
 [[nodiscard]] Outputs evaluate(std::span<const float> weights, const Inputs& inputs,
-                               HiddenState& state, float deltaTime, kernel::uint model,
-                               BrainShape shape = maximumBrainShape);
+                               HiddenState& state, HiddenState& aux, float deltaTime,
+                               kernel::uint model, BrainShape shape = maximumBrainShape);
 
 // Stateless convenience for the tests and inspections that ask what a brain does
 // to one input vector with no history. Defined in terms of the above with a

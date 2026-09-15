@@ -72,8 +72,13 @@ struct GenomeArchive {
 // the widths are the low eighteen bits under either encoding, so a version 5
 // file still lays out exactly the network it always did, and the reader
 // re-encodes the plan word on the way in. 5 therefore stays readable.
-inline constexpr std::uint32_t genomeArchiveVersion = 6;
-inline constexpr std::uint32_t genomeArchiveOldestVersion = 5;
+// 7 is the adaptation block: two genes per hidden neuron, appended after the
+// gate block, carried whatever model is selected. A version 6 file is shorter
+// than the network this build lays out for the same plan, and its tail is not
+// missing data but data that was never there -- so it is refused, the way 4 and
+// 5 were, rather than padded with zeroes that would read as a bump of one.
+inline constexpr std::uint32_t genomeArchiveVersion = 7;
+inline constexpr std::uint32_t genomeArchiveOldestVersion = 7;
 
 // Writes a versioned little-endian archive, followed by the JSON structure the
 // weights are laid out under. Six numbers in a header can say that a file no

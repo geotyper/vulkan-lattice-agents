@@ -116,7 +116,7 @@ void printHelp(const char* executable) {
                  "  --side-support           allow cardinal face-supported bridge blocks\n"
                  "  --boundary-penalty <x>   charged per agent-tick on the x/z edge (0.002)\n\n"
                  "Ablations:\n"
-                 "  --neuron-model <name>    reactive|time|gated|spiking: where a hidden\n"
+                 "  --neuron-model <name>    reactive|time|gated|spiking|adaptive: where a\n"
                  "                           neuron's time constant comes from. reactive pins\n"
                  "                           it to the step; spiking uses leaky\n"
                  "                           integrate-and-fire pulses; gated recomputes it\n"
@@ -319,8 +319,11 @@ void parseLatticeExtents(const std::string_view text, Options& options) {
     if (name == "spiking") {
         return vkexp::NeuronModel::Spiking;
     }
+    if (name == "adaptive" || name == "alif") {
+        return vkexp::NeuronModel::Adaptive;
+    }
     fail("Unknown neuron model '" + std::string{name} +
-         "'; expected reactive, time, gated or spiking");
+         "'; expected reactive, time, gated, spiking or adaptive");
 }
 
 // The short form, for files rather than for reading.
@@ -334,6 +337,8 @@ void parseLatticeExtents(const std::string_view text, Options& options) {
         return "gated";
     case vkexp::NeuronModel::Spiking:
         return "spiking";
+    case vkexp::NeuronModel::Adaptive:
+        return "adaptive";
     }
     return "time";
 }
@@ -348,6 +353,8 @@ void parseLatticeExtents(const std::string_view text, Options& options) {
         return "gated (rate recomputed from the inputs each step)";
     case vkexp::NeuronModel::Spiking:
         return "spiking (leaky integrate-and-fire discrete pulses)";
+    case vkexp::NeuronModel::Adaptive:
+        return "adaptive (integrate-and-fire whose threshold rises as it fires)";
     }
     return "unknown";
 }
