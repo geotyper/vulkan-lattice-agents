@@ -536,6 +536,37 @@ const uint NeuronModelAdaptive = 4u;
 // It reduces the same way the others do: a neuron whose rate gene is at the
 // bottom of the range turns so slowly that its phase is a constant over a
 // trial, which is a unit stuck at whatever it was emitting.
+//
+// Measured after the fact, and it builds without learning: a hundred and fifty
+// generations with no progress, against an adaptive population that improves
+// quickly. Why is in scratchpad/heritability, and it is not what it looks like.
+// The first guess was that a free-running phase makes a child's trajectory
+// unrelated to its parent's -- it does not. Nudge every gene by 0.002 and count
+// agents still in the same cell, one agent to a world so nothing but the genome
+// differs:
+//
+//   model            t10  t50  t100  t300 | built mean  min  max  spread
+//   time constant     96%  93%   75%   65%        2.8    0    16    1.46
+//   spiking           96%  46%    6%    0%        8.0    0    20    0.84
+//   adaptive          96%  46%   25%    3%        6.2    0    21    1.04
+//   oscillator        96%  59%   12%    3%        8.9    2    19    0.48
+//
+// The oscillator diverges no faster than the two models that do learn. What is
+// different is the last three columns: it has the highest mean of anything here
+// and the lowest spread, and alone among the models no genome scores zero. Every
+// other model has genomes that build nothing at all.
+//
+// Which is the problem. Selection grades differences, and here the rhythm does
+// the building rather than the genome: the duty is a constant every neuron in
+// every genome shares, so a large part of what an agent does is the same
+// whatever its weights say. A high floor is not a gift to evolution, it is a
+// score that carries no information about the thing being selected.
+//
+// What would answer it, none of which is done: let the duty be a gene rather
+// than the constant below; let the phase be reset by what the agent senses, so
+// the timing is anchored to events instead of running free; or give the
+// oscillation a gain gene so a neuron can decline to tick at all, which is the
+// reduction every other model here has and this one does not.
 const uint NeuronModelOscillator = 5u;
 const uint NeuronModelCount = 6u;
 
