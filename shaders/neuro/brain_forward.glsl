@@ -32,6 +32,7 @@ void brainForward(inout Agent agent, float sensed[BrainInputCapacity], uint base
     for (uint layer = 0; layer < layerCount; ++layer) {
         const uint width = brainHiddenLayerSize(layers, layer);
         const uint stateOffset = brainHiddenLayerStateOffset(layers, layer);
+        const uint squash = brainLayerActivation(layers, layer);
         float hidden[BrainHiddenNeuronCapacity];
         for (uint neuron = 0; neuron < width; ++neuron) {
             float activation =
@@ -75,7 +76,7 @@ void brainForward(inout Agent agent, float sensed[BrainInputCapacity], uint base
                     }
                 }
             } else {
-                hidden[neuron] = brainActivation(state);
+                hidden[neuron] = brainLayerActivate(squash, state, sourceCount);
             }
             agent.hidden[global >> 2u][global & 3u] = state;
         }

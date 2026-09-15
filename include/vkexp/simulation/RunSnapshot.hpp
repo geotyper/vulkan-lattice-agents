@@ -39,6 +39,13 @@ struct RunSnapshot {
     std::uint32_t seed{};
 };
 
+// Version 13 lets a hidden layer choose its squash, which is a field in the
+// settings and a pair of bits in the packed plan the GPU reads.
+// Version 12 is the body frame: an agent owns a facing, its commands are a turn
+// and an action rather than five world-axis drives, and its senses are read
+// relative to where it is looking. A stored agent's cell.w meant "the way it
+// last moved" and now means "the way it is looking", so an older file would
+// load and turn every climber's grip into nonsense.
 // Version 9 adds the chasm world: a bedrock floor stored in the block field, a
 // resource hung in a band over the missing half, and how much floor there is.
 // Version 8 drops the construction frontier, which refused nothing the support
@@ -48,7 +55,7 @@ struct RunSnapshot {
 // field.
 // It is not a continuation of the old 2D format: the agent record, settings and
 // world all changed at once, and that format has different magic.
-inline constexpr std::uint32_t runSnapshotVersion = 11;
+inline constexpr std::uint32_t runSnapshotVersion = 13;
 
 // Versioned and little-endian, like the genome archive, and just as strict: a
 // file from another brain topology or another agent layout is rejected rather

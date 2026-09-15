@@ -208,7 +208,7 @@ struct alignas(16) AgentState {
 };
 
 static_assert(std::is_trivially_copyable_v<AgentState>);
-static_assert(sizeof(AgentState) == 224);
+static_assert(sizeof(AgentState) == 304);
 static_assert(offsetof(AgentState, intent) == 16);
 static_assert(offsetof(AgentState, beacon) == 32);
 static_assert(offsetof(AgentState, signal) == 48);
@@ -311,7 +311,7 @@ struct SimulationStep {
     // How sure a drive has to be before it becomes a step. At zero an agent
     // moves every step whatever it thinks; near one it has to commit. This is
     // the whole of the decision to stand still, which is why it is a parameter.
-    float moveThreshold{lattice::kernel::LatticeMoveThresholdDefault};
+    float turnThreshold{lattice::kernel::LatticeTurnThresholdDefault};
 
     // How near the beacon counts as reached. One rather than zero, so a group
     // can crowd a beacon that only one of them can stand on.
@@ -376,6 +376,13 @@ struct SimulationStep {
     // business: how many sensors a lattice offers and how many actuators it
     // needs are statements about the world, not about how much brain to spend.
     std::array<std::uint32_t, neuro::kernel::BrainHiddenLayerCapacity> hiddenLayers{};
+    // Which squash each of those layers uses. Seeded from the default plan rather
+    // than from zero, so that a run which names its own widths and says nothing
+    // about activations gets the ones the default was measured with -- and so
+    // that the default lives in exactly one place. See brainLayerActivate for
+    // why the offer is limited to hidden layers.
+    std::array<std::uint32_t, neuro::kernel::BrainHiddenLayerCapacity> hiddenActivation{
+        neuro::defaultBrainShape.hiddenActivation};
     FitnessWeights fitness{};
     // Where a hidden neuron's time constant comes from. Reactive pins it to
     // deltaTime, which makes the update y = activation and reproduces the
@@ -475,7 +482,7 @@ static_assert(sizeof(GpuFitnessWeights) == 32);
 // one vkCmdPushConstants per step, and the three passes of a step share it.
 struct alignas(16) GpuStepParameters {
     float deltaTime{};
-    float moveThreshold{};
+    float turnThreshold{};
     std::uint32_t agentCount{};
     std::uint32_t brainLayout{}; // packed active input and output counts
     std::uint32_t trialsPerGenome{};
@@ -541,6 +548,25 @@ static_assert(offsetof(GpuStepParameters, neuronModel) == 56);
         shape.secondHiddenCount = settings.hiddenLayers[1];
         shape.thirdHiddenCount = settings.hiddenLayers[2];
     }
+    // A plan of one's own keeps the default squash unless the settings name one,
+    // because widths and squashes are separate questions: asking for a narrower
+    // layer is not asking for a different activation in it.
+    // A spiking neuron writes 1 or 0 and never reaches a squash, so under that
+    // model the choice is inert -- and an inert setting must not reach the plan.
+    // The plan is what the archive's structure block records and what a loaded
+    // file is compared against, so carrying a squash that did nothing would make
+    // a file claim a network it was not trained as, and refuse to load into the
+    // run that actually produced it. Canonicalised here, at the one place the
+    // settings become a plan, rather than at each of the places that write one.
+    //
+    // The consequence is worth stating: the model is a run setting and not a
+    // gene, so switching a spiking population to a tanh model hands it whatever
+    // squash the settings carried, which is an activation it never trained
+    // under. That is visible rather than hidden -- the Brain window and the
+    // structure block both say which squash a run is using.
+    shape.hiddenActivation =
+        settings.neuronModel == NeuronModel::Spiking ? decltype(shape.hiddenActivation){}
+                                                     : settings.hiddenActivation;
     return shape;
 }
 

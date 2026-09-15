@@ -8,7 +8,7 @@ GpuStepParameters packStepParameters(const SimulationStep& settings,
                                      const StepParameterLayout& layout) {
     const neuro::BrainShape brain = resolvedBrain(settings);
     return {settings.deltaTime,
-            settings.moveThreshold,
+            settings.turnThreshold,
             layout.agentCount,
             neuro::packBrainLayout(brain),
             layout.trialsPerGenome,

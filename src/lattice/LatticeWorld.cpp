@@ -127,9 +127,11 @@ std::vector<AgentState> makeInitialAgents(const SimulationStep& settings,
 
         AgentState& agent = agents[index];
         agent.beacon = beacon;
-        // The one heading value outside the neighbour range: an agent that has
-        // not moved is not an agent pointing at neighbour zero.
-        agent.cell.w = static_cast<std::int32_t>(kern::LatticeNeighborCount);
+        // Which way it is looking, and the group is spread over all four so a
+        // world does not open with everybody walking the same way. There is no
+        // "not facing anywhere": an agent always has a front, which is the
+        // whole point of the body frame.
+        agent.cell.w = static_cast<std::int32_t>(index % kern::LatticeFacingCount);
         agent.intent.w = 0;
         agent.metrics = {};
         agent.memory = {};

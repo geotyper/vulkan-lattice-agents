@@ -19,12 +19,12 @@
 
 // --- preset: change these when the sensor suite or brain width changes -------
 
-// The Moore neighbourhood, one slot per surrounding cell. Restated rather than
-// included from LatticeKernel.inl because the two kernels compile into separate
-// namespaces on the C++ side and GLSL has no namespaces at all; testLatticeBrain
-// asserts the two agree, which is the same arrangement the 2D build used for the
-// body radius it shared with the scenario kernel.
-const uint BrainNeighborCount = 26u;
+// The front hemisphere, one slot per cell the agent can see. Restated rather
+// than included from LatticeKernel.inl because the two kernels compile into
+// separate namespaces on the C++ side and GLSL has no namespaces at all;
+// testLatticeBrain asserts the two agree, which is the same arrangement the 2D
+// build used for the body radius it shared with the scenario kernel.
+const uint BrainNeighborCount = 17u;
 // Something is standing there, the lattice ends there, a block stands there, and
 // how loudly its occupant is signalling. The last channel is the whole of
 // agent-to-agent perception: an agent reads its neighbour's broadcast, never its
@@ -52,54 +52,114 @@ const uint BrainNeighborChannels = 4u;
 // would make a population unloadable across worlds -- the same trade the
 // neighbourhood block already makes for the movement setting.
 const uint BrainBeaconInputCount = 6u;
-// Heading as a unit vector, whether the last move was refused, and how long the
-// agent has been standing still. The heading is fed back rather than kept
-// implicit because a move is chosen in lattice axes and not relative to a
-// facing: without this the network has no way to know which way it was already
-// going.
+// Whether the last action was refused, and how long the agent has been standing
+// still. The stillness channel is a ramp rather than a flag, and that is the
+// whole of why it is worth a slot. See LatticeStillnessSpan.
 //
-// The stillness channel is a ramp rather than a flag, and that is the whole of
-// why it is worth a slot. See LatticeStillnessSpan.
-const uint BrainSelfInputCount = 5u;
+// The heading used to be here as a unit vector, because a move was chosen in
+// lattice axes and the network had no other way to know which way it was
+// already going. In a body frame it is not information at all: the agent faces
+// forward by definition, and everything it senses is measured from there, so
+// its absolute orientation is unobservable and cannot matter. Three slots that
+// could only ever have carried a constant.
+const uint BrainSelfInputCount = 2u;
 const uint BrainRecurrentCount = 2u; // memory cells, fed back as inputs
 
-// One drive per axis rather than one per direction. Twenty-seven directions
-// would need twenty-seven outputs and an argmax over them; three signed drives
-// with a dead zone span the same moves, cost three slots, and leave "stay put"
-// reachable by not committing. See LatticeKernel.inl for how a drive becomes a
-// step.
-const uint BrainMoveOutputCount = 3u;
+// Two actuators and a voice, where there used to be six actuators.
+//
+// Turn is one signed drive with a dead zone, not two positive ones. The dead
+// zone is the point: "keep going straight" has to be what an agent gets by not
+// committing, exactly as "stay put" used to be. Two positive outputs would make
+// straight a conjunction -- both quiet at once -- which is harder to hold and
+// drifts. They would also need a rule for what happens when both fire, and an
+// arbitrary rule is one more thing two implementations have to agree on.
+// Two outputs for one turn, and they have to agree: both over the threshold
+// turns one way, both under the negative one turns the other, and any
+// disagreement -- including one of them sitting in the dead zone -- is no turn.
+//
+// One output could say the same thing in half the genes, and did. The reason
+// for two is what they do to a network nobody has trained yet. A tanh output
+// saturates on almost any input, so a single one clears the dead zone on almost
+// every tick: a fresh population spent 93% of its ticks pivoting on the spot at
+// a threshold of 0.25 and 63% at 0.7, which is a generation spent looking around
+// rather than walking. Two outputs that must agree have to saturate the same way
+// at the same time, and two fresh outputs are near enough independent that this
+// roughly squares the chance.
+//
+// What it does not do is make turning harder for a policy that wants to turn: a
+// network that has learned to steer simply drives both outputs together. It only
+// makes turning rare by accident, which is the thing that was wrong.
+const uint BrainTurnOutputCount = 2u;
+// One output, two actions, and no third: under the threshold the agent steps
+// forward, over it the agent builds in front of itself. Standing still is not
+// in the set at all, and that is deliberate. It used to be reachable by not
+// committing on any axis, which made "the network declined to act" and "the
+// network was not asked" the same state -- invisible in the counters, and
+// exactly what agents that froze were doing. Now doing nothing is walking.
+//
+// It also puts the build/step alternation on a single value crossing a
+// threshold, which is what a tower is: build, climb, build, climb. That
+// sequence had to be coordinated across five continuous outputs before.
+const uint BrainActionOutputCount = 1u;
 const uint BrainSignalOutputCount = 1u;
-const uint BrainBuildOutputCount = 1u;
-// Where to build, as two horizontal drives read exactly like the move drives.
-// Aim used to be a side effect of walking: the facing was whichever way the
-// agent last actually moved, so a refused move left it aimed where it was
-// stuck, and an agent that had never moved could not build at all. Nothing in
-// the network could change it without giving up the cell it was standing in.
-// Two outputs make aim a decision rather than a memory of locomotion.
-const uint BrainFaceOutputCount = 2u;
-const uint BrainActuatorOutputCount = BrainMoveOutputCount + BrainSignalOutputCount +
-                                      BrainBuildOutputCount + BrainFaceOutputCount;
+const uint BrainActuatorOutputCount =
+    BrainTurnOutputCount + BrainActionOutputCount + BrainSignalOutputCount;
 
 // Hidden neurons in total, across however many layers there are, and how many
 // layers there may be. Both are compile-time because both size arrays: the
 // shader's scratch buffers, and the state block on the agent record. A plan
 // chooses how to spend the total; it cannot raise it.
 //
-// 32 rather than 20, and three layers rather than one. The cost of the headroom
+// 52 rather than 20, and three layers rather than one. The cost of the headroom
 // is paid in the genome stride, which is sized for the widest plan the capacity
-// allows -- one 32-wide layer -- so a run using fewer neurons carries weights it
+// allows -- one 52-wide layer -- so a run using fewer neurons carries weights it
 // never reads. That is the same trade the gate block already makes, and for the
 // same reason: one buffer size and one genome length means a population stays
 // loadable across plans, and comparing two plans stays possible at all.
-const uint BrainHiddenNeuronCapacity = 32u;
+const uint BrainHiddenNeuronCapacity = 52u;
 const uint BrainHiddenLayerCapacity = 3u;
 
-// The one hidden layer this network had before plans existed, and still what a
-// world means when it does not say otherwise. Separate from the capacity on
-// purpose: raising how many neurons there *may* be must not quietly widen every
-// world's brain, which is exactly what sharing one constant would have done.
-const uint BrainDefaultHiddenWidth = 20u;
+const uint BrainActivationTanh = 0u;
+const uint BrainActivationSine = 1u;
+// tanh of the sum divided by the square root of how many things it sums. Costs
+// no parameters and is the textbook answer to a layer whose pre-activation grows
+// with its width -- which is the control this project needed and did not have:
+// if a squash that only rescales catches up with sine, then what sine bought was
+// scale and not periodicity.
+const uint BrainActivationTanhScaled = 2u;
+// x / (1 + |x|). Saturates, so a neuron can still hold a decision, but reaches
+// its asymptote an order of magnitude more slowly than tanh, so a layer of them
+// does not all pile up at the extremes. The middle of the same axis.
+const uint BrainActivationSoftsign = 3u;
+
+// What a world means when it does not say otherwise: one hidden layer of 35,
+// squashed by sine. Separate from the capacity on purpose -- raising how many
+// neurons there *may* be must not quietly widen every world's brain, which is
+// exactly what sharing one constant would have done.
+//
+// It was one layer of twenty under tanh for the whole life of this project. What
+// moved it is the squash and not the depth: four generations of construction
+// under the reactive model, three seeds, on a two-layer 35+15 plan,
+//
+//   35+15 squash    walk   blocks    median
+//   tanh, tanh     10.1%    37-49     45-51
+//   sin,  tanh     16.4%    63-84     81-97
+//   tanh, sin      20.9%   104-134   125-133
+//   sin,  sin      29.9%   136-144   218-234
+//
+// and the order holds under the time-constant model too, at a third of the
+// scores. Sine in the first layer alone is the weakest of the three placements,
+// which is worth saying because the obvious guess is the other way round: it is
+// the layer feeding the output that gains most from not being nearly binary.
+//
+// One layer and not the two those numbers were taken on, which is a deliberate
+// trade and not what was measured: the second layer doubles the genome for a
+// gain nobody has separated from sine's, and a single layer is the plan every
+// other measurement in this project was taken on. The width is the first layer's
+// from that sweep. A two-layer plan is one flag away -- `--hidden 35,15` -- and
+// still carries sine in both.
+const uint BrainDefaultHiddenWidth = 35u;
+const uint BrainDefaultHiddenSquash = BrainActivationSine;
 
 // --- derived layout: never edited by hand ------------------------------------
 
@@ -114,10 +174,9 @@ const uint BrainSelfOffset = BrainBeaconOffset + BrainBeaconInputCount;
 const uint BrainRecurrentInputOffset = BrainSelfOffset + BrainSelfInputCount;
 const uint BrainInputCapacity = BrainRecurrentInputOffset + BrainRecurrentCount;
 
-const uint BrainMoveOutput = 0u; // three consecutive channels, x then y then z
-const uint BrainSignalIntensityOutput = BrainMoveOutputCount;
-const uint BrainBuildOutput = BrainSignalIntensityOutput + BrainSignalOutputCount;
-const uint BrainFaceOutput = BrainBuildOutput + BrainBuildOutputCount; // x then z
+const uint BrainTurnOutput = 0u;
+const uint BrainActionOutput = BrainTurnOutputCount;
+const uint BrainSignalIntensityOutput = BrainActionOutput + BrainActionOutputCount;
 const uint BrainRecurrentOutputOffset = BrainActuatorOutputCount;
 const uint BrainOutputCapacity = BrainActuatorOutputCount + BrainRecurrentCount;
 
@@ -142,12 +201,14 @@ VKEXP_BRAIN_FN uint brainBeaconInputIndex(uint channel) { return BrainBeaconOffs
 //     activation the sign of the response flips every half period, so a mutation
 //     that raises a weight helps or hurts depending on where the neuron happens
 //     to sit, and "brighter on the left" stops meaning one thing.
-//   * Saturating, which is what makes a memory possible at all here. A neuron
-//     driven hard sits at +/-1 and stops responding, which is a decision that
-//     holds; a periodic activation cycles back through zero instead, so a
-//     neuron cannot commit. That is the whole point of the time constants
-//     undone. Note this is not an argument about the Lipschitz bound -- tanh and
-//     sin are both 1-Lipschitz -- but about where the derivative vanishes.
+//   * Saturating. A neuron driven hard sits at +/-1 and stops responding, so a
+//     rising input cannot talk it back out of its answer; under a periodic
+//     activation a further rise changes the answer. This is not about memory --
+//     neither activation has any, and what holds a decision here is the neuron's
+//     own state, its time constant and the two recurrent cells -- it is about
+//     whether a decision, once reached, survives more of the same evidence. Nor
+//     is it about the Lipschitz bound, since tanh and sin are both 1-Lipschitz:
+//     it is about where the derivative vanishes.
 //   * Insensitive to input error exactly where the input is large, which is what
 //     keeps the CPU/GPU drift budget tight. A periodic activation is maximally
 //     sensitive there, and large-argument reduction is where implementations
@@ -159,6 +220,87 @@ VKEXP_BRAIN_FN uint brainBeaconInputIndex(uint channel) { return BrainBeaconOffs
 // controller that has to hold decisions, and it can already oscillate through a
 // recurrent loop with two different time constants when it wants to.
 VKEXP_BRAIN_MATH_FN float brainActivation(float value) { return tanh(value); }
+
+// A hidden layer's squash, which a plan may choose per layer. The output layer
+// is not offered the choice and never will be: every threshold in the rules
+// reads an output as "how far, and which way", and that only means anything
+// under something monotone and bounded.
+//
+// The reservations above are real and none of them are answered by putting the
+// choice in the plan; what the plan does is let a run be compared against
+// itself. Sine is offered on hidden layers because the objections weigh
+// differently in the middle of a network than at its ends: a periodic unit deep
+// in a stack is a basis function rather than a decision, which is what CPPNs and
+// SIREN use them for, and a layer of them still feeds a tanh output that has to
+// commit.
+//
+// It measures well, which was not the expected answer. Four generations of
+// construction under the reactive model on a 35+15 plan, three seeds, against
+// the same plan with tanh throughout: three times the blocks and four times the
+// median score. Two controls say what that is not, and they are the reason the
+// other two kinds below exist:
+//
+//   squash        walk   placed   blocks    median
+//   tanh          10.1%   0.76%    37-49     45-51
+//   sin           29.9%   2.95%   136-144   218-234
+//   tanh / sqrt(n) 5.2%   0.24%    27-29      8-15
+//   softsign       8.8%   0.53%    25-45     32-36
+//
+// Rescaling alone is the worst of the four, so the gain is not scale. Saturating
+// an order of magnitude more slowly does not reproduce it either. Both of those
+// were plausible and both are now ruled out.
+//
+// What scratchpad/activations.cpp measures on real trajectories, which is the
+// only place these questions can be asked:
+//
+//   * The periodicity is genuinely exercised and only just. Roughly 45% of
+//     pre-activations exceed pi/2 -- where the response folds -- and 9-20%
+//     exceed pi, but under 1% reach a full period. So this is the first fold and
+//     not a Fourier basis, which is also why the sine case's CPU/GPU drift sits
+//     in the same band as tanh's: nothing here is a large-argument sine.
+//   * A sine layer does not collect near zero, which was the first guess and is
+//     wrong. It spreads: values above 0.9 in magnitude 29% of the time against
+//     tanh's 48-56%, mean magnitude 0.63 against 0.74. A tanh layer under load
+//     is very nearly binary; a sine layer uses the middle of its range.
+//   * Spreading is not the explanation either. Softsign spreads about as much
+//     (mean 0.67, above 0.9 in 19%) and scores like tanh.
+//   * Nor is a less saturated output. Sine does cut the sum reaching the output
+//     tanh from a mean of 1.94 to 1.27, but tanh/sqrt(n) cuts it to 0.53 and
+//     comes last, and sine spends slightly *less* of its time in the band that
+//     means "walk" (40% against 45%).
+//
+// The one property that separates sine from every control is the fold itself,
+// and it is exercised on about half the samples. Why a folded unit should be
+// worth three times the blocks is not answered here: a plausible reading is that
+// it gives each neuron two decision boundaries instead of one, at the same
+// parameter count, but that is a hypothesis and not a measurement.
+//
+// The cost is measurable too, and it is the objection above, stated in ticks:
+// an untrained sine population holds a decision 1.86 ticks on average against
+// tanh's 2.76, and its 99th percentile run is 18 ticks against 34. A periodic
+// activation can re-switch the response as the input grows; how much that costs
+// a trained policy is a question about trajectories, and nobody has run one.
+//
+// Under the spiking model it does nothing at all: a spiking neuron writes 1 or 0
+// directly and never reaches a squash. That is not an oversight to fix, it is
+// what "integrate and fire" means, but it does mean --hidden-squash and the
+// spiking model do not combine.
+
+VKEXP_BRAIN_MATH_FN float brainLayerActivate(uint activation, float value, uint sources) {
+    if (activation == BrainActivationSine) {
+        return sin(value);
+    }
+    if (activation == BrainActivationTanhScaled) {
+        // The count and not the count minus the bias: one gene out of forty is
+        // not worth a second constant, and the scale only has to be the right
+        // order.
+        return brainActivation(value / sqrt(float(sources < 1u ? 1u : sources)));
+    }
+    if (activation == BrainActivationSoftsign) {
+        return value / (1.0f + abs(value));
+    }
+    return brainActivation(value);
+}
 
 // --- neuron time constants ---------------------------------------------------
 //
@@ -259,9 +401,36 @@ const uint NeuronModelCount = 4u;
 const uint BrainLayerSizeMask = 0x3fu;
 const uint BrainLayerSizeBits = 6u;
 
+// Which squash a hidden layer uses, two bits each, above the three widths. In
+// the same word because the word is what already crosses into GLSL: a layer's
+// activation is part of what the network is, and carrying it anywhere else would
+// mean a second thing to pass, a second thing to store in a file, and a second
+// thing to forget.
+const uint BrainLayerActivationBits = 2u;
+const uint BrainLayerActivationMask = 0x3u;
+const uint BrainLayerActivationShift = 3u * BrainLayerSizeBits;
 VKEXP_BRAIN_FN uint brainPackHiddenLayers(uint first, uint second, uint third) {
     return (first & BrainLayerSizeMask) | ((second & BrainLayerSizeMask) << BrainLayerSizeBits) |
            ((third & BrainLayerSizeMask) << (2u * BrainLayerSizeBits));
+}
+
+// The activations folded into a packed plan. Separate from the widths so that
+// every existing caller keeps meaning what it meant -- zero is tanh, which is
+// what a plan that says nothing about activations has always used.
+VKEXP_BRAIN_FN uint brainWithLayerActivations(uint layers, uint first, uint second, uint third) {
+    return layers | ((first & BrainLayerActivationMask) << BrainLayerActivationShift) |
+           ((second & BrainLayerActivationMask)
+            << (BrainLayerActivationShift + BrainLayerActivationBits)) |
+           ((third & BrainLayerActivationMask)
+            << (BrainLayerActivationShift + 2u * BrainLayerActivationBits));
+}
+
+VKEXP_BRAIN_FN uint brainLayerActivation(uint layers, uint layer) {
+    if (layer >= BrainHiddenLayerCapacity) {
+        return BrainActivationTanh;
+    }
+    return (layers >> (BrainLayerActivationShift + layer * BrainLayerActivationBits)) &
+           BrainLayerActivationMask;
 }
 
 VKEXP_BRAIN_FN uint brainHiddenLayerSize(uint layers, uint layer) {
@@ -269,6 +438,13 @@ VKEXP_BRAIN_FN uint brainHiddenLayerSize(uint layers, uint layer) {
         return 0u;
     }
     return (layers >> (layer * BrainLayerSizeBits)) & BrainLayerSizeMask;
+}
+
+// Only the widths, with any activation bits dropped. What sizes a genome and
+// what names a layer plan: two runs that differ only in a squash read the same
+// weights, so they must agree on where every weight is.
+VKEXP_BRAIN_FN uint brainLayerWidths(uint layers) {
+    return layers & ((1u << BrainLayerActivationShift) - 1u);
 }
 
 // Layers are dense from the front, so the count is where the widths stop.

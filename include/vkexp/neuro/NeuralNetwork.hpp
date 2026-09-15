@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <random>
 #include <span>
 #include <vector>
 
@@ -29,7 +30,7 @@ struct Topology {
     static constexpr std::size_t hiddenLayerCount = kernel::BrainHiddenLayerCapacity;
     // What a world gets when it does not ask for anything else.
     static constexpr std::size_t defaultHiddenCount = kernel::BrainDefaultHiddenWidth;
-    static constexpr std::size_t moveOutputCount = kernel::BrainMoveOutputCount;
+    static constexpr std::size_t turnOutputCount = kernel::BrainTurnOutputCount;
     static constexpr std::size_t actuatorOutputCount = kernel::BrainActuatorOutputCount;
     static constexpr std::size_t outputCount = kernel::BrainOutputCapacity;
     // The longest genome the capacity can produce: every neuron in one layer.
@@ -47,7 +48,7 @@ struct Topology {
     static constexpr std::size_t selfOffset = kernel::BrainSelfOffset;
     static constexpr std::size_t recurrentInputOffset = kernel::BrainRecurrentInputOffset;
     static constexpr std::size_t signalIntensityOutput = kernel::BrainSignalIntensityOutput;
-    static constexpr std::size_t buildOutput = kernel::BrainBuildOutput;
+    static constexpr std::size_t actionOutput = kernel::BrainActionOutput;
     static constexpr std::size_t recurrentOutputOffset = kernel::BrainRecurrentOutputOffset;
 };
 // A world selects an active network inside the fixed-capacity genome. Keeping
@@ -64,6 +65,11 @@ struct BrainShape {
     std::size_t outputCount{};
     std::size_t secondHiddenCount{};
     std::size_t thirdHiddenCount{};
+    // Which squash each hidden layer uses -- kernel::BrainActivationTanh unless
+    // a plan says otherwise, which is what every plan written before this field
+    // existed meant. Last in the struct so that every `{inputs, hidden, outputs}`
+    // written anywhere still names the same three things.
+    std::array<std::uint32_t, Topology::hiddenLayerCount> hiddenActivation{};
 
     [[nodiscard]] constexpr std::size_t hiddenLayer(const std::size_t layer) const {
         if (layer == 0) {
@@ -97,13 +103,22 @@ struct BrainShape {
     }
 
     [[nodiscard]] constexpr std::uint32_t packedLayers() const {
-        return kernel::brainPackHiddenLayers(static_cast<kernel::uint>(hiddenCount),
-                                             static_cast<kernel::uint>(secondHiddenCount),
-                                             static_cast<kernel::uint>(thirdHiddenCount));
+        return kernel::brainWithLayerActivations(
+            kernel::brainPackHiddenLayers(static_cast<kernel::uint>(hiddenCount),
+                                          static_cast<kernel::uint>(secondHiddenCount),
+                                          static_cast<kernel::uint>(thirdHiddenCount)),
+            hiddenActivation[0], hiddenActivation[1], hiddenActivation[2]);
+    }
+
+    // The widths alone. What a genome is laid out by, and deliberately not the
+    // packed plan: two runs that differ only in a squash read the same weights
+    // and must agree on where every one of them is.
+    [[nodiscard]] constexpr std::uint32_t packedWidths() const {
+        return kernel::brainLayerWidths(packedLayers());
     }
 
     [[nodiscard]] constexpr std::size_t weightCount() const {
-        return kernel::brainWeightCount(static_cast<kernel::uint>(inputCount), packedLayers(),
+        return kernel::brainWeightCount(static_cast<kernel::uint>(inputCount), packedWidths(),
                                         static_cast<kernel::uint>(outputCount));
     }
 
@@ -139,12 +154,19 @@ struct BrainShape {
 inline constexpr BrainShape maximumBrainShape{Topology::inputCount, Topology::hiddenNeuronCapacity,
                                               Topology::outputCount};
 
-// Every sensor, every actuator, and the one hidden layer of twenty this network
-// had before plans existed. This is what a world means by "the full brain", and
-// it is deliberately not the maximum: widening the capacity must not widen every
-// world's brain behind its back.
-inline constexpr BrainShape defaultBrainShape{Topology::inputCount, Topology::defaultHiddenCount,
-                                              Topology::outputCount};
+// Every sensor, every actuator, and the hidden plan a world runs when it does
+// not ask for another: one layer of 35, squashed by sine. Deliberately not the
+// maximum -- widening the capacity must not widen every world's brain behind its
+// back -- and see BrainDefaultHiddenWidth for the measurement that chose the
+// squash and the reasoning that chose the depth.
+inline constexpr BrainShape defaultBrainShape{
+    Topology::inputCount,
+    Topology::defaultHiddenCount,
+    Topology::outputCount,
+    0,
+    0,
+    {kernel::BrainDefaultHiddenSquash, kernel::BrainActivationTanh,
+     kernel::BrainActivationTanh}};
 
 [[nodiscard]] constexpr std::uint32_t packBrainLayout(const BrainShape shape) {
     return kernel::brainPackLayout(static_cast<kernel::uint>(shape.inputCount),
@@ -184,6 +206,13 @@ using Weights = std::vector<float>;
 [[nodiscard]] inline Weights makeWeights(const BrainShape shape) {
     return Weights(shape.weightCount(), 0.0F);
 }
+
+// A fresh genome for a plan. `fanIn` divides each block's width by the square
+// root of what its neurons sum, which is the standard answer; without it every
+// gene is drawn at one width and a wide layer saturates. See EvolutionSettings'
+// WeightInit for what each one measures out to.
+[[nodiscard]] Weights randomWeights(BrainShape shape, std::mt19937& random, bool fanIn,
+                                    float spread = 0.55F);
 
 // The continuous-time state of one brain's hidden layer, carried between steps.
 using HiddenState = std::array<float, Topology::hiddenNeuronCapacity>;

@@ -205,14 +205,14 @@ int run() {
     //    because a case that quietly resized nothing would walk none of this and
     //    still pass.
     {
-        std::size_t previousWeights = driver.evolution().settings().weightCount;
+        std::size_t previousWeights = driver.evolution().settings().weightCount();
         for (const std::array<std::uint32_t, 3> plan : {std::array<std::uint32_t, 3>{12, 8, 8},
                                                         std::array<std::uint32_t, 3>{10, 10, 0},
                                                         std::array<std::uint32_t, 3>{32, 0, 0},
                                                         std::array<std::uint32_t, 3>{0, 0, 0}}) {
             state.settings.hiddenLayers = plan;
             driver.restart();
-            const std::size_t weights = driver.evolution().settings().weightCount;
+            const std::size_t weights = driver.evolution().settings().weightCount();
             const std::string label = "brain plan " + std::to_string(plan[0]) + "," +
                                       std::to_string(plan[1]) + "," + std::to_string(plan[2]);
             require(weights != previousWeights, label + ": genome length actually changed");

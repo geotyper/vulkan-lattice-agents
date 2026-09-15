@@ -25,10 +25,15 @@ neuro::Inputs sampleAgentInputs(const AgentState& agent, const std::span<const f
     // All twenty-six under both movement settings. See LatticeKernel.inl for why
     // the width does not follow the neighbourhood: a population trained to walk
     // the faces still has to be loadable into a run that walks the diagonals.
+    // Read in the body frame: slot n is always the same direction relative to
+    // the agent, whichever way it is facing.
+    const auto facing = static_cast<std::uint32_t>(agent.cell.w) % kern::LatticeFacingCount;
     for (brain::uint neighbor = 0; neighbor < brain::BrainNeighborCount; ++neighbor) {
-        const int x = agent.cell.x + kern::latticeNeighborX(neighbor);
+        const int bodyX = kern::latticeNeighborX(neighbor);
+        const int bodyZ = kern::latticeNeighborZ(neighbor);
+        const int x = agent.cell.x + kern::latticeRotatedX(facing, bodyX, bodyZ);
         const int y = agent.cell.y + kern::latticeNeighborY(neighbor);
-        const int z = agent.cell.z + kern::latticeNeighborZ(neighbor);
+        const int z = agent.cell.z + kern::latticeRotatedZ(facing, bodyX, bodyZ);
 
         float occupied = 0.0F;
         float edge = 0.0F;
@@ -70,9 +75,18 @@ neuro::Inputs sampleAgentInputs(const AgentState& agent, const std::span<const f
         inputs[brain::brainBeaconInputIndex(1)] = agent.signal.z <= 0.0F ? 1.0F : 0.0F;
         inputs[brain::brainBeaconInputIndex(2)] = std::clamp(agent.signal.w, 0.0F, 1.0F);
 
-        bool supported = agent.cell.y <= 0;
-        constexpr std::array<std::array<int, 3>, 5> supportOffsets{
-            {{{0, -1, 0}}, {{-1, 0, 0}}, {{1, 0, 0}}, {{0, 0, -1}}, {{0, 0, 1}}}};
+        // The same five faces as constructionSupported plus the wall in front
+        // of the feet, and no implicit floor: the floor is a course of bedrock
+        // in the block field like anything else, so an agent over a chasm reads
+        // unsupported and is right.
+        bool supported = false;
+        const std::array<std::array<int, 3>, 6> supportOffsets{
+            {{{0, -1, 0}},
+             {{-1, 0, 0}},
+             {{1, 0, 0}},
+             {{0, 0, -1}},
+             {{0, 0, 1}},
+             {{kern::latticeFacingX(facing), -1, kern::latticeFacingZ(facing)}}}};
         for (const auto& offset : supportOffsets) {
             const int x = agent.cell.x + offset[0];
             const int y = agent.cell.y + offset[1];
@@ -102,9 +116,18 @@ neuro::Inputs sampleAgentInputs(const AgentState& agent, const std::span<const f
         const float length = kern::latticeVectorLength(deltaX, deltaY, deltaZ);
         const std::uint32_t distance = kern::latticeStepDistance(
             static_cast<std::uint32_t>(settings.neighborhood), deltaX, deltaY, deltaZ);
-        inputs[brain::brainBeaconInputIndex(0)] = kern::latticeDirectionComponent(deltaX, length);
+        // Turned into the body frame like everything else. The inverse rotation,
+        // since this converts a world offset into body axes rather than the
+        // other way round.
+        const std::uint32_t inverse =
+            (kern::LatticeFacingCount - facing) % kern::LatticeFacingCount;
+        const int bodyAheadX = kern::latticeRotatedX(inverse, deltaX, deltaZ);
+        const int bodyAheadZ = kern::latticeRotatedZ(inverse, deltaX, deltaZ);
+        inputs[brain::brainBeaconInputIndex(0)] =
+            kern::latticeDirectionComponent(bodyAheadX, length);
         inputs[brain::brainBeaconInputIndex(1)] = kern::latticeDirectionComponent(deltaY, length);
-        inputs[brain::brainBeaconInputIndex(2)] = kern::latticeDirectionComponent(deltaZ, length);
+        inputs[brain::brainBeaconInputIndex(2)] =
+            kern::latticeDirectionComponent(bodyAheadZ, length);
         inputs[brain::brainBeaconInputIndex(3)] =
             kern::latticeNearness(distance, latticeMaximumDistance(settings));
         if (worldHarvests(settings.worldMode)) {
@@ -113,23 +136,11 @@ neuro::Inputs sampleAgentInputs(const AgentState& agent, const std::span<const f
         }
     }
 
-    // The heading, as the unit step it last took. An agent that has not moved
-    // reads zero on all three, which is a distinguishable state and not a
-    // direction -- see the note on the heading field.
-    const auto heading = static_cast<brain::uint>(agent.cell.w);
-    if (heading < brain::BrainNeighborCount) {
-        const int headingX = kern::latticeNeighborX(heading);
-        const int headingY = kern::latticeNeighborY(heading);
-        const int headingZ = kern::latticeNeighborZ(heading);
-        const float headingLength = kern::latticeVectorLength(headingX, headingY, headingZ);
-        inputs[brain::BrainSelfOffset] = kern::latticeDirectionComponent(headingX, headingLength);
-        inputs[brain::BrainSelfOffset + 1] =
-            kern::latticeDirectionComponent(headingY, headingLength);
-        inputs[brain::BrainSelfOffset + 2] =
-            kern::latticeDirectionComponent(headingZ, headingLength);
-    }
-    inputs[brain::BrainSelfOffset + 3] = agent.intent.w != 0 ? 1.0F : 0.0F;
-    inputs[brain::BrainSelfOffset + 4] = kern::latticeStillness(agent.memory.z);
+    // No heading channel: in the body frame the agent faces forward by
+    // definition, so its absolute orientation is unobservable and could only
+    // ever have carried a constant.
+    inputs[brain::BrainSelfOffset] = agent.intent.w != 0 ? 1.0F : 0.0F;
+    inputs[brain::BrainSelfOffset + 1] = kern::latticeStillness(agent.memory.z);
 
     inputs[brain::BrainRecurrentInputOffset] = std::clamp(agent.memory.x, -1.0F, 1.0F);
     inputs[brain::BrainRecurrentInputOffset + 1] = std::clamp(agent.memory.y, -1.0F, 1.0F);

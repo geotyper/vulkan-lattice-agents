@@ -287,9 +287,13 @@ if(BUILD_TESTING)
     vkexp_enable_warnings(vklat_reconfiguration_smoke)
     add_test(NAME vklat_reconfiguration_smoke COMMAND vklat_reconfiguration_smoke)
     # A reconfiguration bug shows up as a hang, not as a wrong answer, so the
-    # timeout is part of the assertion rather than a safety net.
+    # timeout is part of the assertion rather than a safety net. Raised from 120
+    # when the default hidden layer went from 20 neurons to 35, which nearly
+    # doubled the genome and, with it, every rebuild this test makes: a 35+15
+    # plan measured 2m07 against about a minute at 20. Proportionate to the work
+    # and not a hang -- which is the only reason to raise it rather than to look.
     set_tests_properties(vklat_reconfiguration_smoke PROPERTIES
         SKIP_RETURN_CODE 77
-        TIMEOUT 120
+        TIMEOUT 300
     )
 endif()

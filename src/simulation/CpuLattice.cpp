@@ -37,12 +37,19 @@ namespace kern = lattice::kernel;
 // "something below me" is the whole of the rule.
 [[nodiscard]] bool constructionSupported(const std::span<const std::int32_t> structures,
                                          const SimulationStep& settings, const int x, const int y,
-                                         const int z) {
-    return hasStructure(structures, settings, x, y - 1, z) ||
-           hasStructure(structures, settings, x - 1, y, z) ||
-           hasStructure(structures, settings, x + 1, y, z) ||
-           hasStructure(structures, settings, x, y, z - 1) ||
-           hasStructure(structures, settings, x, y, z + 1);
+                                         const int z, const std::uint32_t facing) {
+    if (hasStructure(structures, settings, x, y - 1, z) ||
+        hasStructure(structures, settings, x - 1, y, z) ||
+        hasStructure(structures, settings, x + 1, y, z) ||
+        hasStructure(structures, settings, x, y, z - 1) ||
+        hasStructure(structures, settings, x, y, z + 1)) {
+        return true;
+    }
+    // Holding the wall in front of your feet: an edge rather than a face, and
+    // read through the facing, so a climber holds the wall it is looking at and
+    // turning away lets go.
+    return hasStructure(structures, settings, x + kern::latticeFacingX(facing), y - 1,
+                        z + kern::latticeFacingZ(facing));
 }
 
 [[nodiscard]] bool constructionBlockSupported(const std::span<const std::int32_t> structures,
@@ -62,19 +69,12 @@ namespace kern = lattice::kernel;
 // this column has no bottom at all.
 [[nodiscard]] int constructionLandingY(const std::span<const std::int32_t> structures,
                                        const SimulationStep& settings, const int x, const int y,
-                                       const int z) {
+                                       const int z, const std::uint32_t facing) {
     int landing = std::clamp(y, 0, static_cast<int>(settings.latticeHeight) - 1);
-    while (landing >= 0 && !constructionSupported(structures, settings, x, landing, z)) {
+    while (landing >= 0 && !constructionSupported(structures, settings, x, landing, z, facing)) {
         --landing;
     }
     return landing;
-}
-
-// Mirrors constructionFacing in lattice_step.comp.
-[[nodiscard]] std::array<int, 2> constructionFacing(const SimulationStep& settings,
-                                                    const float aimX, const float aimZ) {
-    return {kern::latticeAimComponent(0U, aimX, aimZ, settings.moveThreshold),
-            kern::latticeAimComponent(1U, aimX, aimZ, settings.moveThreshold)};
 }
 
 } // namespace
@@ -165,7 +165,7 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
         }
 
         agent.signal.x = std::clamp(output[brain::BrainSignalIntensityOutput], 0.0F, 1.0F);
-        agent.signal.y = output[brain::BrainBuildOutput];
+        agent.signal.y = output[brain::BrainActionOutput];
         agent.signal.z = std::max(agent.signal.z - 1.0F, 0.0F);
         agent.signal.w = 0.0F;
         if (shape.outputCount >=
@@ -177,101 +177,167 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
             agent.memory.y = 0.0F;
         }
 
-        const float driveX = output[brain::BrainMoveOutput];
-        const float driveY = output[brain::BrainMoveOutput + 1];
-        const float driveZ = output[brain::BrainMoveOutput + 2];
-        const float aimDriveX = output[brain::BrainFaceOutput];
-        const float aimDriveZ = output[brain::BrainFaceOutput + 1];
-        const int stepX = kern::latticeMoveComponent(neighborhood, 0U, driveX, driveY, driveZ,
-                                                     settings.moveThreshold);
-        const int stepY = kern::latticeMoveComponent(neighborhood, 1U, driveX, driveY, driveZ,
-                                                     settings.moveThreshold);
-        const int stepZ = kern::latticeMoveComponent(neighborhood, 2U, driveX, driveY, driveZ,
-                                                     settings.moveThreshold);
+        // Three commands and no more: turn, or spend the tick on the one thing
+        // the action output asks for. Mirrors the same grammar in
+        // lattice_step.comp -- a turn ends the tick, so pointing somewhere else
+        // costs a tick per ninety degrees.
+        const auto facing = static_cast<std::uint32_t>(agent.cell.w) % kern::LatticeFacingCount;
+        // Two outputs that have to agree, read through the same dead zone as
+        // everything else. Sign and not a left/right pair: the two turns are one
+        // axis, and a network that had to learn "not both at once" would be
+        // learning the encoding rather than the task.
+        const int turn = kern::latticeTurnStep(output[brain::BrainTurnOutput],
+                                               output[brain::BrainTurnOutput + 1],
+                                               settings.turnThreshold);
+        const bool turning = turn != 0;
+        if (turning) {
+            agent.cell.w = static_cast<std::int32_t>(kern::latticeTurn(facing, turn > 0));
+        }
+        const auto heading = static_cast<std::uint32_t>(agent.cell.w) % kern::LatticeFacingCount;
 
         agent.intent = Int4{agent.cell.x, agent.cell.y, agent.cell.z, 0};
+        // One outcome per agent per step, filed under the first test the
+        // attempt fails. Mirrors the same chain in lattice_step.comp; the
+        // construction parity probe compares the counters as well as the
+        // blocks, so a reason recorded differently is a failure and not a
+        // difference of opinion.
+        // LatticeBuildOutcomeCount means "not decided here": the agent placed a
+        // build bid and the resolve loop will say whether it won.
+        std::uint32_t outcome = kern::LatticeActionTurning;
+        // Walk or build, on one output and one dead zone. In a world that builds
+        // only the upper band means anything; in one that does not, the lower
+        // band is the descent -- see the note where it is used.
+        const int action = kern::latticeAxisStep(agent.signal.y, settings.buildThreshold);
+
         if (worldBuilds(settings.worldMode)) {
             int wantedX = agent.cell.x;
             int wantedY = agent.cell.y;
             int wantedZ = agent.cell.z;
-            const bool horizontal = stepX != 0 || stepZ != 0;
-            bool attempted = horizontal || stepY != 0;
+            const int forwardX = kern::latticeFacingX(heading);
+            const int forwardZ = kern::latticeFacingZ(heading);
+            bool stepping = !turning;
+            // Whether this tick already has a reason. Only the cooldown sets it:
+            // a cooling agent walks, and without this the walk files the tick
+            // under itself and the cooldown counter reads zero forever. Mirrors
+            // lattice_step.comp, where the same mistake hid behind parity.
+            bool attributed = false;
 
-            if (horizontal) {
-                wantedX += stepX;
-                wantedZ += stepZ;
+            agent.beacon.x = -1;
+            agent.beacon.y = -1;
+            agent.beacon.z = -1;
+
+            if (!turning && action > 0) {
+                stepping = false;
+                if (agent.signal.z > 0.0F) {
+                    // Still on the cooldown from the last block. The tick is
+                    // spent either way, so the agent walks it off rather than
+                    // standing in place waiting for the counter -- and is filed
+                    // under the cooldown, because "wanted to build and could
+                    // not" is the thing worth counting.
+                    outcome = kern::LatticeBuildCooling;
+                    attributed = true;
+                    stepping = true;
+                } else {
+                    const int buildX = agent.cell.x + forwardX;
+                    const int buildZ = agent.cell.z + forwardZ;
+                    if (buildX < 0 || buildZ < 0 ||
+                        buildX >= static_cast<int>(settings.latticeWidth) ||
+                        buildZ >= static_cast<int>(settings.latticeDepth)) {
+                        outcome = kern::LatticeBuildOffLattice;
+                    } else {
+                        int buildY = agent.cell.y;
+                        bool supported = constructionBlockSupported(worldStructures, settings,
+                                                                    buildX, buildY, buildZ);
+                        if (!supported && settings.allowSideSupportedBlocks != 0U && buildY > 0) {
+                            --buildY;
+                            supported = constructionBlockSupported(worldStructures, settings,
+                                                                   buildX, buildY, buildZ);
+                        }
+                        const std::uint32_t target = kern::latticeCellIndex(
+                            buildX, buildY, buildZ, settings.latticeWidth, settings.latticeHeight);
+                        if (hasStructure(worldStructures, settings, buildX, buildY, buildZ)) {
+                            outcome = kern::LatticeBuildBlocked;
+                        } else if (!supported) {
+                            outcome = kern::LatticeBuildUnsupported;
+                        } else if (kern::latticeWorldFrontier(
+                                       static_cast<std::uint32_t>(settings.worldMode)) &&
+                                   static_cast<std::uint32_t>(buildY) >=
+                                       constructionLocalFoundation(worldStructures, settings,
+                                                                   buildX, buildY, buildZ) +
+                                           std::max(settings.constructionHeightLead, 1U)) {
+                            outcome = kern::LatticeBuildAboveFrontier;
+                        } else if (worldOccupancy[target] != kern::LatticeNoOccupant) {
+                            outcome = kern::LatticeBuildInTheWay;
+                        } else {
+                            agent.beacon.x = buildX;
+                            agent.beacon.y = buildY;
+                            agent.beacon.z = buildZ;
+                            population.claims[worldBase + target] = kern::latticeBetterClaim(
+                                population.claims[worldBase + target],
+                                kern::latticeBuildClaim(
+                                    index, static_cast<std::uint32_t>(population.agents.size())));
+                            outcome = kern::LatticeBuildOutcomeCount; // the resolve loop decides
+                        }
+                    }
+                }
+            }
+
+            if (stepping) {
+                wantedX += forwardX;
+                wantedZ += forwardZ;
+                std::uint32_t refusal = kern::LatticeBuildOutcomeCount; // no refusal yet
                 if (!kern::latticeInBounds(wantedX, wantedY, wantedZ, settings.latticeWidth,
                                            settings.latticeHeight, settings.latticeDepth)) {
-                    agent.intent.w = 1;
-                    attempted = false;
+                    refusal = kern::LatticeActionEdge;
                 } else if (hasStructure(worldStructures, settings, wantedX, wantedY, wantedZ)) {
+                    // A wall in front is climbed, not stepped onto: the agent
+                    // rises one level in its own column and holds the block
+                    // with its feet. The step after that carries it over the
+                    // top.
+                    wantedX = agent.cell.x;
+                    wantedZ = agent.cell.z;
                     ++wantedY;
                     if (!kern::latticeInBounds(wantedX, wantedY, wantedZ, settings.latticeWidth,
                                                settings.latticeHeight, settings.latticeDepth) ||
                         hasStructure(worldStructures, settings, wantedX, wantedY, wantedZ)) {
-                        attempted = false;
+                        refusal = kern::LatticeActionCeiling;
                     }
                 } else {
                     const int landing = constructionLandingY(worldStructures, settings, wantedX,
-                                                             wantedY, wantedZ);
+                                                             wantedY, wantedZ, heading);
+                    // The far side of a chasm edge, told apart from the edge of
+                    // the lattice: one is a wall to turn away from and the other
+                    // is a gap to build across.
                     if (landing < 0) {
-                        agent.intent.w = 1;
-                        attempted = false;
-                    } else {
-                        wantedY = landing;
+                        refusal = kern::LatticeActionVoid;
                     }
-                }
-            } else if (stepY > 0) {
-                const auto [faceX, faceZ] = constructionFacing(settings, aimDriveX, aimDriveZ);
-                const bool hasFace = (faceX != 0 || faceZ != 0) &&
-                                     (hasStructure(worldStructures, settings, agent.cell.x + faceX,
-                                                   agent.cell.y, agent.cell.z + faceZ) ||
-                                      hasStructure(worldStructures, settings, agent.cell.x + faceX,
-                                                   agent.cell.y + 1, agent.cell.z + faceZ));
-                ++wantedY;
-                if (!hasFace ||
-                    !kern::latticeInBounds(wantedX, wantedY, wantedZ, settings.latticeWidth,
-                                           settings.latticeHeight, settings.latticeDepth) ||
-                    hasStructure(worldStructures, settings, wantedX, wantedY, wantedZ)) {
-                    attempted = false;
-                }
-            } else if (stepY < 0) {
-                const int landing = constructionLandingY(worldStructures, settings, wantedX,
-                                                         wantedY - 1, wantedZ);
-                if (landing < 0) {
-                    agent.intent.w = 1;
-                    attempted = false;
-                } else {
                     wantedY = landing;
                 }
-            } else if (!constructionSupported(worldStructures, settings, wantedX, wantedY,
-                                              wantedZ)) {
-                const int landing = constructionLandingY(worldStructures, settings, wantedX,
-                                                         wantedY - 1, wantedZ);
-                if (landing < 0) {
-                    agent.intent.w = 1;
-                    attempted = false;
-                } else {
-                    wantedY = landing;
-                    attempted = true;
-                }
-            }
-
-            if (!attempted && agent.intent.w == 0 &&
-                !constructionSupported(worldStructures, settings, agent.cell.x, agent.cell.y,
-                                       agent.cell.z)) {
-                const int landing = constructionLandingY(worldStructures, settings, agent.cell.x,
-                                                         agent.cell.y - 1, agent.cell.z);
-                if (landing >= 0) {
+                if (refusal < kern::LatticeBuildOutcomeCount) {
                     wantedX = agent.cell.x;
-                    wantedY = landing;
+                    wantedY = agent.cell.y;
                     wantedZ = agent.cell.z;
-                    attempted = true;
+                    agent.intent.w = 1;
+                    if (!attributed) {
+                        outcome = refusal;
+                    }
+                } else if (!attributed) {
+                    outcome = kern::LatticeActionWalking;
                 }
             }
 
-            if (attempted && agent.intent.w == 0 &&
-                (wantedX != agent.cell.x || wantedY != agent.cell.y || wantedZ != agent.cell.z)) {
+            // Gravity, applied to wherever the tick left the agent: a climber
+            // that turned away from the wall it was holding has let go of it.
+            if (!constructionSupported(worldStructures, settings, wantedX, wantedY, wantedZ,
+                                       heading)) {
+                const int landing = constructionLandingY(worldStructures, settings, wantedX,
+                                                         wantedY - 1, wantedZ, heading);
+                if (landing >= 0) {
+                    wantedY = landing;
+                }
+            }
+
+            if (wantedX != agent.cell.x || wantedY != agent.cell.y || wantedZ != agent.cell.z) {
                 const std::uint32_t wanted = kern::latticeCellIndex(
                     wantedX, wantedY, wantedZ, settings.latticeWidth, settings.latticeHeight);
                 if (worldOccupancy[wanted] == kern::LatticeNoOccupant &&
@@ -280,98 +346,48 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                     population.claims[worldBase + wanted] = kern::latticeBetterClaim(
                         population.claims[worldBase + wanted], static_cast<std::int32_t>(index));
                 } else if (!hasStructure(worldStructures, settings, wantedX, wantedY, wantedZ)) {
-                    agent.intent.w = 1;
+                    agent.intent.w = 1; // another agent, not a wall
+                    if (!attributed) {
+                        outcome = kern::LatticeActionCrowded;
+                    }
                 }
             }
-
-            agent.beacon.x = -1;
-            agent.beacon.y = -1;
-            agent.beacon.z = -1;
-            // One outcome per agent per step, filed under the first test the
-            // attempt fails. Mirrors the same chain in lattice_step.comp; the
-            // construction parity probe compares the counters as well as the
-            // blocks, so a reason recorded differently is a failure and not a
-            // difference of opinion.
-            // LatticeBuildOutcomeCount means "not decided here": the agent
-            // placed a bid and the resolve loop will say whether it won.
-            std::uint32_t outcome = kern::LatticeBuildOutcomeCount;
-            if (agent.signal.z > 0.0F) {
-                outcome = kern::LatticeBuildCooling;
-            } else if (agent.signal.y <= settings.buildThreshold) {
-                outcome = kern::LatticeBuildUnwilling;
+        } else if (!turning) {
+            // A world with no gravity and nothing to build in: the action
+            // output still has two ends, so it spends them on the vertical the
+            // body frame otherwise cannot reach. Above the threshold rises,
+            // below the negative threshold sinks, and the band between them is
+            // the step forward.
+            const int stepX = action == 0 ? kern::latticeFacingX(heading) : 0;
+            const int stepY = action;
+            const int stepZ = action == 0 ? kern::latticeFacingZ(heading) : 0;
+            const int wantedX = agent.cell.x + stepX;
+            const int wantedY = agent.cell.y + stepY;
+            const int wantedZ = agent.cell.z + stepZ;
+            outcome = kern::LatticeActionWalking;
+            if (!kern::latticeInBounds(wantedX, wantedY, wantedZ, settings.latticeWidth,
+                                       settings.latticeHeight, settings.latticeDepth)) {
+                agent.intent.w = 1; // walked into the edge of the lattice
+                outcome = kern::LatticeActionEdge;
             } else {
-                const auto [faceX, faceZ] = constructionFacing(settings, aimDriveX, aimDriveZ);
-                const int buildX = agent.cell.x + faceX;
-                const int buildZ = agent.cell.z + faceZ;
-                if (faceX == 0 && faceZ == 0) {
-                    outcome = kern::LatticeBuildNoFacing;
-                } else if (buildX < 0 || buildZ < 0 ||
-                           buildX >= static_cast<int>(settings.latticeWidth) ||
-                           buildZ >= static_cast<int>(settings.latticeDepth)) {
-                    outcome = kern::LatticeBuildOffLattice;
+                const std::uint32_t wanted = kern::latticeCellIndex(
+                    wantedX, wantedY, wantedZ, settings.latticeWidth, settings.latticeHeight);
+                if (!kern::latticeCellEnterable(worldOccupancy[wanted])) {
+                    agent.intent.w = 1; // somebody was already standing there
+                    outcome = kern::LatticeActionCrowded;
                 } else {
-                    int buildY = agent.cell.y;
-                    bool supported = constructionBlockSupported(worldStructures, settings, buildX,
-                                                                buildY, buildZ);
-                    if (!supported && settings.allowSideSupportedBlocks != 0U && buildY > 0) {
-                        --buildY;
-                        supported = constructionBlockSupported(worldStructures, settings, buildX,
-                                                               buildY, buildZ);
-                    }
-                    const std::uint32_t target = kern::latticeCellIndex(
-                        buildX, buildY, buildZ, settings.latticeWidth, settings.latticeHeight);
-                    if (hasStructure(worldStructures, settings, buildX, buildY, buildZ)) {
-                        outcome = kern::LatticeBuildBlocked;
-                    } else if (!supported) {
-                        outcome = kern::LatticeBuildUnsupported;
-                    } else if (kern::latticeWorldFrontier(
-                                   static_cast<std::uint32_t>(settings.worldMode)) &&
-                               static_cast<std::uint32_t>(buildY) >=
-                                   constructionLocalFoundation(worldStructures, settings, buildX,
-                                                               buildY, buildZ) +
-                                       std::max(settings.constructionHeightLead, 1U)) {
-                        outcome = kern::LatticeBuildAboveFrontier;
-                    } else if (worldOccupancy[target] != kern::LatticeNoOccupant) {
-                        outcome = kern::LatticeBuildInTheWay;
-                    } else {
-                        agent.beacon.x = buildX;
-                        agent.beacon.y = buildY;
-                        agent.beacon.z = buildZ;
-                        population.claims[worldBase + target] = kern::latticeBetterClaim(
-                            population.claims[worldBase + target],
-                            kern::latticeBuildClaim(
-                                index, static_cast<std::uint32_t>(population.agents.size())));
-                    }
+                    agent.intent = Int4{wantedX, wantedY, wantedZ, 0};
+                    std::int32_t& claim = population.claims[worldBase + wanted];
+                    claim = kern::latticeBetterClaim(claim, static_cast<std::int32_t>(index));
                 }
             }
-            if (!population.buildOutcomes.empty() && outcome < kern::LatticeBuildOutcomeCount) {
-                ++population.buildOutcomes[static_cast<std::size_t>(world) *
-                                               kern::LatticeBuildOutcomeCount +
-                                           outcome];
-            }
-            continue;
-        }
-        if (stepX == 0 && stepY == 0 && stepZ == 0) {
-            continue;
         }
 
-        const int wantedX = agent.cell.x + stepX;
-        const int wantedY = agent.cell.y + stepY;
-        const int wantedZ = agent.cell.z + stepZ;
-        if (!kern::latticeInBounds(wantedX, wantedY, wantedZ, settings.latticeWidth,
-                                   settings.latticeHeight, settings.latticeDepth)) {
-            agent.intent.w = 1; // walked into the edge of the lattice
-            continue;
+        if (!population.buildOutcomes.empty() && outcome < kern::LatticeBuildOutcomeCount) {
+            ++population.buildOutcomes[static_cast<std::size_t>(world) *
+                                           kern::LatticeBuildOutcomeCount +
+                                       outcome];
         }
-        const std::uint32_t wanted = kern::latticeCellIndex(
-            wantedX, wantedY, wantedZ, settings.latticeWidth, settings.latticeHeight);
-        if (!kern::latticeCellEnterable(worldOccupancy[wanted])) {
-            agent.intent.w = 1; // walked into somebody who was already standing there
-            continue;
-        }
-        agent.intent = Int4{wantedX, wantedY, wantedZ, 0};
-        std::int32_t& claim = population.claims[worldBase + wanted];
-        claim = kern::latticeBetterClaim(claim, static_cast<std::int32_t>(index));
     }
 
     // --- resolve --------------------------------------------------------------
@@ -402,13 +418,10 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                                            settings.latticeWidth, settings.latticeHeight);
                 population.occupancy[worldBase + vacated] = kern::LatticeNoOccupant;
                 population.occupancy[worldBase + wanted] = static_cast<std::int32_t>(index);
-                const int movedX = agent.intent.x - agent.cell.x;
-                const int movedY = agent.intent.y - agent.cell.y;
-                const int movedZ = agent.intent.z - agent.cell.z;
-                if (!worldBuilds(settings.worldMode) || movedX != 0 || movedZ != 0) {
-                    agent.cell.w = static_cast<std::int32_t>(
-                        kern::latticeNeighborIndex(movedX, movedY, movedZ));
-                }
+                // cell.w is untouched: facing is state the agent owns and only
+                // a turn changes it. A move that rewrote it would mean an agent
+                // could never walk one way while looking another, and climbing
+                // a wall is exactly that.
                 agent.cell.x = agent.intent.x;
                 agent.cell.y = agent.intent.y;
                 agent.cell.z = agent.intent.z;

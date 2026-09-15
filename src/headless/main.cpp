@@ -32,6 +32,7 @@ struct Options {
     std::uint32_t stepsPerBatch{128};
     std::uint32_t agentsPerWorld{12};
     std::size_t populationSize{512};
+    vkexp::WeightInit weightInit{vkexp::WeightInit::Saturating};
     std::uint32_t seed{0xC0FFEEU};
 
     // Absent means "leave the default", which lets a sweep change one term
@@ -39,7 +40,7 @@ struct Options {
     std::optional<std::uint32_t> latticeWidth;
     std::optional<std::uint32_t> latticeHeight;
     std::optional<std::uint32_t> latticeDepth;
-    std::optional<float> moveThreshold;
+    std::optional<float> turnThreshold;
     std::optional<std::uint32_t> contactRadius;
     vkexp::Neighborhood neighborhood{vkexp::Neighborhood::Moore};
     vkexp::WorldMode worldMode{vkexp::WorldMode::Beacon};
@@ -61,6 +62,7 @@ struct Options {
     std::string describeBrain;
     // Empty means the default hidden layers.
     std::vector<std::uint32_t> hiddenLayers;
+    std::vector<std::uint32_t> hiddenSquashes;
     std::string loadPopulation;
     std::string saveRun;
     std::string loadRun;
@@ -76,6 +78,10 @@ void printHelp(const char* executable) {
                  "  --generations <n>        generations to run (default 20)\n"
                  "  --steps <n>              steps per generation (default 900 = 15.0 s)\n"
                  "  --population <n>         genomes (default 512)\n"
+                 "  --weight-init <name>     saturating|fan-in: how a fresh genome is drawn\n"
+                 "                           (default saturating). fan-in scales each block by\n"
+                 "                           its input count and needs both thresholds scaled\n"
+                 "                           down with it\n"
                  "  --agents-per-world <n>   agents sharing one lattice (default 12)\n"
                  "  --seed <n>               genetic algorithm seed (default 12648430)\n"
                  "  --steps-per-batch <n>    steps recorded per submission (default 128)\n\n"
@@ -88,8 +94,9 @@ void printHelp(const char* executable) {
                  "  --neighbourhood <name>   faces|moore: whether a step may be diagonal\n"
                  "                           (default moore). The input vector is 26 cells wide\n"
                  "                           either way, so a population carries across\n"
-                 "  --move-threshold <x>     how sure a drive must be to become a step,\n"
-                 "                           0..1 (default 0.25). 0 means never standing still\n"
+                 "  --turn-threshold <x>     how sure both turn outputs must be before the\n"
+                 "                           agent pivots, 0..1 (default 0.25). They have to\n"
+                 "                           agree, and a turn costs the whole tick\n"
                  "  --contact-radius <n>     cells from the beacon that count as reaching it\n"
                  "                           (default 1). 0 means one agent per world can\n"
                  "                           score at a time\n"
@@ -111,7 +118,14 @@ void printHelp(const char* executable) {
                  "                           it to the step; spiking uses leaky\n"
                  "                           integrate-and-fire pulses; gated recomputes it\n"
                  "                           from inputs (default time)\n"
-                 "  --hidden <a[,b[,c]]>     hidden layer widths, front to back\n\n"
+                 "  --hidden <a[,b[,c]]>     hidden layer widths, front to back\n"
+                 "  --hidden-squash <a[,b[,c]]>\n"
+                 "                           tanh|sin|tanh-scaled|softsign per hidden layer\n"
+                 "                           (default tanh). Outputs\n"
+                 "                           are always tanh -- every threshold in the rules\n"
+                 "                           reads one as how far and which way. Has no effect\n"
+                 "                           under --neuron-model spiking, which writes 1 or 0\n"
+                 "                           and never reaches a squash\n\n"
                  "Fitness shaping (sweepable without rebuilding):\n"
                  "  --tracking-reward <x>    worth of the nearest it ever got (default 1.0)\n"
                  "  --objective-bonus <x>    score per step within the contact radius (0.02)\n"
@@ -169,6 +183,40 @@ template <typename T> T parseNumber(const std::string_view text, const std::stri
              " widths, front to back");
     }
     return widths;
+}
+
+// The squash each hidden layer uses, in the same front-to-back order as the
+// widths beside it.
+[[nodiscard]] std::vector<std::uint32_t> parseHiddenSquashes(const std::string_view text) {
+    std::vector<std::uint32_t> squashes;
+    std::size_t start = 0;
+    while (start <= text.size()) {
+        const std::size_t comma = text.find(',', start);
+        const std::string_view piece = text.substr(
+            start, comma == std::string_view::npos ? std::string_view::npos : comma - start);
+        if (piece == "tanh") {
+            squashes.push_back(vkexp::neuro::kernel::BrainActivationTanh);
+        } else if (piece == "sin" || piece == "sine") {
+            squashes.push_back(vkexp::neuro::kernel::BrainActivationSine);
+        } else if (piece == "tanh-scaled" || piece == "scaled") {
+            squashes.push_back(vkexp::neuro::kernel::BrainActivationTanhScaled);
+        } else if (piece == "softsign") {
+            squashes.push_back(vkexp::neuro::kernel::BrainActivationSoftsign);
+        } else {
+            fail("Unknown hidden squash '" + std::string{piece} +
+                 "', expected tanh, sin, tanh-scaled or softsign");
+        }
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        start = comma + 1;
+    }
+    if (squashes.empty() || squashes.size() > vkexp::neuro::Topology::hiddenLayerCount) {
+        fail("--hidden-squash takes 1 to " +
+             std::to_string(vkexp::neuro::Topology::hiddenLayerCount) +
+             " names, front to back");
+    }
+    return squashes;
 }
 
 // "32x32x16". Three numbers rather than three options because the box is one
@@ -316,6 +364,15 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
                 parseNumber<std::uint32_t>(next(index, argument), argument);
         } else if (argument == "--steps-per-batch") {
             options.stepsPerBatch = parseNumber<std::uint32_t>(next(index, argument), argument);
+        } else if (argument == "--weight-init") {
+            const std::string_view name = next(index, argument);
+            if (name == "saturating" || name == "flat") {
+                options.weightInit = vkexp::WeightInit::Saturating;
+            } else if (name == "fan-in" || name == "fanin") {
+                options.weightInit = vkexp::WeightInit::FanIn;
+            } else {
+                fail("Unknown weight initialisation: " + std::string{name});
+            }
         } else if (argument == "--population") {
             options.populationSize = parseNumber<std::size_t>(next(index, argument), argument);
         } else if (argument == "--agents-per-world") {
@@ -328,8 +385,8 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.worldMode = parseWorldMode(next(index, argument));
         } else if (argument == "--neighbourhood" || argument == "--neighborhood") {
             options.neighborhood = parseNeighborhood(next(index, argument));
-        } else if (argument == "--move-threshold") {
-            options.moveThreshold = parseNumber<float>(next(index, argument), argument);
+        } else if (argument == "--turn-threshold" || argument == "--move-threshold") {
+            options.turnThreshold = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--contact-radius") {
             options.contactRadius = parseNumber<std::uint32_t>(next(index, argument), argument);
         } else if (argument == "--build-interval") {
@@ -382,6 +439,8 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.saveChampion = next(index, argument);
         } else if (argument == "--hidden") {
             options.hiddenLayers = parseHiddenLayers(next(index, argument));
+        } else if (argument == "--hidden-squash") {
+            options.hiddenSquashes = parseHiddenSquashes(next(index, argument));
         } else if (argument == "--describe-brain") {
             options.describeBrain = next(index, argument);
         } else if (argument == "--load-population") {
@@ -409,6 +468,9 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
 // and the run options around it are not even validated.
 void describeBrainAndExit(const Options& options) {
     vkexp::SimulationStep settings{};
+    for (std::size_t layer = 0; layer < options.hiddenSquashes.size(); ++layer) {
+        settings.hiddenActivation[layer] = options.hiddenSquashes[layer];
+    }
     for (std::size_t layer = 0; layer < options.hiddenLayers.size(); ++layer) {
         settings.hiddenLayers[layer] = options.hiddenLayers[layer];
     }
@@ -462,13 +524,16 @@ int run(const Options& options) {
     // The chasm forces it on and the flag can only add to that: a world whose
     // objective needs a cantilever must not be startable without one.
     state.settings.allowSideSupportedBlocks |= options.allowSideSupportedBlocks ? 1U : 0U;
-    if (options.moveThreshold) {
-        state.settings.moveThreshold = std::clamp(*options.moveThreshold, 0.0F, 1.0F);
+    if (options.turnThreshold) {
+        state.settings.turnThreshold = std::clamp(*options.turnThreshold, 0.0F, 1.0F);
     }
     if (options.contactRadius) {
         state.settings.beaconContactRadius = *options.contactRadius;
     }
     state.settings.fitness = options.fitness;
+    for (std::size_t layer = 0; layer < options.hiddenSquashes.size(); ++layer) {
+        state.settings.hiddenActivation[layer] = options.hiddenSquashes[layer];
+    }
     for (std::size_t layer = 0; layer < options.hiddenLayers.size(); ++layer) {
         state.settings.hiddenLayers[layer] = options.hiddenLayers[layer];
     }
@@ -476,6 +541,7 @@ int run(const Options& options) {
 
     vkexp::EvolutionSettings evolution;
     evolution.populationSize = options.populationSize;
+    evolution.weightInit = options.weightInit;
     evolution.seed = options.seed;
 
     vkexp::SimulationDriverConfig config;
@@ -538,8 +604,8 @@ int run(const Options& options) {
             // a CSV that has to be re-run to answer the question.
             *csv << "generation,lattice,seed,best,median,mean,arrival_ratio,"
                     "blocks,footprint,peak,mean_height,height_spread,compactness,overhangs,"
-                    "roofed,cooling,unwilling,no_facing,off_lattice,blocked,unsupported,"
-                    "above_frontier,in_the_way,placed,contested\n";
+                    "roofed,turning,walking,edge,void,ceiling,crowded,cooling,off_lattice,"
+                    "blocked,unsupported,above_frontier,in_the_way,placed,contested\n";
         }
     }
 
@@ -569,8 +635,8 @@ int run(const Options& options) {
                   << "World:      "
                   << worldModeName(state.settings.worldMode)
                   << '\n'
-                  << "Movement:   threshold " << std::fixed << std::setprecision(2)
-                  << state.settings.moveThreshold;
+                  << "Movement:   turn threshold " << std::fixed << std::setprecision(2)
+                  << state.settings.turnThreshold;
         if (vkexp::worldBuilds(state.settings.worldMode)) {
             std::cout << '\n'
                       << "Construction: one supported block every "

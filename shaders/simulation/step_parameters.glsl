@@ -25,7 +25,7 @@ float fitnessSignalCostFactor(FitnessWeights weights) { return weights.costs.x; 
 
 struct StepParameters {
     float deltaTime;
-    float moveThreshold;
+    float turnThreshold;
     uint agentCount;
     uint brainLayout;
     uint trialsPerGenome;

@@ -26,37 +26,49 @@ logical world.
 
 ```
 Lattice:    32x32x16 = 16384 cells per world, Moore (26)
-Brain:      88 -> 20 -> 7
+Brain:      78 -> 35 -> 6
 Trial:      900 steps = 15.0 s at 60.0 Hz
 Population: 512 genomes x 4 trials = 2048 agents in 172 lattices
-Movement:   threshold 0.25, beacon reached within 1 cell(s)
+Movement:   turn threshold 0.25, beacon reached within 1 cell(s)
 ```
 
 - 512 genomes, each evaluated in four trials (2048 GPU agents);
 - the population partitioned into configurable logical groups from one agent to
   the whole population (12 agents per lattice by default), so with the default
   group size 512 genomes occupy 43 groups and 172 independent lattices;
-- 26 neighbouring cells read as three channels each -- occupied, blocked,
-  and what the occupant is broadcasting -- 78 inputs;
-- four task inputs: beacon direction/nearness, or height, build readiness,
+- 17 neighbouring cells read as four channels each -- occupied, the edge of the
+  lattice, a block, and what the occupant is broadcasting -- 68 inputs, read in
+  the agent's own frame: slot n is the same direction relative to the agent
+  whichever way it is facing. Seventeen and not twenty six because the nine
+  cells behind it are nine it cannot walk into, build in, or reach without a
+  turn -- and a turn brings them round to the side, where they are sensed;
+- six task inputs: beacon direction/nearness, or height, build readiness,
   previous build success and physical support;
-- the agent's own heading as the unit step it last took, plus a flag saying its
-  last move was refused, 4 inputs;
+- two inputs about itself: whether its last move was refused and how long it has
+  been standing still. No heading channel -- in a body frame the agent faces
+  forward by definition;
 - two recurrent memory cells fed back, 2 inputs;
-- `88 inputs -> 20 tanh neurons -> 7 outputs` by default, with the hidden layers
-  configurable from the Brain window: up to three of them, 32 neurons in total;
+- `78 inputs -> 35 sine neurons -> 6 outputs` by default. The plan is editable
+  in the Brain window and by flag: up to three layers, 52 neurons in total, each
+  choosing `tanh`, `sin`, `tanh-scaled` or `softsign` (`--hidden
+  --hidden-squash`). Outputs are always tanh, because every threshold in the
+  rules reads one as how far and which way. The squash is a measurement and the
+  depth is a trade -- see BrainKernel.inl;
 - every hidden neuron holds its own state and a time constant that is evolved,
   recomputed from the inputs each step, or pinned to the step, so a memory is
   measured in seconds and can be held until something says to let go;
-- outputs are three movement drives, one broadcast intensity, one build impulse,
-  and the two recurrent cells;
-- a move is one cell per step, along the faces or along any of the 26 diagonals,
-  chosen by a setting;
+- outputs are two turn votes, one action, one broadcast intensity, and the two
+  recurrent cells. A tick is one of three things: a quarter turn in place, a
+  step forward, or a block placed in the cell in front. Standing still is not
+  expressible;
+- a step forward meets a wall by climbing it rather than stepping onto it: the
+  agent rises one level in its own column and holds the block with its feet, and
+  the step after that carries it over the top. Building upward is that loop;
 - contested cells resolved by a rule that does not depend on the order agents
   are stepped in, so the CPU reference and the GPU agree exactly;
 - elitism, tournament selection, uniform crossover, Gaussian mutation;
 - adjustable lattice extents, generation length, agents per world, neighbourhood,
-  move threshold, contact radius and every fitness coefficient, all as sliders
+  turn threshold, contact radius and every fitness coefficient, all as sliders
   and all as command-line flags;
 - separate Simulation, Genetic Algorithm, Brain, view-settings, clean Lattice view and profiler
   windows;
@@ -153,26 +165,49 @@ field, where every resize was a buffer-lifetime bug under live descriptors:
 `vklat_reconfiguration_smoke` asserts that the step resources are built exactly
 once across every reconfiguration the UI can produce.
 
-**Two neighbourhoods, one input width.** `faces` allows the 6 axis-aligned
-steps; `moore` allows all 26. The *sensed* neighbourhood is 26 cells either
-way, so a population evolved under one movement rule loads into the other and
-the comparison is an ablation rather than a different network. The setting
-also chooses the distance the fitness is measured in -- Chebyshev under Moore,
-Manhattan under faces -- because in each case that is the number of steps the
-move rule would actually need.
+**Two neighbourhoods, one input width.** The sensed neighbourhood is the same
+17 cells either way. Since the body frame arrived the setting no longer changes how an
+agent moves -- forward is forward -- and what it still chooses is the distance
+the fitness is measured in: Chebyshev under Moore, Manhattan under faces. Kept
+as a setting because the two answer different questions about how far away a
+beacon is, and because a population evolved under one loads into the other.
 
 ## Moving, and who gets the cell
 
-Three outputs are movement drives, one per axis. Each is turned into `-1`, `0`
-or `+1` by a threshold: a drive has to be *sure* to become a step, and a drive
-inside the dead zone is a decision to stand still. Under `faces` only the
-dominant axis may move, which is where the two neighbourhoods differ and the
-only place they differ.
+An agent has a facing, and every command it has is read in that frame. Three
+things can happen in a tick, in this order:
 
-A step is refused if the target is outside the lattice, or if somebody was
-already standing in it when the step began. Both refusals are recorded on the
-agent and read back as an input on the next step, so a policy can notice it is
-stuck without having to infer it from the neighbourhood.
+1. **A turn.** Two signed outputs that have to agree, each read through a dead
+   zone: both above the threshold pivots a quarter turn one way, both below the
+   negative threshold the other, and any disagreement is no turn. The tick ends
+   there either way, so pointing somewhere else costs a tick per ninety degrees.
+
+   Two outputs rather than one, for what they do to a network nobody has
+   trained. A tanh output saturates on almost any input, so one of them clears
+   the dead zone nearly every tick: a fresh population spent 93% of its ticks
+   pivoting on the spot. Holding it back with a wide dead zone traded one stall
+   for another -- the wider the zone, the longer an agent stays pressed against
+   a wall it cannot turn away from. Agreement suppresses the accidental turn and
+   leaves the deliberate one alone, since a policy that has learned to steer
+   simply drives both outputs together.
+2. **A block.** If the action output is above the build threshold, the agent
+   places one in the cell directly in front of it, at its own level.
+3. **A step forward.** Anything else. Standing still is not expressible, which
+   is deliberate: a policy that had a "do nothing" output settled into it.
+
+**Forward into a wall climbs it.** The agent does not arrive on the block's top
+face; it rises one level in its own column and ends up beside the block, holding
+it with its feet -- the one place support is an edge rather than a face. The step
+after that carries it over the top. This is what makes building upward possible
+at all: from the top of your own block the cell in front has nothing under it, so
+the build is refused, while from beside it there is always a face to build
+against. Turning away from a wall lets go of it, and gravity takes the tick.
+
+A step is refused if the target is outside the lattice, if the column beyond it
+has no bottom, or if somebody was already standing in it when the step began.
+All three are recorded on the agent and read back as an input on the next step,
+so a policy can notice it is stuck without having to infer it from the
+neighbourhood.
 
 **Who wins a contested cell.** The obvious implementation -- `atomicCompSwap`,
 first writer takes the cell -- would make the outcome depend on the order the
@@ -455,7 +490,7 @@ that lays that network out differently, naming the block that moved.
 A deeper plan is usually *cheaper* than a flat one, which is worth knowing before
 reaching for it: the first matrix dominates, so a narrow first layer shrinks the
 whole network even as it makes it deeper. That matters more here than it did in
-the arena, because 88 inputs is a wider front than 61 was.
+the arena, because 78 inputs is a wider front than 61 was.
 
 **The default width and the capacity are separate numbers**, and a test says so.
 Sharing one constant would mean that raising how many neurons there *may* be
@@ -491,17 +526,24 @@ vklat_headless --neuron-model gated --describe-brain brain.json
 
 ```json
 {
-  "inputs_count": 88, "hidden_count": 20, "outputs_count": 7,
-  "weight_count": 3727, "neuron_model": "gated",
+  "inputs_count": 78, "hidden_count": 35, "outputs_count": 6,
+  "hidden_layers": [ 35 ], "hidden_activations": [ "sin" ],
+  "weight_count": 5781, "neuron_model": "gated",
   "inputs": [
-    { "name": "neighbourhood", "offset": 0, "count": 78, "rows": 26, "columns": 3 },
-    { "name": "task", "offset": 78, "count": 4 },
-    { "name": "self", "offset": 82, "count": 4 },
-    { "name": "memory_in", "offset": 86, "count": 2 }
+    { "name": "neighbourhood", "offset": 0, "count": 68, "rows": 17, "columns": 4 },
+    { "name": "task", "offset": 68, "count": 6 },
+    { "name": "self", "offset": 74, "count": 2 },
+    { "name": "memory_in", "offset": 76, "count": 2 }
+  ],
+  "outputs": [
+    { "name": "turn", "offset": 0, "count": 2 },
+    { "name": "action", "offset": 2, "count": 1 },
+    { "name": "signal", "offset": 3, "count": 1 },
+    { "name": "memory_out", "offset": 4, "count": 2 }
   ],
   "weights": [
-    { "name": "hidden0_weights", "offset": 0, "count": 1760,
-      "from": "inputs", "to": "hidden0", "rows": 20, "columns": 88 },
+    { "name": "hidden0_weights", "offset": 0, "count": 2730,
+      "from": "inputs", "to": "hidden0", "rows": 35, "columns": 78 },
     ...
   ]
 }
@@ -727,8 +769,9 @@ neuron models runs a 120-step trajectory regression:
   compares them byte for byte.
 
 Pure CPU tests cover cell addressing and its inverse, both neighbourhoods and
-the walkability rule, the move rule including the threshold and the dominant
-axis, spawn placement (in bounds, never doubled, never on the beacon), the
+the walkability rule, the body frame (turning, the forward vector, and that
+rotating a vector into the frame and back leaves it alone), the dead zone every
+command is read through, spawn placement (in bounds, never doubled, never on the beacon), the
 sensor vector block by block, contention, the trial fitness, logical-world
 partition mapping, weight layout, neural evaluation, the four neuron models,
 elite preservation, fitness sharing, step parameter packing, resolved step

@@ -219,10 +219,11 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                           "means: Chebyshev under Moore, Manhattan under faces.");
     ImGui::TextDisabled("longest journey %u moves", latticeMaximumDistance(state_.settings));
 
-    ImGui::SliderFloat("Move threshold", &state_.settings.moveThreshold, 0.0F, 0.95F, "%.2f");
-    ImGui::SetItemTooltip("How sure a drive has to be before it becomes a step. This is the whole "
-                          "of the decision to stand still: at zero an agent moves every step "
-                          "whatever it thinks, and near one it has to commit.");
+    ImGui::SliderFloat("Turn threshold", &state_.settings.turnThreshold, 0.0F, 0.95F, "%.2f");
+    ImGui::SetItemTooltip("How sure both turn outputs have to be before the agent pivots. They "
+                          "have to agree: both over it turns one way, both under the negative "
+                          "one turns the other, and a disagreement is no turn. A turn costs the "
+                          "whole tick.");
 
     if (worldBuilds(state_.settings.worldMode)) {
         if (worldHarvests(state_.settings.worldMode)) {
@@ -457,9 +458,24 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
         layerText += layerText.empty() ? "" : " -> ";
         layerText += std::to_string(brain.hiddenLayer(layer));
     }
-    ImGui::Text("%zu inputs -> %s tanh -> %zu outputs", brain.inputCount, layerText.c_str(),
+    // No squash named here: it is per layer now, and a summary that says "tanh"
+    // whatever the plan carries is a line that contradicts the one below it.
+    ImGui::Text("%zu inputs -> %s -> %zu outputs", brain.inputCount, layerText.c_str(),
                 brain.outputCount);
     ImGui::TextDisabled("%zu weights per genome", brain.weightCount());
+    {
+        std::string squashes;
+        for (std::size_t layer = 0; layer < brain.hiddenLayerCount(); ++layer) {
+            squashes += squashes.empty() ? "" : "+";
+            squashes += brain.hiddenActivation[layer] == neuro::kernel::BrainActivationSine
+                            ? "sin"
+                            : "tanh";
+        }
+        ImGui::TextDisabled("hidden squash %s, outputs tanh", squashes.c_str());
+        ImGui::SetItemTooltip("Outputs are always tanh: every threshold in the rules reads one "
+                              "as how far and which way. A spiking run ignores this -- it writes "
+                              "1 or 0 and never reaches a squash.");
+    }
     if (state_.settings.neuronModel != NeuronModel::Reactive) {
         ImGui::TextDisabled("gate block %zu of %zu genes",
                             brain.hiddenTotal() * (brain.inputCount + 1), brain.weightCount());
@@ -467,9 +483,9 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::TextDisabled("time constants %.0f ms .. %.1f s",
                         static_cast<double>(neuro::kernel::BrainTimeConstantMinimum * 1000.0F),
                         static_cast<double>(neuro::kernel::BrainTimeConstantMaximum));
-    ImGui::TextDisabled("%u cells x %u channels, task state, heading and memory",
+    ImGui::TextDisabled("%u cells x %u channels in the body frame, task state and memory",
                         neuro::kernel::BrainNeighborCount, neuro::kernel::BrainNeighborChannels);
-    ImGui::TextDisabled("three move drives, broadcast, build and memory updates");
+    ImGui::TextDisabled("two turn votes, walk or build, broadcast and memory updates");
     ImGui::End();
 
     drawBrainWindow(brain);
@@ -525,6 +541,12 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::Text("Crossover: %.1f%%", state_.evolution.crossoverProbability * 100.0F);
     ImGui::Text("Mutation: %.1f%%  strength %.3f", state_.evolution.mutationProbability * 100.0F,
                 state_.evolution.mutationStrength);
+    ImGui::Text("Fresh genomes: %s", state_.evolution.weightInit == WeightInit::FanIn
+                                         ? "drawn per block by fan-in"
+                                         : "drawn at one width, outputs saturate");
+    ImGui::SetItemTooltip("Set at the start of a run. Fan-in leaves outputs unsaturated, which "
+                          "needs the turn and build thresholds scaled down with it -- at the "
+                          "shipped ones nothing turns and nothing builds.");
 
     // Whether group fitness sharing helps is an empirical question, and one run
     // cannot answer it. A sweep runs the same experiment once per setting from
@@ -758,9 +780,10 @@ void SimulationUiModule::drawStructureShapes() {
     ImGui::EndTable();
 }
 
-// Why the build attempts ended. Exactly one reason is recorded per agent per
-// step, so these sum to agents times steps and read as a funnel: everything
-// that did not become a block was stopped somewhere, and this says where.
+// What every tick was spent on. Exactly one entry is recorded per agent per
+// step, so these sum to agents times steps: the first three say how the walking
+// went and the rest read as a funnel through the build rules -- everything that
+// did not become a block was stopped somewhere, and this says where.
 void SimulationUiModule::drawBuildOutcomes() {
     const auto count = static_cast<std::size_t>(vkexp::lattice::kernel::LatticeBuildOutcomeCount);
     if (state_.statistics.buildOutcomes.size() < count) {
@@ -769,11 +792,13 @@ void SimulationUiModule::drawBuildOutcomes() {
     const std::size_t worlds = state_.statistics.buildOutcomes.size() / count;
     const std::size_t visible = std::min<std::size_t>(state_.worlds.selectedWorld, worlds - 1);
 
-    ImGui::SeparatorText("Why the builders stopped");
-    static constexpr std::array<const char*, 10> names{
-        "Cooling",    "Unwilling",      "No facing",  "Off the lattice", "Blocked",
-        "No support", "Above frontier", "In the way", "Placed",          "Lost the cell"};
-    std::array<std::uint64_t, 10> total{};
+    ImGui::SeparatorText("What the ticks went on");
+    static constexpr std::array<const char*, vkexp::lattice::kernel::LatticeBuildOutcomeCount>
+        names{"Turning",         "Walking",    "Edge of the world", "Over a chasm",
+              "Under a ceiling",  "Crowded",    "Cooling",           "Off the lattice",
+              "Blocked",          "No support", "Above frontier",    "In the way",
+              "Placed",           "Lost the cell"};
+    std::array<std::uint64_t, names.size()> total{};
     std::uint64_t attempts = 0;
     for (std::size_t world = 0; world < worlds; ++world) {
         for (std::size_t reason = 0; reason < count; ++reason) {
@@ -784,7 +809,7 @@ void SimulationUiModule::drawBuildOutcomes() {
         attempts += reason;
     }
     if (attempts == 0) {
-        ImGui::TextDisabled("no build attempts recorded");
+        ImGui::TextDisabled("no ticks recorded");
         return;
     }
 
@@ -980,10 +1005,14 @@ void SimulationUiModule::drawBrainWindow(const neuro::BrainShape& brain) {
     // genome layout, so it can only take effect on a reset, and a slider that
     // silently did nothing until later would be worse than one that says so.
     auto& draft = state_.controls.hiddenLayerDraft;
-    const bool defaulted = state_.settings.hiddenLayers[0] == 0;
+    auto& squashDraft = state_.controls.hiddenSquashDraft;
+    const bool defaulted = state_.settings.hiddenLayers[0] == 0 &&
+                           state_.settings.hiddenActivation ==
+                               neuro::defaultBrainShape.hiddenActivation;
     if (draft[0] == 0) {
         for (std::size_t layer = 0; layer < draft.size(); ++layer) {
             draft[layer] = static_cast<int>(brain.hiddenLayer(layer));
+            squashDraft[layer] = static_cast<int>(brain.hiddenActivation[layer]);
         }
     }
     int layerCount = 0;
@@ -1023,6 +1052,19 @@ void SimulationUiModule::drawBrainWindow(const neuro::BrainShape& brain) {
             }
         }
         ImGui::SliderInt(label, &draft[slot], 1, std::max(capacity - spentElsewhere, 1));
+        // The squash beside the width, because they are one decision about one
+        // layer. Sine is the default on the first and it is not a conclusion: it
+        // measured three times the blocks of tanh over four generations of
+        // construction, and four generations is where a run starts, not where it
+        // gets to.
+        static constexpr std::array<const char*, 4> squashNames{"tanh", "sin", "tanh / sqrt(n)",
+                                                                "softsign"};
+        ImGui::SetNextItemWidth(ImGui::CalcItemWidth() * 0.6F);
+        ImGui::Combo("##squash", &squashDraft[slot], squashNames.data(),
+                     static_cast<int>(squashNames.size()));
+        ImGui::SetItemTooltip("What squashes this layer. Outputs are always tanh: every threshold "
+                              "in the rules reads one as how far and which way. A spiking run "
+                              "ignores this -- it writes 1 or 0 and never reaches a squash.");
         ImGui::PopID();
         total += draft[slot];
     }
@@ -1034,6 +1076,10 @@ void SimulationUiModule::drawBrainWindow(const neuro::BrainShape& brain) {
     planned.hiddenCount = static_cast<std::size_t>(draft[0]);
     planned.secondHiddenCount = static_cast<std::size_t>(draft[1]);
     planned.thirdHiddenCount = static_cast<std::size_t>(draft[2]);
+    for (std::size_t layer = 0; layer < squashDraft.size(); ++layer) {
+        planned.hiddenActivation[layer] =
+            static_cast<std::uint32_t>(std::max(squashDraft[layer], 0));
+    }
     const bool fits = planned.fitsCapacity();
     // The genome is exactly as long as the plan needs, so this number is what a
     // run actually costs and what a file of it will hold -- not a share of some
@@ -1047,12 +1093,14 @@ void SimulationUiModule::drawBrainWindow(const neuro::BrainShape& brain) {
 
     const bool changed = planned.hiddenCount != brain.hiddenCount ||
                          planned.secondHiddenCount != brain.secondHiddenCount ||
-                         planned.thirdHiddenCount != brain.thirdHiddenCount;
+                         planned.thirdHiddenCount != brain.thirdHiddenCount ||
+                         planned.hiddenActivation != brain.hiddenActivation;
     ImGui::BeginDisabled(!fits || !changed);
     if (ImGui::Button("Apply and reset")) {
         state_.settings.hiddenLayers = {static_cast<std::uint32_t>(draft[0]),
                                         static_cast<std::uint32_t>(draft[1]),
                                         static_cast<std::uint32_t>(draft[2])};
+        state_.settings.hiddenActivation = planned.hiddenActivation;
         state_.controls.resetRequested = true;
     }
     ImGui::EndDisabled();
@@ -1063,12 +1111,15 @@ void SimulationUiModule::drawBrainWindow(const neuro::BrainShape& brain) {
     ImGui::BeginDisabled(defaulted);
     if (ImGui::Button("Back to the default")) {
         state_.settings.hiddenLayers = {};
+        state_.settings.hiddenActivation = neuro::defaultBrainShape.hiddenActivation;
         draft = {};
+        squashDraft = {-1, -1, -1};
         state_.controls.resetRequested = true;
     }
     ImGui::EndDisabled();
-    ImGui::SetItemTooltip("One hidden layer of twenty, which is what a fresh run uses and what "
-                          "every measurement so far was taken on.");
+    ImGui::SetItemTooltip("One hidden layer of 35, squashed by sine -- what a fresh run uses. "
+                          "The squash is what the measurements in BrainKernel.inl chose; the "
+                          "single layer is a trade against the genome length.");
 
     if (changed) {
         ImGui::TextColored(ImVec4{0.95F, 0.75F, 0.25F, 1.0F}, "not applied yet");
