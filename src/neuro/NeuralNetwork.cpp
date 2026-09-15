@@ -78,7 +78,7 @@ Outputs evaluate(const std::span<const float> weights, const Inputs& inputs,
                     }
                 }
             } else {
-                produced[neuron] = kernel::brainLayerActivate(squash, state[global]);
+                produced[neuron] = kernel::brainLayerActivate(squash, state[global], sourceCount);
             }
         }
         for (kernel::uint neuron = 0; neuron < width; ++neuron) {

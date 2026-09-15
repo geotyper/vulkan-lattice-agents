@@ -76,7 +76,7 @@ void brainForward(inout Agent agent, float sensed[BrainInputCapacity], uint base
                     }
                 }
             } else {
-                hidden[neuron] = brainLayerActivate(squash, state);
+                hidden[neuron] = brainLayerActivate(squash, state, sourceCount);
             }
             agent.hidden[global >> 2u][global & 3u] = state;
         }

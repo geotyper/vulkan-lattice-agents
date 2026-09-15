@@ -545,7 +545,22 @@ static_assert(offsetof(GpuStepParameters, neuronModel) == 56);
         shape.secondHiddenCount = settings.hiddenLayers[1];
         shape.thirdHiddenCount = settings.hiddenLayers[2];
     }
-    shape.hiddenActivation = settings.hiddenActivation;
+    // A spiking neuron writes 1 or 0 and never reaches a squash, so under that
+    // model the choice is inert -- and an inert setting must not reach the plan.
+    // The plan is what the archive's structure block records and what a loaded
+    // file is compared against, so carrying a squash that did nothing would make
+    // a file claim a network it was not trained as, and refuse to load into the
+    // run that actually produced it. Canonicalised here, at the one place the
+    // settings become a plan, rather than at each of the places that write one.
+    //
+    // The consequence is worth stating: the model is a run setting and not a
+    // gene, so switching a spiking population to a tanh model hands it whatever
+    // squash the settings carried, which is an activation it never trained
+    // under. That is visible rather than hidden -- the Brain window and the
+    // structure block both say which squash a run is using.
+    if (settings.neuronModel != NeuronModel::Spiking) {
+        shape.hiddenActivation = settings.hiddenActivation;
+    }
     return shape;
 }
 

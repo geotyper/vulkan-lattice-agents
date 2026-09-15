@@ -1135,17 +1135,51 @@ void testLayerActivation() {
           "A plan that says nothing about squashes means tanh, which is what every "
           "plan written before they existed meant");
 
+    // And the one model that does not reach a squash at all does not record one.
+    // A spiking run that carried "sin" in its plan would write an archive
+    // claiming a network it was never trained as, and then refuse to load into
+    // the run that produced it.
+    vkexp::SimulationStep settings{};
+    settings.hiddenActivation = {bk::BrainActivationSine, bk::BrainActivationSine,
+                                 bk::BrainActivationSine};
+    settings.neuronModel = vkexp::NeuronModel::Reactive;
+    check(vkexp::resolvedBrain(settings).hiddenActivation[0] == bk::BrainActivationSine,
+          "A run that reaches a squash keeps the one it asked for");
+    settings.neuronModel = vkexp::NeuronModel::Spiking;
+    check(vkexp::resolvedBrain(settings).hiddenActivation[0] == bk::BrainActivationTanh,
+          "and a spiking run records no squash, because it never reaches one");
+
     // And the squash itself. Sine is offered on hidden layers only; the check
     // that matters about it is that it is not tanh, at a value where the two
     // would otherwise be easy to confuse.
-    check(closeTo(bk::brainLayerActivate(bk::BrainActivationTanh, 0.5F), std::tanh(0.5F)),
-          "Tanh is what it always was");
-    check(closeTo(bk::brainLayerActivate(bk::BrainActivationSine, 0.5F), std::sin(0.5F)),
+    check(closeTo(bk::brainLayerActivate(bk::BrainActivationTanh, 0.5F, 20U), std::tanh(0.5F)),
+          "Tanh is what it always was, and does not look at the fan-in");
+    check(closeTo(bk::brainLayerActivate(bk::BrainActivationSine, 0.5F, 20U), std::sin(0.5F)),
           "and sine is sine");
-    check(bk::brainLayerActivate(bk::BrainActivationSine, 3.0F) <
-              bk::brainLayerActivate(bk::BrainActivationSine, 1.0F),
+    check(bk::brainLayerActivate(bk::BrainActivationSine, 3.0F, 20U) <
+              bk::brainLayerActivate(bk::BrainActivationSine, 1.0F, 20U),
           "Sine is not monotone, which is the whole objection to it and the reason it "
           "is offered rather than imposed");
+
+    // The two controls. Scaled tanh divides the sum by the square root of what
+    // it summed, which is the same answer the initialisation gives at zero
+    // parameters; softsign saturates like tanh but reaches its asymptote an
+    // order of magnitude later.
+    check(closeTo(bk::brainLayerActivate(bk::BrainActivationTanhScaled, 4.0F, 16U),
+                  std::tanh(1.0F)),
+          "Scaled tanh divides its sum by the square root of the fan-in");
+    check(bk::brainLayerActivate(bk::BrainActivationTanhScaled, 4.0F, 16U) <
+              bk::brainLayerActivate(bk::BrainActivationTanh, 4.0F, 16U),
+          "so a wide layer is squashed less hard than an unscaled one");
+    check(closeTo(bk::brainLayerActivate(bk::BrainActivationSoftsign, 3.0F, 20U), 0.75F),
+          "Softsign is x over one plus its magnitude");
+    check(bk::brainLayerActivate(bk::BrainActivationSoftsign, 3.0F, 20U) <
+              bk::brainLayerActivate(bk::BrainActivationTanh, 3.0F, 20U),
+          "which at the same input is further from saturated than tanh");
+    for (const float value : {-6.0F, -1.0F, 0.0F, 1.0F, 6.0F}) {
+        check(std::abs(bk::brainLayerActivate(bk::BrainActivationSoftsign, value, 20U)) < 1.0F,
+              "and still bounded, which is what keeps it a decision a neuron can hold");
+    }
 }
 
 void testRandomWeights() {

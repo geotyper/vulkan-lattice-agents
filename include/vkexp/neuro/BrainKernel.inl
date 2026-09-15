@@ -165,12 +165,14 @@ VKEXP_BRAIN_FN uint brainBeaconInputIndex(uint channel) { return BrainBeaconOffs
 //     activation the sign of the response flips every half period, so a mutation
 //     that raises a weight helps or hurts depending on where the neuron happens
 //     to sit, and "brighter on the left" stops meaning one thing.
-//   * Saturating, which is what makes a memory possible at all here. A neuron
-//     driven hard sits at +/-1 and stops responding, which is a decision that
-//     holds; a periodic activation cycles back through zero instead, so a
-//     neuron cannot commit. That is the whole point of the time constants
-//     undone. Note this is not an argument about the Lipschitz bound -- tanh and
-//     sin are both 1-Lipschitz -- but about where the derivative vanishes.
+//   * Saturating. A neuron driven hard sits at +/-1 and stops responding, so a
+//     rising input cannot talk it back out of its answer; under a periodic
+//     activation a further rise changes the answer. This is not about memory --
+//     neither activation has any, and what holds a decision here is the neuron's
+//     own state, its time constant and the two recurrent cells -- it is about
+//     whether a decision, once reached, survives more of the same evidence. Nor
+//     is it about the Lipschitz bound, since tanh and sin are both 1-Lipschitz:
+//     it is about where the derivative vanishes.
 //   * Insensitive to input error exactly where the input is large, which is what
 //     keeps the CPU/GPU drift budget tight. A periodic activation is maximally
 //     sensitive there, and large-argument reduction is where implementations
@@ -199,17 +201,49 @@ VKEXP_BRAIN_MATH_FN float brainActivation(float value) { return tanh(value); }
 // It measures well, which was not the expected answer. Four generations of
 // construction under the reactive model on a 35+15 plan, three seeds, against
 // the same plan with tanh throughout: three times the blocks and four times the
-// median score, and the ticks spent walking going from 10% to 30%. The reason
-// looks like the same one that made spiking outrun every tanh model here. A
-// layer of tanh units driven hard all sit at +-1, so the output reading them
-// sums twenty numbers of the same size and saturates in its turn; a layer of
-// sine units spreads over [-1, 1] with plenty near zero, so the sum stays small
-// and the output lands in the band that means "walk" instead of pinned at an
-// extreme. It desaturates the network without touching what a threshold means,
-// which is what the initialisation experiment tried to do and could not.
+// median score. Two controls say what that is not, and they are the reason the
+// other two kinds below exist:
 //
-// What four generations cannot see is the objection that matters most -- a
-// controller that cannot commit -- so this is offered and not imposed.
+//   squash        walk   placed   blocks    median
+//   tanh          10.1%   0.76%    37-49     45-51
+//   sin           29.9%   2.95%   136-144   218-234
+//   tanh / sqrt(n) 5.2%   0.24%    27-29      8-15
+//   softsign       8.8%   0.53%    25-45     32-36
+//
+// Rescaling alone is the worst of the four, so the gain is not scale. Saturating
+// an order of magnitude more slowly does not reproduce it either. Both of those
+// were plausible and both are now ruled out.
+//
+// What scratchpad/activations.cpp measures on real trajectories, which is the
+// only place these questions can be asked:
+//
+//   * The periodicity is genuinely exercised and only just. Roughly 45% of
+//     pre-activations exceed pi/2 -- where the response folds -- and 9-20%
+//     exceed pi, but under 1% reach a full period. So this is the first fold and
+//     not a Fourier basis, which is also why the sine case's CPU/GPU drift sits
+//     in the same band as tanh's: nothing here is a large-argument sine.
+//   * A sine layer does not collect near zero, which was the first guess and is
+//     wrong. It spreads: values above 0.9 in magnitude 29% of the time against
+//     tanh's 48-56%, mean magnitude 0.63 against 0.74. A tanh layer under load
+//     is very nearly binary; a sine layer uses the middle of its range.
+//   * Spreading is not the explanation either. Softsign spreads about as much
+//     (mean 0.67, above 0.9 in 19%) and scores like tanh.
+//   * Nor is a less saturated output. Sine does cut the sum reaching the output
+//     tanh from a mean of 1.94 to 1.27, but tanh/sqrt(n) cuts it to 0.53 and
+//     comes last, and sine spends slightly *less* of its time in the band that
+//     means "walk" (40% against 45%).
+//
+// The one property that separates sine from every control is the fold itself,
+// and it is exercised on about half the samples. Why a folded unit should be
+// worth three times the blocks is not answered here: a plausible reading is that
+// it gives each neuron two decision boundaries instead of one, at the same
+// parameter count, but that is a hypothesis and not a measurement.
+//
+// The cost is measurable too, and it is the objection above, stated in ticks:
+// an untrained sine population holds a decision 1.86 ticks on average against
+// tanh's 2.76, and its 99th percentile run is 18 ticks against 34. A periodic
+// activation can re-switch the response as the input grows; how much that costs
+// a trained policy is a question about trajectories, and nobody has run one.
 //
 // Under the spiking model it does nothing at all: a spiking neuron writes 1 or 0
 // directly and never reaches a squash. That is not an oversight to fix, it is
@@ -217,10 +251,29 @@ VKEXP_BRAIN_MATH_FN float brainActivation(float value) { return tanh(value); }
 // spiking model do not combine.
 const uint BrainActivationTanh = 0u;
 const uint BrainActivationSine = 1u;
+// tanh of the sum divided by the square root of how many things it sums. Costs
+// no parameters and is the textbook answer to a layer whose pre-activation grows
+// with its width -- which is the control this project needed and did not have:
+// if a squash that only rescales catches up with sine, then what sine bought was
+// scale and not periodicity.
+const uint BrainActivationTanhScaled = 2u;
+// x / (1 + |x|). Saturates, so a neuron can still hold a decision, but reaches
+// its asymptote an order of magnitude more slowly than tanh, so a layer of them
+// does not all pile up at the extremes. The middle of the same axis.
+const uint BrainActivationSoftsign = 3u;
 
-VKEXP_BRAIN_MATH_FN float brainLayerActivate(uint activation, float value) {
+VKEXP_BRAIN_MATH_FN float brainLayerActivate(uint activation, float value, uint sources) {
     if (activation == BrainActivationSine) {
         return sin(value);
+    }
+    if (activation == BrainActivationTanhScaled) {
+        // The count and not the count minus the bias: one gene out of forty is
+        // not worth a second constant, and the scale only has to be the right
+        // order.
+        return brainActivation(value / sqrt(float(sources < 1u ? 1u : sources)));
+    }
+    if (activation == BrainActivationSoftsign) {
+        return value / (1.0f + abs(value));
     }
     return brainActivation(value);
 }

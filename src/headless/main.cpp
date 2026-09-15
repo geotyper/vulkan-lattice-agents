@@ -120,7 +120,8 @@ void printHelp(const char* executable) {
                  "                           from inputs (default time)\n"
                  "  --hidden <a[,b[,c]]>     hidden layer widths, front to back\n"
                  "  --hidden-squash <a[,b[,c]]>\n"
-                 "                           tanh|sin per hidden layer (default tanh). Outputs\n"
+                 "                           tanh|sin|tanh-scaled|softsign per hidden layer\n"
+                 "                           (default tanh). Outputs\n"
                  "                           are always tanh -- every threshold in the rules\n"
                  "                           reads one as how far and which way. Has no effect\n"
                  "                           under --neuron-model spiking, which writes 1 or 0\n"
@@ -197,8 +198,13 @@ template <typename T> T parseNumber(const std::string_view text, const std::stri
             squashes.push_back(vkexp::neuro::kernel::BrainActivationTanh);
         } else if (piece == "sin" || piece == "sine") {
             squashes.push_back(vkexp::neuro::kernel::BrainActivationSine);
+        } else if (piece == "tanh-scaled" || piece == "scaled") {
+            squashes.push_back(vkexp::neuro::kernel::BrainActivationTanhScaled);
+        } else if (piece == "softsign") {
+            squashes.push_back(vkexp::neuro::kernel::BrainActivationSoftsign);
         } else {
-            fail("Unknown hidden squash '" + std::string{piece} + "', expected tanh or sin");
+            fail("Unknown hidden squash '" + std::string{piece} +
+                 "', expected tanh, sin, tanh-scaled or softsign");
         }
         if (comma == std::string_view::npos) {
             break;
