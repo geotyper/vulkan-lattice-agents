@@ -123,7 +123,8 @@ void printHelp(const char* executable) {
                  "                           from inputs (default time)\n"
                  "  --hidden <a[,b[,c]]>     hidden layer widths, front to back\n"
                  "  --hidden-squash <a[,b[,c]]>\n"
-                 "                           tanh|sin|tanh-scaled|softsign per hidden layer\n"
+                 "                           tanh|sin|tanh-scaled|softsign|relu|relu-unit\n"
+                 "                           per hidden layer\n"
                  "                           (default tanh). Outputs\n"
                  "                           are always tanh -- every threshold in the rules\n"
                  "                           reads one as how far and which way. Has no effect\n"
@@ -205,9 +206,13 @@ template <typename T> T parseNumber(const std::string_view text, const std::stri
             squashes.push_back(vkexp::neuro::kernel::BrainActivationTanhScaled);
         } else if (piece == "softsign") {
             squashes.push_back(vkexp::neuro::kernel::BrainActivationSoftsign);
+        } else if (piece == "relu") {
+            squashes.push_back(vkexp::neuro::kernel::BrainActivationRelu);
+        } else if (piece == "relu-unit" || piece == "relu1") {
+            squashes.push_back(vkexp::neuro::kernel::BrainActivationReluUnit);
         } else {
             fail("Unknown hidden squash '" + std::string{piece} +
-                 "', expected tanh, sin, tanh-scaled or softsign");
+                 "', expected tanh, sin, tanh-scaled, softsign, relu or relu-unit");
         }
         if (comma == std::string_view::npos) {
             break;

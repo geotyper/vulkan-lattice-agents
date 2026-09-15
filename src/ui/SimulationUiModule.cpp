@@ -475,9 +475,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
         std::string squashes;
         for (std::size_t layer = 0; layer < brain.hiddenLayerCount(); ++layer) {
             squashes += squashes.empty() ? "" : "+";
-            squashes += brain.hiddenActivation[layer] == neuro::kernel::BrainActivationSine
-                            ? "sin"
-                            : "tanh";
+            squashes += neuro::brainActivationName(brain.hiddenActivation[layer]);
         }
         ImGui::TextDisabled("hidden squash %s, outputs tanh", squashes.c_str());
         ImGui::SetItemTooltip("Outputs are always tanh: every threshold in the rules reads one "
@@ -1065,8 +1063,17 @@ void SimulationUiModule::drawBrainWindow(const neuro::BrainShape& brain) {
         // measured three times the blocks of tanh over four generations of
         // construction, and four generations is where a run starts, not where it
         // gets to.
-        static constexpr std::array<const char*, 4> squashNames{"tanh", "sin", "tanh / sqrt(n)",
-                                                                "softsign"};
+        // Pointers into the one name table, whose entries are literals and so
+        // outlive the menu. A fourth copy of the same names is exactly what the
+        // table exists to stop.
+        static const std::array<const char*, neuro::kernel::BrainActivationCount> squashNames{[] {
+            std::array<const char*, neuro::kernel::BrainActivationCount> names{};
+            for (std::size_t kind = 0; kind < names.size(); ++kind) {
+                names[kind] =
+                    neuro::brainActivationName(static_cast<std::uint32_t>(kind)).data();
+            }
+            return names;
+        }()};
         ImGui::SetNextItemWidth(ImGui::CalcItemWidth() * 0.6F);
         ImGui::Combo("##squash", &squashDraft[slot], squashNames.data(),
                      static_cast<int>(squashNames.size()));

@@ -1436,6 +1436,18 @@ int runAll() {
     // that does it, and the drift budget is the thing that would notice.
     runDeepPlanParity(context, {0U, vkexp::neuro::kernel::BrainActivationSine, 0U},
                       "sine in the middle");
+    // The rectified pair, on the layer that feeds the output. Their branch is a
+    // comparison rather than a transcendental, so the risk is not drift but the
+    // branch itself: a layer that is silent below zero on one side and not on the
+    // other agrees on every positive input and diverges on the first negative
+    // one, which is most of them.
+    runDeepPlanParity(context, {0U, 0U, vkexp::neuro::kernel::BrainActivationRelu},
+                      "relu at the output");
+    runDeepPlanParity(
+        context,
+        {vkexp::neuro::kernel::BrainActivationReluUnit, 0U,
+         vkexp::neuro::kernel::BrainActivationReluUnit},
+        "relu-unit at both ends");
 
     std::cout << "Lattice parity: CPU and GPU agree\n";
     return 0;

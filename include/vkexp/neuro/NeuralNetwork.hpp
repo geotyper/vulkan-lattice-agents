@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <random>
 #include <span>
+#include <string_view>
 #include <vector>
 
 namespace vkexp::neuro {
@@ -57,6 +58,28 @@ struct Topology {
 //
 // The first three fields are the network this project had for its whole life, so
 // `{88, 20, 6}` still means one 20-wide hidden layer and every world that wrote
+// What each squash is called, in one place. The menu, the headless flag and the
+// structure block written into an archive all used to keep their own list, which
+// is how a softsign layer came to be recorded as "tanh": three lists and only
+// two of them knowing about a kind. Indexed by the kernel constant, so the order
+// here is the encoding and not a presentation choice.
+[[nodiscard]] constexpr std::string_view brainActivationName(const std::uint32_t activation) {
+    switch (activation) {
+    case kernel::BrainActivationSine:
+        return "sin";
+    case kernel::BrainActivationTanhScaled:
+        return "tanh/sqrt(n)";
+    case kernel::BrainActivationSoftsign:
+        return "softsign";
+    case kernel::BrainActivationRelu:
+        return "relu";
+    case kernel::BrainActivationReluUnit:
+        return "relu-unit";
+    default:
+        return "tanh";
+    }
+}
+
 // that keeps its meaning. The two after it are the second and third hidden
 // layers; zero means the layer is not there.
 struct BrainShape {
@@ -175,9 +198,18 @@ inline constexpr BrainShape defaultBrainShape{
 
 [[nodiscard]] constexpr BrainShape brainShape(const std::uint32_t layout,
                                               const std::uint32_t layers) {
-    return {kernel::brainLayoutInputCount(layout), kernel::brainHiddenLayerSize(layers, 0u),
-            kernel::brainLayoutOutputCount(layout), kernel::brainHiddenLayerSize(layers, 1u),
-            kernel::brainHiddenLayerSize(layers, 2u)};
+    // Activations included. They were dropped here for as long as this function
+    // existed, and since this is what rebuilds a shape from the word an archive
+    // stores, every file ever written recorded "tanh" for every layer whatever it
+    // was trained under -- which made the one field that exists to say "these
+    // weights mean something else now" incapable of ever saying it.
+    return {kernel::brainLayoutInputCount(layout),
+            kernel::brainHiddenLayerSize(layers, 0u),
+            kernel::brainLayoutOutputCount(layout),
+            kernel::brainHiddenLayerSize(layers, 1u),
+            kernel::brainHiddenLayerSize(layers, 2u),
+            {kernel::brainLayerActivation(layers, 0u), kernel::brainLayerActivation(layers, 1u),
+             kernel::brainLayerActivation(layers, 2u)}};
 }
 
 static_assert(maximumBrainShape.fitsCapacity());

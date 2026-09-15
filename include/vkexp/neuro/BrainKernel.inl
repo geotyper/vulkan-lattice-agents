@@ -131,6 +131,23 @@ const uint BrainActivationTanhScaled = 2u;
 // its asymptote an order of magnitude more slowly than tanh, so a layer of them
 // does not all pile up at the extremes. The middle of the same axis.
 const uint BrainActivationSoftsign = 3u;
+// max(0, x). The first squash here that is neither odd nor bounded, and it is
+// here for one reason: the spiking model beats every saturating one, and the
+// difference that stands out in the code is not its timing but what it hands
+// the output layer. A spiking hidden unit emits 0 or 1 and is silent most
+// ticks, so the output's pre-activation is a sum over the few that fired. A
+// layer of tanh hands it thirty-five values near +-1 at once, and the output
+// tanh is pinned. Rectifying is the way to ask whether a sparse, one-signed
+// code is what buys the climb, without adopting the spiking neuron's dynamics
+// with it: the state still integrates the same way, only its reading changes.
+const uint BrainActivationRelu = 4u;
+// min(max(0, x), 1). The same code with the spike's ceiling put back. Together
+// with the one above it these separate two properties the spiking neuron has at
+// once -- sparse and one-signed, and bounded -- so a result can say which of
+// them mattered instead of naming the pair.
+const uint BrainActivationReluUnit = 5u;
+// Not a kind: what the kinds are counted by, for a menu and for the bits below.
+const uint BrainActivationCount = 6u;
 
 // What a world means when it does not say otherwise: one hidden layer of 35,
 // squashed by sine. Separate from the capacity on purpose -- raising how many
@@ -299,6 +316,12 @@ VKEXP_BRAIN_MATH_FN float brainLayerActivate(uint activation, float value, uint 
     if (activation == BrainActivationSoftsign) {
         return value / (1.0f + abs(value));
     }
+    if (activation == BrainActivationRelu) {
+        return value > 0.0f ? value : 0.0f;
+    }
+    if (activation == BrainActivationReluUnit) {
+        return clamp(value, 0.0f, 1.0f);
+    }
     return brainActivation(value);
 }
 
@@ -401,13 +424,19 @@ const uint NeuronModelCount = 4u;
 const uint BrainLayerSizeMask = 0x3fu;
 const uint BrainLayerSizeBits = 6u;
 
-// Which squash a hidden layer uses, two bits each, above the three widths. In
+// Which squash a hidden layer uses, three bits each, above the three widths. In
 // the same word because the word is what already crosses into GLSL: a layer's
 // activation is part of what the network is, and carrying it anywhere else would
 // mean a second thing to pass, a second thing to store in a file, and a second
 // thing to forget.
-const uint BrainLayerActivationBits = 2u;
-const uint BrainLayerActivationMask = 0x3u;
+//
+// Three bits and not two because the four saturating kinds filled two exactly,
+// and the rectified pair had nowhere to go. The word still fits: three widths of
+// six bits and three activations of three is twenty-seven. Widening it moved
+// where layers two and three keep their activation, which is why the archive
+// version moved with it -- see genomeArchiveVersion.
+const uint BrainLayerActivationBits = 3u;
+const uint BrainLayerActivationMask = 0x7u;
 const uint BrainLayerActivationShift = 3u * BrainLayerSizeBits;
 VKEXP_BRAIN_FN uint brainPackHiddenLayers(uint first, uint second, uint third) {
     return (first & BrainLayerSizeMask) | ((second & BrainLayerSizeMask) << BrainLayerSizeBits) |

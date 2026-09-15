@@ -927,6 +927,50 @@ void testGenomeArchiveRoundTrip() {
           "and says which three layers they were");
     check(deepLoaded.genomes.front().weights.front() == 0.5F, "and the weights survive it");
 
+    // A version 5 file, which packed a layer's squash into two bits. Its weights
+    // are untouched by the widening -- the widths are the low eighteen bits under
+    // either encoding -- so it is converted on the way in rather than refused, and
+    // what checks the conversion is the file's own structure block: that was
+    // written by the build that made the file, and load compares it against what
+    // this build lays out. Get the conversion wrong and the two disagree about
+    // which layer is softsign, and the load throws instead of quietly reading the
+    // wrong network.
+    namespace bk = vkexp::neuro::kernel;
+    vkexp::neuro::BrainShape narrowPlan{64, 12, 5, 8, 8};
+    narrowPlan.hiddenActivation = {bk::BrainActivationTanh, bk::BrainActivationSoftsign,
+                                   bk::BrainActivationSine};
+    const std::filesystem::path narrowPath = path.parent_path() / "version5.vkng";
+    vkexp::saveGenomeArchive(
+        narrowPath, deepGenomes,
+        vkexp::GenomeArchiveMetadata{7, 5, 1U, 0.5F, 0.25F, 64,
+                                     static_cast<std::uint32_t>(narrowPlan.hiddenTotal()),
+                                     static_cast<std::uint32_t>(narrowPlan.outputCount),
+                                     narrowPlan.packedLayers()});
+    {
+        std::ifstream input{narrowPath, std::ios::binary};
+        std::string contents{std::istreambuf_iterator<char>{input},
+                             std::istreambuf_iterator<char>{}};
+        std::uint32_t narrowWord = bk::brainLayerWidths(narrowPlan.packedLayers());
+        for (std::uint32_t layer = 0; layer < 3; ++layer) {
+            narrowWord |= bk::brainLayerActivation(narrowPlan.packedLayers(), layer)
+                          << (bk::BrainLayerActivationShift + layer * 2U);
+        }
+        check(narrowWord != narrowPlan.packedLayers(),
+              "A two-bit plan word and a three-bit one are not the same number, which is "
+              "why the version moved");
+        const std::uint32_t five = 5;
+        std::memcpy(contents.data() + 4, &five, sizeof(five));
+        std::memcpy(contents.data() + 28, &narrowWord, sizeof(narrowWord));
+        std::ofstream output{narrowPath, std::ios::binary | std::ios::trunc};
+        output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    }
+    const vkexp::GenomeArchive narrowLoaded = vkexp::loadGenomeArchive(narrowPath);
+    check(narrowLoaded.description.hiddenActivations ==
+              std::vector<std::string>{"tanh", "softsign", "sin"},
+          "A version 5 archive keeps the squash each of its layers was trained under");
+    check(narrowLoaded.genomes.front().weights.size() == narrowPlan.weightCount(),
+          "and its weights are the same weights, because the widths never moved");
+
     // A corrupted magic must fail loudly rather than load noise as a population.
     const std::filesystem::path corrupted = path.parent_path() / "corrupted.vkng";
     std::filesystem::copy_file(path, corrupted, std::filesystem::copy_options::overwrite_existing);
@@ -1149,6 +1193,28 @@ void testLayerActivation() {
           "A plan that says nothing about squashes means tanh, which is what every "
           "plan written before they existed meant");
 
+    // Every kind on every layer, including the two that do not fit the two bits
+    // the field used to be. The third layer is the one that catches a field too
+    // narrow: its activation sits highest, so a kind that overflows there either
+    // reads back wrong or lands in a width.
+    vkexp::neuro::BrainShape wide{40, 12, 6, 8, 4};
+    for (std::uint32_t kind = 0; kind < bk::BrainActivationCount; ++kind) {
+        for (std::uint32_t layer = 0; layer < 3; ++layer) {
+            wide.hiddenActivation = {bk::BrainActivationTanh, bk::BrainActivationTanh,
+                                     bk::BrainActivationTanh};
+            wide.hiddenActivation[layer] = kind;
+            const bk::uint packed = wide.packedLayers();
+            check(bk::brainLayerActivation(packed, layer) == kind,
+                  "Every squash reads back out of the layer it was written to");
+            check(bk::brainLayerWidths(packed) == bk::brainPackHiddenLayers(12U, 8U, 4U),
+                  "and never leaks into the widths beside it");
+            check(bk::brainHiddenLayerSize(packed, 0) == 12 &&
+                      bk::brainHiddenLayerSize(packed, 1) == 8 &&
+                      bk::brainHiddenLayerSize(packed, 2) == 4,
+                  "which is what a layer still being its own width means");
+        }
+    }
+
     // And the one model that does not reach a squash at all does not record one.
     // A spiking run that carried "sin" in its plan would write an archive
     // claiming a network it was never trained as, and then refuse to load into
@@ -1193,6 +1259,31 @@ void testLayerActivation() {
     for (const float value : {-6.0F, -1.0F, 0.0F, 1.0F, 6.0F}) {
         check(std::abs(bk::brainLayerActivate(bk::BrainActivationSoftsign, value, 20U)) < 1.0F,
               "and still bounded, which is what keeps it a decision a neuron can hold");
+    }
+
+    // The rectified pair. What is tested is the property they were added for --
+    // silence below zero, so a layer of them hands the output a sum over the few
+    // units that are speaking -- and the one thing that separates them from each
+    // other, which is whether that sum has a ceiling.
+    for (const float value : {-6.0F, -1.0F, -0.001F}) {
+        check(bk::brainLayerActivate(bk::BrainActivationRelu, value, 20U) == 0.0F &&
+                  bk::brainLayerActivate(bk::BrainActivationReluUnit, value, 20U) == 0.0F,
+              "A rectified neuron is silent below zero, which is what makes a layer of "
+              "them sparse");
+    }
+    check(closeTo(bk::brainLayerActivate(bk::BrainActivationRelu, 3.0F, 20U), 3.0F),
+          "Above zero relu is the identity");
+    check(closeTo(bk::brainLayerActivate(bk::BrainActivationReluUnit, 0.25F, 20U), 0.25F),
+          "and so is relu-unit inside its range");
+    check(closeTo(bk::brainLayerActivate(bk::BrainActivationReluUnit, 3.0F, 20U), 1.0F),
+          "but relu-unit stops at one, which is the spike's ceiling put back");
+    check(bk::brainLayerActivate(bk::BrainActivationRelu, 12.0F, 20U) > 1.0F,
+          "while relu has none -- the difference the two of them exist to separate");
+    for (const float value : {-6.0F, -1.0F, 0.0F, 1.0F, 6.0F}) {
+        check(bk::brainLayerActivate(bk::BrainActivationRelu, value, 20U) >= 0.0F &&
+                  bk::brainLayerActivate(bk::BrainActivationReluUnit, value, 20U) >= 0.0F,
+              "Neither is ever negative, which is the other half of what a spiking "
+              "hidden layer hands the output");
     }
 }
 

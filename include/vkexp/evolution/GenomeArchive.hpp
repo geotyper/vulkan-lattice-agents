@@ -67,7 +67,12 @@ struct GenomeArchive {
 // neighbourhood shrank to the seventeen cells in front of the agent -- so a
 // weight from an older file addresses a slot that is no longer there. A file that loads and
 // steers nothing is worse than one that is refused.
-inline constexpr std::uint32_t genomeArchiveVersion = 5;
+// 6 widened a layer's squash from two bits to three, which moved where layers
+// two and three keep theirs. Unlike 4 and 5 this does not invalidate a weight:
+// the widths are the low eighteen bits under either encoding, so a version 5
+// file still lays out exactly the network it always did, and the reader
+// re-encodes the plan word on the way in. 5 therefore stays readable.
+inline constexpr std::uint32_t genomeArchiveVersion = 6;
 inline constexpr std::uint32_t genomeArchiveOldestVersion = 5;
 
 // Writes a versioned little-endian archive, followed by the JSON structure the

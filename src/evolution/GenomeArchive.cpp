@@ -38,6 +38,29 @@ struct ArchiveHeader {
 };
 
 static_assert(sizeof(ArchiveHeader) == 64);
+// The plan word's offset is what the version 5 compatibility test does surgery
+// at, so it is stated here rather than counted there.
+static_assert(offsetof(ArchiveHeader, brainHiddenLayers) == 28);
+
+// A version 5 file packed a layer's squash into two bits, so layers two and
+// three kept theirs below where three-bit fields now begin. The widths never
+// moved -- they are the low eighteen bits under either encoding -- so every
+// weight in such a file still means what it meant, and only the plan word is
+// re-encoded. Refusing the file instead would throw away archives whose weights
+// are untouched over a field that is usually zero.
+[[nodiscard]] std::uint32_t widenLayerActivations(const std::uint32_t layers) {
+    constexpr std::uint32_t narrowBits = 2;
+    constexpr std::uint32_t narrowMask = 0x3;
+    std::uint32_t widened = neuro::kernel::brainLayerWidths(layers);
+    for (std::uint32_t layer = 0; layer < neuro::kernel::BrainHiddenLayerCapacity; ++layer) {
+        const std::uint32_t squash =
+            (layers >> (neuro::kernel::BrainLayerActivationShift + layer * narrowBits)) &
+            narrowMask;
+        widened |= squash << (neuro::kernel::BrainLayerActivationShift +
+                              layer * neuro::kernel::BrainLayerActivationBits);
+    }
+    return widened;
+}
 // The version-1 compatibility case in the unit tests reaches into a file by
 // byte offset, because there is no writer for the old format any more. Pinning
 // the two offsets it uses here means a field inserted above fails the build
@@ -125,6 +148,10 @@ GenomeArchive loadGenomeArchive(const std::filesystem::path& path) {
     }
     if (header.genomeCount == 0) {
         throw GenomeArchiveError("Genome archive contains no genomes: " + path.string());
+    }
+
+    if (header.version < 6) {
+        header.brainHiddenLayers = widenLayerActivations(header.brainHiddenLayers);
     }
 
     GenomeArchive archive;

@@ -318,7 +318,7 @@ BrainDescription describeBrain(const BrainShape shape, const std::string_view ne
     for (std::size_t layer = 0; layer < shape.hiddenLayerCount(); ++layer) {
         description.hiddenLayers.push_back(static_cast<uint>(shape.hiddenLayer(layer)));
         description.hiddenActivations.emplace_back(
-            shape.hiddenActivation[layer] == kernel::BrainActivationSine ? "sin" : "tanh");
+            brainActivationName(shape.hiddenActivation[layer]));
     }
     description.outputCount = outputCount;
     description.weightCount = bk::brainWeightCount(inputCount, shape.packedLayers(), outputCount);
