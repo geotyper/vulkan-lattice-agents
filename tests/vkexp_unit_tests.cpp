@@ -44,6 +44,7 @@ namespace {
 // none of the cases below select it, so they share one scratch lane rather than
 // declaring an ignored array eighteen times. testAdaptiveNeuron passes its own.
 vkexp::neuro::HiddenState unusedAux{};
+vkexp::neuro::HiddenState unusedEmitted{};
 
 
 int failures = 0;
@@ -411,7 +412,7 @@ void testBrainForwardPass() {
 
         vkexp::neuro::HiddenState state{};
         const vkexp::neuro::Outputs outputs = vkexp::neuro::evaluate(
-            weights, inputs, state, unusedAux, 1.0F, bk::NeuronModelReactive, item.shape);
+            weights, inputs, state, unusedAux, unusedEmitted, 1.0F, bk::NeuronModelReactive, item.shape);
         const float expected = uniformExpectation(item.shape, w, 1.0F);
         bool everyOutput = true;
         for (std::size_t output = 0; output < item.shape.outputCount; ++output) {
@@ -459,7 +460,7 @@ void testBrainForwardPass() {
         vkexp::neuro::Inputs oneHot{};
         oneHot[source] = 1.0F;
         vkexp::neuro::HiddenState state{};
-        (void)vkexp::neuro::evaluate(wiring, oneHot, state, unusedAux, 1.0F, bk::NeuronModelReactive, wired);
+        (void)vkexp::neuro::evaluate(wiring, oneHot, state, unusedAux, unusedEmitted, 1.0F, bk::NeuronModelReactive, wired);
         bool addressed = true;
         for (bk::uint neuron = 0; neuron < 3; ++neuron) {
             addressed = addressed && closeTo(state[neuron], weightFor(neuron, source));
@@ -474,7 +475,7 @@ void testBrainForwardPass() {
         twoHot[1] = 1.0F;
         twoHot[4] = 1.0F;
         vkexp::neuro::HiddenState state{};
-        (void)vkexp::neuro::evaluate(wiring, twoHot, state, unusedAux, 1.0F, bk::NeuronModelReactive, wired);
+        (void)vkexp::neuro::evaluate(wiring, twoHot, state, unusedAux, unusedEmitted, 1.0F, bk::NeuronModelReactive, wired);
         bool summed = true;
         for (bk::uint neuron = 0; neuron < 3; ++neuron) {
             summed =
@@ -489,7 +490,7 @@ void testBrainForwardPass() {
         vkexp::neuro::Inputs scaled{};
         scaled[2] = 2.0F;
         vkexp::neuro::HiddenState state{};
-        (void)vkexp::neuro::evaluate(wiring, scaled, state, unusedAux, 1.0F, bk::NeuronModelReactive, wired);
+        (void)vkexp::neuro::evaluate(wiring, scaled, state, unusedAux, unusedEmitted, 1.0F, bk::NeuronModelReactive, wired);
         check(closeTo(state[0], 2.0F * weightFor(0u, 2u)),
               "An input's value scales its weight rather than switching it on");
     }
@@ -499,7 +500,7 @@ void testBrainForwardPass() {
         vkexp::neuro::Weights biased = vkexp::neuro::makeWeights(wired);
         biased[wiredNeurons * sources + 1u] = 0.75F;
         vkexp::neuro::HiddenState state{};
-        (void)vkexp::neuro::evaluate(biased, vkexp::neuro::Inputs{}, state, unusedAux, 1.0F,
+        (void)vkexp::neuro::evaluate(biased, vkexp::neuro::Inputs{}, state, unusedAux, unusedEmitted, 1.0F,
                                      bk::NeuronModelReactive, wired);
         check(closeTo(state[0], 0.0F) && closeTo(state[1], 0.75F) && closeTo(state[2], 0.0F),
               "A bias reaches its own neuron, once, with no input at all");
@@ -520,7 +521,7 @@ void testBrainForwardPass() {
         weights[bk::brainLayerWeightIndex(0u, chainInputs, chainLayers, 1u, 0u, 0u)] = 1.0F;
         weights[bk::brainLayerWeightIndex(0u, chainInputs, chainLayers, 1u, 0u, 1u)] = 1.0F;
         vkexp::neuro::HiddenState state{};
-        (void)vkexp::neuro::evaluate(weights, vkexp::neuro::Inputs{}, state, unusedAux, 1.0F,
+        (void)vkexp::neuro::evaluate(weights, vkexp::neuro::Inputs{}, state, unusedAux, unusedEmitted, 1.0F,
                                      bk::NeuronModelReactive, chain);
         const float throughActivations = std::tanh(1.4F) + std::tanh(-0.9F);
         const float throughStates = 1.4F - 0.9F;
@@ -543,7 +544,7 @@ void testBrainForwardPass() {
         vkexp::neuro::Inputs inputs{};
         inputs.fill(1.0F);
         vkexp::neuro::HiddenState state{};
-        (void)vkexp::neuro::evaluate(weights, inputs, state, unusedAux, step, bk::NeuronModelTimeConstant,
+        (void)vkexp::neuro::evaluate(weights, inputs, state, unusedAux, unusedEmitted, step, bk::NeuronModelTimeConstant,
                                      shape);
         // Every gene is w, so every neuron runs at the same rate.
         const float rate = std::min(step / bk::brainTimeConstant(w), 1.0F);
@@ -616,7 +617,7 @@ void testLayeredBrain() {
 
     vkexp::neuro::HiddenState state{};
     const vkexp::neuro::Outputs deepOut =
-        vkexp::neuro::evaluate(weights, inputs, state, unusedAux, 1.0F, bk::NeuronModelReactive, deep);
+        vkexp::neuro::evaluate(weights, inputs, state, unusedAux, unusedEmitted, 1.0F, bk::NeuronModelReactive, deep);
     const float expected =
         std::tanh(2.0F * std::tanh(1.75F * std::tanh(1.25F * std::tanh(1.5F * 0.8F))));
     check(closeTo(deepOut[0], expected),
@@ -627,7 +628,7 @@ void testLayeredBrain() {
     // network nobody is running.
     vkexp::neuro::HiddenState flatState{};
     const vkexp::neuro::Outputs flatOut =
-        vkexp::neuro::evaluate(weights, inputs, flatState, unusedAux, 1.0F, bk::NeuronModelReactive, flat);
+        vkexp::neuro::evaluate(weights, inputs, flatState, unusedAux, unusedEmitted, 1.0F, bk::NeuronModelReactive, flat);
     check(std::abs(flatOut[0] - deepOut[0]) > 1.0e-3F,
           "and a flat plan on the same weights is a different network, not the same one");
 
@@ -635,7 +636,7 @@ void testLayeredBrain() {
     // constant models: a slow layer behind a fast one.
     vkexp::neuro::HiddenState settled{};
     for (int step = 0; step < 4; ++step) {
-        (void)vkexp::neuro::evaluate(weights, inputs, settled, unusedAux, 1.0F / 60.0F,
+        (void)vkexp::neuro::evaluate(weights, inputs, settled, unusedAux, unusedEmitted, 1.0F / 60.0F,
                                      bk::NeuronModelTimeConstant, deep);
     }
     check(std::abs(settled[0]) > 0.0F && std::abs(settled[4]) > 0.0F,
@@ -1351,10 +1352,11 @@ void testAdaptiveNeuron() {
                                              bk::BrainNeuronGeneRelax)] = 20.0F;
         vkexp::neuro::HiddenState state{};
         vkexp::neuro::HiddenState aux{};
+        vkexp::neuro::HiddenState emitted{};
         int fired = 0;
         for (int tick = 0; tick < 60; ++tick) {
             const vkexp::neuro::Outputs produced = vkexp::neuro::evaluate(
-                weights, vkexp::neuro::Inputs{}, state, aux, step, model, shape);
+                weights, vkexp::neuro::Inputs{}, state, aux, emitted, step, model, shape);
             if (produced[0] > 0.5F) {
                 ++fired;
             }
@@ -1423,11 +1425,12 @@ void testOscillatorNeuron() {
                                          bk::BrainNeuronGeneRate)] = 20.0F;
         vkexp::neuro::HiddenState state{};
         vkexp::neuro::HiddenState aux{};
+        vkexp::neuro::HiddenState emitted{};
         int transitions = 0;
         float previous = -1.0F;
         for (int tick = 0; tick < 120; ++tick) {
             const vkexp::neuro::Outputs produced = vkexp::neuro::evaluate(
-                weights, vkexp::neuro::Inputs{}, state, aux, step, model, shape);
+                weights, vkexp::neuro::Inputs{}, state, aux, emitted, step, model, shape);
             if (tick > 0 && (produced[0] > 0.5F) != (previous > 0.5F)) {
                 ++transitions;
             }
@@ -1442,6 +1445,80 @@ void testOscillatorNeuron() {
     check(changes(bk::NeuronModelOscillator) > 2,
           "while the oscillator turns anyway -- the property none of the others has, and "
           "the reason it is here");
+}
+
+// Lateral wiring: a hidden layer reading what it emitted last tick.
+void testLateralRecurrence() {
+    namespace bk = vkexp::neuro::kernel;
+    constexpr float step = 1.0F / 60.0F;
+
+    // The bit rides in the plan word, above the widths and the activations, and
+    // must disturb neither -- two runs that differ only in it read the same
+    // weights, so they have to agree about where every weight is.
+    vkexp::neuro::BrainShape flat{40, 12, 6, 8, 0};
+    vkexp::neuro::BrainShape wired = flat;
+    wired.lateral = 1;
+    check(flat.packedLayers() != wired.packedLayers(), "The lateral bit is part of the plan");
+    check(flat.packedWidths() == wired.packedWidths() &&
+              flat.weightCount() == wired.weightCount(),
+          "and not part of the widths, so the genome is the same length either way -- the "
+          "block is carried whatever the bit says");
+    check(bk::brainLateral(wired.packedLayers()) == 1U &&
+              bk::brainLateral(flat.packedLayers()) == 0U,
+          "and it reads back out");
+    for (std::uint32_t layer = 0; layer < 3; ++layer) {
+        check(bk::brainHiddenLayerSize(wired.packedLayers(), layer) ==
+                      bk::brainHiddenLayerSize(flat.packedLayers(), layer) &&
+                  bk::brainLayerActivation(wired.packedLayers(), layer) ==
+                      bk::brainLayerActivation(flat.packedLayers(), layer),
+              "and every layer keeps its width and its squash");
+    }
+
+    // Two neurons, wired to each other and to nothing else. Neuron 0 starts the
+    // run with a bias; neuron 1 has none and can only ever hear neuron 0. If the
+    // layer read itself within the tick, neuron 1 would answer on the first
+    // tick. Reading last tick, it cannot answer before the second.
+    const vkexp::neuro::BrainShape shape{4, 2, vkexp::neuro::Topology::actuatorOutputCount, 0, 0,
+                                         {bk::BrainActivationTanh, 0U, 0U}, 1U};
+    const auto inputs = static_cast<bk::uint>(shape.inputCount);
+    const bk::uint layers = shape.packedLayers();
+    vkexp::neuro::Weights weights = vkexp::neuro::makeWeights(shape);
+    weights[bk::brainLayerBiasIndex(0U, inputs, layers, 0U, 0U)] = 2.0F;
+    weights[bk::brainLateralWeightIndex(
+        0U, inputs, layers, static_cast<bk::uint>(shape.outputCount), 0U, 1U, 0U)] = 3.0F;
+    weights[bk::brainOutputWeightIndex(0U, inputs, layers, 0U, 1U)] = 1.0F;
+
+    vkexp::neuro::HiddenState state{};
+    vkexp::neuro::HiddenState aux{};
+    vkexp::neuro::HiddenState emitted{};
+    const auto tick = [&] {
+        return vkexp::neuro::evaluate(weights, vkexp::neuro::Inputs{}, state, aux, emitted, step,
+                                      bk::NeuronModelReactive, shape)[0];
+    };
+    const float first = tick();
+    check(std::abs(first) < 1.0e-5F,
+          "A laterally wired neuron hears nothing on the first tick, because what it "
+          "listens to has not been emitted yet");
+    check(std::abs(emitted[0]) > 0.5F, "though the neuron it listens to has spoken");
+    const float second = tick();
+    check(second > 0.5F, "and on the second tick it answers -- one tick late, which is what "
+                         "makes this recurrence and not a wider layer");
+
+    // And with the bit off, the same genome never answers at all: the block is
+    // there, and nothing reads it.
+    vkexp::neuro::BrainShape deaf = shape;
+    deaf.lateral = 0;
+    vkexp::neuro::HiddenState deafState{};
+    vkexp::neuro::HiddenState deafAux{};
+    vkexp::neuro::HiddenState deafEmitted{};
+    for (int at = 0; at < 4; ++at) {
+        const float out = vkexp::neuro::evaluate(weights, vkexp::neuro::Inputs{}, deafState,
+                                                 deafAux, deafEmitted, step,
+                                                 bk::NeuronModelReactive, deaf)[0];
+        check(std::abs(out) < 1.0e-5F,
+              "With the wiring off the same weights are simply not read, which is what makes "
+              "the pair an ablation");
+    }
 }
 
 void testRandomWeights() {
@@ -1666,7 +1743,7 @@ void testNeuronTimeConstants() {
 
     vkexp::neuro::HiddenState state{};
     const vkexp::neuro::Outputs memoryless =
-        vkexp::neuro::evaluate(weights, inputs, state, unusedAux, step, kernel::NeuronModelReactive);
+        vkexp::neuro::evaluate(weights, inputs, state, unusedAux, unusedEmitted, step, kernel::NeuronModelReactive);
     check(std::equal(memoryless.begin(), memoryless.end(),
                      vkexp::neuro::evaluate(weights, inputs).begin()),
           "The reactive model is exactly what the stateless evaluator computes");
@@ -1676,7 +1753,7 @@ void testNeuronTimeConstants() {
     // reached its input immediately would not be holding anything.
     vkexp::neuro::HiddenState remembering{};
     const vkexp::neuro::Outputs firstStep =
-        vkexp::neuro::evaluate(weights, inputs, remembering, unusedAux, step, kernel::NeuronModelTimeConstant);
+        vkexp::neuro::evaluate(weights, inputs, remembering, unusedAux, unusedEmitted, step, kernel::NeuronModelTimeConstant);
     // Checked on the state and not on the output: two tanh layers compress the
     // difference until a genuinely sluggish neuron still drives the output most
     // of the way, so the output is the wrong place to read a time constant.
@@ -1685,7 +1762,7 @@ void testNeuronTimeConstants() {
     check(std::abs(firstStep[0]) < std::abs(memoryless[0]),
           "A remembering neuron drives its output less hard on the first step");
     for (int index = 0; index < 400; ++index) {
-        (void)vkexp::neuro::evaluate(weights, inputs, remembering, unusedAux, step,
+        (void)vkexp::neuro::evaluate(weights, inputs, remembering, unusedAux, unusedEmitted, step,
                                      kernel::NeuronModelTimeConstant);
     }
     check(closeTo(remembering[0], 3.0F, 1.0e-3F),
@@ -1720,9 +1797,9 @@ void testGatedNeurons() {
         vkexp::neuro::HiddenState fixedState{};
         vkexp::neuro::HiddenState gatedState{};
         for (int index = 0; index < 20; ++index) {
-            (void)vkexp::neuro::evaluate(fixed, inputs, fixedState, unusedAux, step,
+            (void)vkexp::neuro::evaluate(fixed, inputs, fixedState, unusedAux, unusedEmitted, step,
                                          kernel::NeuronModelTimeConstant);
-            (void)vkexp::neuro::evaluate(gated, inputs, gatedState, unusedAux, step, kernel::NeuronModelGated);
+            (void)vkexp::neuro::evaluate(gated, inputs, gatedState, unusedAux, unusedEmitted, step, kernel::NeuronModelGated);
         }
         check(closeTo(fixedState[0], gatedState[0], 1.0e-6F),
               "A gate that ignores its inputs is the fixed-time-constant neuron");
@@ -1740,8 +1817,8 @@ void testGatedNeurons() {
     vkexp::neuro::HiddenState held{};
     vkexp::neuro::HiddenState following{};
     for (int index = 0; index < 20; ++index) {
-        (void)vkexp::neuro::evaluate(listening, holding, held, unusedAux, step, kernel::NeuronModelGated);
-        (void)vkexp::neuro::evaluate(listening, inputs, following, unusedAux, step, kernel::NeuronModelGated);
+        (void)vkexp::neuro::evaluate(listening, holding, held, unusedAux, unusedEmitted, step, kernel::NeuronModelGated);
+        (void)vkexp::neuro::evaluate(listening, inputs, following, unusedAux, unusedEmitted, step, kernel::NeuronModelGated);
     }
     check(held[0] < following[0] * 0.25F,
           "A gate driven up holds while the same neuron left alone follows");
@@ -1755,12 +1832,18 @@ void testGatedNeurons() {
         static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity), 0u, 0u);
     constexpr auto capacityInputs = static_cast<kernel::uint>(vkexp::neuro::Topology::inputCount);
     constexpr auto capacityOutputs = static_cast<kernel::uint>(vkexp::neuro::Topology::outputCount);
-    check(kernel::brainNeuronGeneIndex(
-              0u, capacityInputs, widest, capacityOutputs,
-              static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity) - 1u,
-              kernel::BrainNeuronGeneCount - 1u) ==
+    constexpr auto capacityNeurons =
+        static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity);
+    check(kernel::brainLateralWeightIndex(0u, capacityInputs, widest, capacityOutputs, 0u,
+                                          capacityNeurons - 1u, capacityNeurons - 1u) ==
               vkexp::neuro::Topology::maximumWeightCount - 1u,
           "The last block ends exactly at the end of the genome");
+    check(kernel::brainNeuronGeneIndex(0u, capacityInputs, widest, capacityOutputs,
+                                       capacityNeurons - 1u, kernel::BrainNeuronGeneCount - 1u) +
+                  1u ==
+              kernel::brainLateralWeightIndex(0u, capacityInputs, widest, capacityOutputs, 0u, 0u,
+                                              0u),
+          "and the gene block ends where the lateral block starts");
     // And the gate block still ends where the adaptation block begins, which is
     // what "appended" means: no earlier offset moved.
     check(kernel::brainGateBiasIndex(
@@ -1793,7 +1876,7 @@ void testSpikingNeuronModel() {
     vkexp::neuro::HiddenState state{};
     bool spiked = false;
     for (int index = 0; index < 50; ++index) {
-        (void)vkexp::neuro::evaluate(weights, inputs, state, unusedAux, step, kernel::NeuronModelSpiking);
+        (void)vkexp::neuro::evaluate(weights, inputs, state, unusedAux, unusedEmitted, step, kernel::NeuronModelSpiking);
         if (state[0] == 0.0F && index > 0) {
             spiked = true;
         }
@@ -3184,6 +3267,7 @@ int main() {
     testLayerActivation();
     testAdaptiveNeuron();
     testOscillatorNeuron();
+    testLateralRecurrence();
     testRandomWeights();
     testPopulationReload();
     testStepParameterPacking();

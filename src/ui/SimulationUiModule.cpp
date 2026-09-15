@@ -496,6 +496,9 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
         ImGui::SetItemTooltip("Outputs are always tanh: every threshold in the rules reads one "
                               "as how far and which way. A spiking run ignores this -- it writes "
                               "1 or 0 and never reaches a squash.");
+        if (brain.lateral != 0) {
+            ImGui::TextDisabled("hidden layers also read themselves, one tick late");
+        }
     }
     if (state_.settings.neuronModel != NeuronModel::Reactive) {
         ImGui::TextDisabled("gate block %zu of %zu genes",

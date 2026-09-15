@@ -223,10 +223,16 @@ struct alignas(16) AgentState {
     // that want one can be selected at once, and because a record that grows a
     // field per experiment is a record nobody dares add to.
     std::array<Float4, agentHiddenVectorCount> hiddenAux{};
+    // What every hidden neuron emitted last tick. Only a laterally wired layer
+    // reads it, but it is stored for every model rather than recomputed from the
+    // state beside it, because the two models that fire destroy the state they
+    // fired from: after a discharge the membrane is zero whatever it emitted,
+    // and a value that cannot be recovered is one that has to be kept.
+    std::array<Float4, agentHiddenVectorCount> hiddenOut{};
 };
 
 static_assert(std::is_trivially_copyable_v<AgentState>);
-static_assert(sizeof(AgentState) == 512);
+static_assert(sizeof(AgentState) == 720);
 static_assert(offsetof(AgentState, intent) == 16);
 static_assert(offsetof(AgentState, beacon) == 32);
 static_assert(offsetof(AgentState, signal) == 48);
@@ -270,6 +276,39 @@ static_assert(offsetof(AgentState, hidden) == 96,
 
 inline void setAgentHiddenAux(AgentState& agent, const std::size_t neuron, const float value) {
     Float4& block = agent.hiddenAux[neuron / 4];
+    switch (neuron % 4) {
+    case 0:
+        block.x = value;
+        break;
+    case 1:
+        block.y = value;
+        break;
+    case 2:
+        block.z = value;
+        break;
+    default:
+        block.w = value;
+        break;
+    }
+}
+
+// Last tick's emission, addressed exactly like the two lanes above.
+[[nodiscard]] inline float agentHiddenOut(const AgentState& agent, const std::size_t neuron) {
+    const Float4& block = agent.hiddenOut[neuron / 4];
+    switch (neuron % 4) {
+    case 0:
+        return block.x;
+    case 1:
+        return block.y;
+    case 2:
+        return block.z;
+    default:
+        return block.w;
+    }
+}
+
+inline void setAgentHiddenOut(AgentState& agent, const std::size_t neuron, const float value) {
+    Float4& block = agent.hiddenOut[neuron / 4];
     switch (neuron % 4) {
     case 0:
         block.x = value;
@@ -446,6 +485,11 @@ struct SimulationStep {
     // why the offer is limited to hidden layers.
     std::array<std::uint32_t, neuro::kernel::BrainHiddenLayerCapacity> hiddenActivation{
         neuro::defaultBrainShape.hiddenActivation};
+    // Whether a hidden layer also reads itself, one tick late. Off by default:
+    // it is the only one of the three additions that changes what a genome is
+    // rather than how a neuron reads its own state, and a default nobody asked
+    // for would silently lengthen every run's genome by a square.
+    std::uint32_t lateralRecurrence{0};
     FitnessWeights fitness{};
     // Where a hidden neuron's time constant comes from. Reactive pins it to
     // deltaTime, which makes the update y = activation and reproduces the
@@ -631,6 +675,7 @@ static_assert(offsetof(GpuStepParameters, neuronModel) == 56);
     shape.hiddenActivation =
         neuronModelFires(settings.neuronModel) ? decltype(shape.hiddenActivation){}
                                               : settings.hiddenActivation;
+    shape.lateral = settings.lateralRecurrence;
     return shape;
 }
 

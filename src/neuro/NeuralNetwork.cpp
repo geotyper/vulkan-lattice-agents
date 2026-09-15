@@ -7,8 +7,8 @@
 namespace vkexp::neuro {
 
 Outputs evaluate(const std::span<const float> weights, const Inputs& inputs,
-                 HiddenState& state, HiddenState& aux, const float deltaTime,
-                 const kernel::uint model, const BrainShape shape) {
+                 HiddenState& state, HiddenState& aux, HiddenState& emitted,
+                 const float deltaTime, const kernel::uint model, const BrainShape shape) {
     if (!shape.fitsCapacity()) {
         throw std::invalid_argument("Neural-network shape exceeds genome capacity");
     }
@@ -19,6 +19,7 @@ Outputs evaluate(const std::span<const float> weights, const Inputs& inputs,
     const auto outputCount = static_cast<kernel::uint>(shape.outputCount);
     const kernel::uint layers = shape.packedLayers();
     const kernel::uint layerCount = kernel::brainHiddenLayerCount(layers);
+    const kernel::uint lateral = kernel::brainLateral(layers);
     constexpr kernel::uint base = 0; // one genome, so it starts at zero here
 
     // What the current layer reads. It starts as the input vector and becomes
@@ -43,6 +44,19 @@ Outputs evaluate(const std::span<const float> weights, const Inputs& inputs,
                 activation += weights[kernel::brainLayerWeightIndex(base, inputCount, layers, layer,
                                                                     neuron, index)] *
                               source[index];
+            }
+            // What this layer emitted last tick, if it is wired to itself. Read
+            // from the lane rather than from `produced`, which this loop is
+            // writing: a neuron must see the whole of last tick and none of
+            // this one, or the layer would be half recurrent and half not
+            // depending on where in it a neuron happened to sit.
+            if (lateral != 0) {
+                for (kernel::uint index = 0; index < width; ++index) {
+                    activation += weights[kernel::brainLateralWeightIndex(
+                                      base, inputCount, layers, outputCount, layer, neuron,
+                                      index)] *
+                                  emitted[stateOffset + index];
+                }
             }
             // Where the time constant comes from is the only thing the model
             // changes. Reactive pins it to the step, which the shared integrator
@@ -107,6 +121,7 @@ Outputs evaluate(const std::span<const float> weights, const Inputs& inputs,
         }
         for (kernel::uint neuron = 0; neuron < width; ++neuron) {
             source[neuron] = produced[neuron];
+            emitted[stateOffset + neuron] = produced[neuron];
         }
         sourceCount = width;
     }
@@ -129,9 +144,11 @@ Outputs evaluate(const std::span<const float> weights, const Inputs& inputs,
                  const BrainShape shape) {
     HiddenState state{};
     HiddenState aux{};
+    HiddenState emitted{};
     // Any positive step works: the reactive model assigns the activation
     // outright, so the value cannot reach the result.
-    return evaluate(weights, inputs, state, aux, 1.0F, kernel::NeuronModelReactive, shape);
+    return evaluate(weights, inputs, state, aux, emitted, 1.0F, kernel::NeuronModelReactive,
+                    shape);
 }
 
 
@@ -225,6 +242,22 @@ Weights randomWeights(const BrainShape shape, std::mt19937& random, const bool f
         for (kernel::uint gene = 0; gene < kernel::BrainNeuronGeneCount; ++gene) {
             weights[kernel::brainNeuronGeneIndex(0U, inputCount, layers, outputCount, neuron,
                                                      gene)] = draw(spread);
+        }
+    }
+
+    // The lateral squares, at the width their own fan-in asks for: a layer
+    // reading itself is another block of sources, and under a fan-in policy the
+    // two blocks feeding one neuron have to be narrowed together or the wider
+    // of them decides the neuron on its own.
+    for (kernel::uint layer = 0; layer < layerCount; ++layer) {
+        const kernel::uint size = kernel::brainHiddenLayerSize(layers, layer);
+        const float width =
+            blockWidth(kernel::brainLayerSourceCount(inputCount, layers, layer) + size);
+        for (kernel::uint neuron = 0; neuron < size; ++neuron) {
+            for (kernel::uint source = 0; source < size; ++source) {
+                weights[kernel::brainLateralWeightIndex(0U, inputCount, layers, outputCount, layer,
+                                                        neuron, source)] = draw(width);
+            }
         }
     }
     return weights;

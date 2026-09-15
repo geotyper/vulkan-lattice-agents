@@ -412,6 +412,16 @@ BrainDescription describeBrain(const BrainShape shape, const std::string_view ne
                     bk::brainNeuronGeneIndex(base, inputCount, layers, outputCount, 0u, 0u),
                     bk::brainHiddenNeuronCount(layers) * bk::BrainNeuronGeneCount,
                     bk::brainHiddenNeuronCount(layers), bk::BrainNeuronGeneCount));
+    // One square per layer, present whatever the plan's lateral bit says: the
+    // block is what a genome is, and the bit is what reads it.
+    for (uint layer = 0; layer < layerCount; ++layer) {
+        const uint width = bk::brainHiddenLayerSize(layers, layer);
+        const std::string target = layerName("hidden", layer, "");
+        description.weights.push_back(weightBlock(
+            layerName("lateral", layer, ""), target, target,
+            bk::brainLateralWeightIndex(base, inputCount, layers, outputCount, layer, 0u, 0u),
+            width * width, width, width));
+    }
     return description;
 }
 

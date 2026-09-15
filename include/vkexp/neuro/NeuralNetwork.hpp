@@ -93,6 +93,10 @@ struct BrainShape {
     // existed meant. Last in the struct so that every `{inputs, hidden, outputs}`
     // written anywhere still names the same three things.
     std::array<std::uint32_t, Topology::hiddenLayerCount> hiddenActivation{};
+    // Whether each hidden layer also reads what it emitted last tick. After the
+    // activations for the same reason they came after the widths: every
+    // aggregate written before it keeps meaning what it meant.
+    std::uint32_t lateral{};
 
     [[nodiscard]] constexpr std::size_t hiddenLayer(const std::size_t layer) const {
         if (layer == 0) {
@@ -126,11 +130,12 @@ struct BrainShape {
     }
 
     [[nodiscard]] constexpr std::uint32_t packedLayers() const {
-        return kernel::brainWithLayerActivations(
+        return kernel::brainWithLateral(kernel::brainWithLayerActivations(
             kernel::brainPackHiddenLayers(static_cast<kernel::uint>(hiddenCount),
                                           static_cast<kernel::uint>(secondHiddenCount),
                                           static_cast<kernel::uint>(thirdHiddenCount)),
-            hiddenActivation[0], hiddenActivation[1], hiddenActivation[2]);
+            hiddenActivation[0], hiddenActivation[1], hiddenActivation[2]),
+                                      lateral);
     }
 
     // The widths alone. What a genome is laid out by, and deliberately not the
@@ -209,7 +214,8 @@ inline constexpr BrainShape defaultBrainShape{
             kernel::brainHiddenLayerSize(layers, 1u),
             kernel::brainHiddenLayerSize(layers, 2u),
             {kernel::brainLayerActivation(layers, 0u), kernel::brainLayerActivation(layers, 1u),
-             kernel::brainLayerActivation(layers, 2u)}};
+             kernel::brainLayerActivation(layers, 2u)},
+            kernel::brainLateral(layers)};
 }
 
 static_assert(maximumBrainShape.fitsCapacity());
@@ -264,9 +270,15 @@ using HiddenState = std::array<float, Topology::hiddenNeuronCapacity>;
 // parameter and not an optional one on purpose: a model handed nowhere to keep
 // its threshold would run as a plain spiking network and say nothing about it,
 // which is the class of silent difference this project's parity exists to stop.
+//
+// `emitted` is what each hidden neuron produced last time, which a laterally
+// wired layer reads and every other plan ignores. It is written on every call
+// whatever the plan says, so turning the wiring on mid-run finds a lane that is
+// already true rather than one tick of zeroes.
 [[nodiscard]] Outputs evaluate(std::span<const float> weights, const Inputs& inputs,
-                               HiddenState& state, HiddenState& aux, float deltaTime,
-                               kernel::uint model, BrainShape shape = maximumBrainShape);
+                               HiddenState& state, HiddenState& aux, HiddenState& emitted,
+                               float deltaTime, kernel::uint model,
+                               BrainShape shape = maximumBrainShape);
 
 // Stateless convenience for the tests and inspections that ask what a brain does
 // to one input vector with no history. Defined in terms of the above with a

@@ -31,6 +31,10 @@ struct Agent {
     // Adaptive it is how far that neuron's threshold sits above the resting one,
     // and under every other model it stays zero.
     vec4 hiddenAux[AgentHiddenVectorCount];
+    // What every hidden neuron emitted last tick, which only a laterally wired
+    // layer reads. Stored rather than recomputed because the models that fire
+    // destroy the state they fired from.
+    vec4 hiddenOut[AgentHiddenVectorCount];
 };
 
 float agentHiddenState(Agent agent, uint neuron) {
@@ -39,6 +43,10 @@ float agentHiddenState(Agent agent, uint neuron) {
 
 float agentHiddenAux(Agent agent, uint neuron) {
     return agent.hiddenAux[neuron >> 2u][neuron & 3u];
+}
+
+float agentHiddenOut(Agent agent, uint neuron) {
+    return agent.hiddenOut[neuron >> 2u][neuron & 3u];
 }
 
 #endif

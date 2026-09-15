@@ -29,6 +29,7 @@ void brainForward(inout Agent agent, float sensed[BrainInputCapacity], uint base
     }
     uint sourceCount = inputCount;
 
+    const uint lateral = brainLateral(layers);
     for (uint layer = 0; layer < layerCount; ++layer) {
         const uint width = brainHiddenLayerSize(layers, layer);
         const uint stateOffset = brainHiddenLayerStateOffset(layers, layer);
@@ -41,6 +42,19 @@ void brainForward(inout Agent agent, float sensed[BrainInputCapacity], uint base
                 activation +=
                     weights[brainLayerWeightIndex(base, inputCount, layers, layer, neuron, index)] *
                     source[index];
+            }
+            // What this layer emitted last tick, if it is wired to itself. Read
+            // from the record rather than from `hidden`, which this loop is
+            // writing: a neuron must see the whole of last tick and none of this
+            // one, or the layer would be half recurrent and half not depending
+            // on where in it a neuron happened to sit.
+            if (lateral != 0u) {
+                for (uint index = 0; index < width; ++index) {
+                    activation += weights[brainLateralWeightIndex(base, inputCount, layers,
+                                                                  outputCount, layer, neuron,
+                                                                  index)] *
+                                  agentHiddenOut(agent, stateOffset + index);
+                }
             }
             // Where the time constant comes from is the only thing the model
             // changes, exactly as in vkexp::neuro::evaluate. Reactive pins it to
@@ -105,6 +119,8 @@ void brainForward(inout Agent agent, float sensed[BrainInputCapacity], uint base
         }
         for (uint neuron = 0; neuron < width; ++neuron) {
             source[neuron] = hidden[neuron];
+            agent.hiddenOut[(stateOffset + neuron) >> 2u][(stateOffset + neuron) & 3u] =
+                hidden[neuron];
         }
         sourceCount = width;
     }

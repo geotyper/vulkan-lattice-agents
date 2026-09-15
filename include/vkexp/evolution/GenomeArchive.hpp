@@ -77,8 +77,11 @@ struct GenomeArchive {
 // than the network this build lays out for the same plan, and its tail is not
 // missing data but data that was never there -- so it is refused, the way 4 and
 // 5 were, rather than padded with zeroes that would read as a bump of one.
-inline constexpr std::uint32_t genomeArchiveVersion = 7;
-inline constexpr std::uint32_t genomeArchiveOldestVersion = 7;
+// 8 is the lateral block, a square per hidden layer, appended after the neuron
+// genes and carried whether or not the plan's lateral bit reads it. A version 7
+// file is shorter for the same plan, so it is refused rather than padded.
+inline constexpr std::uint32_t genomeArchiveVersion = 8;
+inline constexpr std::uint32_t genomeArchiveOldestVersion = 8;
 
 // Writes a versioned little-endian archive, followed by the JSON structure the
 // weights are laid out under. Six numbers in a header can say that a file no

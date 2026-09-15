@@ -592,6 +592,27 @@ VKEXP_BRAIN_FN uint brainWithLayerActivations(uint layers, uint first, uint seco
             << (BrainLayerActivationShift + 2u * BrainLayerActivationBits));
 }
 
+// Whether a hidden layer reads what it emitted last tick as well as what the
+// layer before it emits now. One bit, above the widths and the activations --
+// three sixes and three threes is twenty-seven, so this is bit thirty and there
+// is one left over.
+//
+// In the plan word rather than a setting of its own because that word is what
+// already crosses into GLSL, into an archive and into a description: lateral
+// wiring is part of what the network *is*, and a run that carried it anywhere
+// else could load a file whose weights mean something different and say nothing.
+// The genome carries the block whatever the bit says, so turning it off is a
+// parameter change and not a shorter genome -- the same trade the gate block
+// makes.
+const uint BrainLateralShift = 30u;
+VKEXP_BRAIN_FN uint brainWithLateral(uint layers, uint lateral) {
+    return (layers & ~(1u << BrainLateralShift)) | ((lateral & 1u) << BrainLateralShift);
+}
+
+VKEXP_BRAIN_FN uint brainLateral(uint layers) {
+    return (layers >> BrainLateralShift) & 1u;
+}
+
 VKEXP_BRAIN_FN uint brainLayerActivation(uint layers, uint layer) {
     if (layer >= BrainHiddenLayerCapacity) {
         return BrainActivationTanh;
@@ -697,11 +718,24 @@ const uint BrainNeuronGeneBump = 0u;  // Adaptive: threshold raise per discharge
 const uint BrainNeuronGeneRelax = 1u; // Adaptive: time constant the raise decays on
 const uint BrainNeuronGeneRate = 2u;  // Oscillator: turns per second before drive
 
+// A square per hidden layer: every neuron in the layer reading every neuron in
+// the same layer, itself included. No bias -- the layer already has one, and a
+// second would be two names for the same number.
+VKEXP_BRAIN_FN uint brainLateralBlockSize(uint layers) {
+    uint total = 0u;
+    for (uint layer = 0u; layer < BrainHiddenLayerCapacity; ++layer) {
+        const uint size = brainHiddenLayerSize(layers, layer);
+        total += size * size;
+    }
+    return total;
+}
+
 VKEXP_BRAIN_FN uint brainWeightCount(uint inputCount, uint layers, uint outputCount) {
     const uint forward = brainForwardBlockSize(inputCount, layers);
     return forward + brainLastHiddenSize(layers) * outputCount + outputCount +
            brainHiddenNeuronCount(layers) + forward +
-           brainHiddenNeuronCount(layers) * BrainNeuronGeneCount;
+           brainHiddenNeuronCount(layers) * BrainNeuronGeneCount +
+           brainLateralBlockSize(layers);
 }
 
 // Start of a layer's own weights, walking the layers before it.
@@ -774,6 +808,24 @@ VKEXP_BRAIN_FN uint brainNeuronGeneIndex(uint base, uint inputCount, uint layers
                                          uint outputCount, uint neuron, uint gene) {
     return brainNeuronGeneBlockOffset(base, inputCount, layers, outputCount) +
            neuron * BrainNeuronGeneCount + gene;
+}
+
+VKEXP_BRAIN_FN uint brainLateralBlockOffset(uint base, uint inputCount, uint layers,
+                                           uint outputCount) {
+    return brainNeuronGeneBlockOffset(base, inputCount, layers, outputCount) +
+           brainHiddenNeuronCount(layers) * BrainNeuronGeneCount;
+}
+
+// Row per reading neuron, column per neuron read, layer by layer.
+VKEXP_BRAIN_FN uint brainLateralWeightIndex(uint base, uint inputCount, uint layers,
+                                            uint outputCount, uint layer, uint neuron,
+                                            uint source) {
+    uint offset = brainLateralBlockOffset(base, inputCount, layers, outputCount);
+    for (uint earlier = 0u; earlier < layer; ++earlier) {
+        const uint size = brainHiddenLayerSize(layers, earlier);
+        offset += size * size;
+    }
+    return offset + neuron * brainHiddenLayerSize(layers, layer) + source;
 }
 
 VKEXP_BRAIN_FN uint brainGateBiasIndex(uint base, uint inputCount, uint layers, uint outputCount,

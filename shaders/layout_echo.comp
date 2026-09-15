@@ -117,4 +117,12 @@ void main() {
     echo[at++] = floatBitsToUint(agent.hiddenAux[AgentHiddenVectorCount - 1u].y);
     echo[at++] = floatBitsToUint(agent.hiddenAux[AgentHiddenVectorCount - 1u].z);
     echo[at++] = floatBitsToUint(agent.hiddenAux[AgentHiddenVectorCount - 1u].w);
+    echo[at++] = floatBitsToUint(agent.hiddenOut[0].x);
+    echo[at++] = floatBitsToUint(agent.hiddenOut[0].y);
+    echo[at++] = floatBitsToUint(agent.hiddenOut[0].z);
+    echo[at++] = floatBitsToUint(agent.hiddenOut[0].w);
+    echo[at++] = floatBitsToUint(agent.hiddenOut[AgentHiddenVectorCount - 1u].x);
+    echo[at++] = floatBitsToUint(agent.hiddenOut[AgentHiddenVectorCount - 1u].y);
+    echo[at++] = floatBitsToUint(agent.hiddenOut[AgentHiddenVectorCount - 1u].z);
+    echo[at++] = floatBitsToUint(agent.hiddenOut[AgentHiddenVectorCount - 1u].w);
 }

@@ -155,16 +155,20 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
 
         neuro::HiddenState hidden{};
         neuro::HiddenState aux{};
+        neuro::HiddenState emitted{};
         for (std::size_t neuron = 0; neuron < neuronCount; ++neuron) {
             hidden[neuron] = agentHiddenState(agent, neuron);
             aux[neuron] = agentHiddenAux(agent, neuron);
+            emitted[neuron] = agentHiddenOut(agent, neuron);
         }
         const neuro::Outputs output = neuro::evaluate(
             weights, sampleAgentInputs(agent, signals, worldOccupancy, settings, worldStructures),
-            hidden, aux, settings.deltaTime, static_cast<brain::uint>(settings.neuronModel), shape);
+            hidden, aux, emitted, settings.deltaTime,
+            static_cast<brain::uint>(settings.neuronModel), shape);
         for (std::size_t neuron = 0; neuron < neuronCount; ++neuron) {
             setAgentHiddenState(agent, neuron, hidden[neuron]);
             setAgentHiddenAux(agent, neuron, aux[neuron]);
+            setAgentHiddenOut(agent, neuron, emitted[neuron]);
         }
 
         agent.signal.x = std::clamp(output[brain::BrainSignalIntensityOutput], 0.0F, 1.0F);

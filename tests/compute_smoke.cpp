@@ -468,7 +468,7 @@ private:
 // happening again the next lane.
 constexpr std::size_t agentDriftScalarCount = 12;
 using AgentDrift =
-    std::array<double, agentDriftScalarCount + vkexp::agentHiddenVectorCount * 8>;
+    std::array<double, agentDriftScalarCount + vkexp::agentHiddenVectorCount * 12>;
 constexpr double accumulatedDriftBudget = 1.0e-3;
 
 // Cells and occupancy are compared exactly. They are integers, and the whole
@@ -547,6 +547,10 @@ void compareAgents(const vkexp::AgentState& expected, const vkexp::AgentState& a
         same(expected.hiddenAux[index].y, actual.hiddenAux[index].y, "hiddenAux.y");
         same(expected.hiddenAux[index].z, actual.hiddenAux[index].z, "hiddenAux.z");
         same(expected.hiddenAux[index].w, actual.hiddenAux[index].w, "hiddenAux.w");
+        same(expected.hiddenOut[index].x, actual.hiddenOut[index].x, "hiddenOut.x");
+        same(expected.hiddenOut[index].y, actual.hiddenOut[index].y, "hiddenOut.y");
+        same(expected.hiddenOut[index].z, actual.hiddenOut[index].z, "hiddenOut.z");
+        same(expected.hiddenOut[index].w, actual.hiddenOut[index].w, "hiddenOut.w");
     }
 }
 
@@ -1217,6 +1221,8 @@ void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
     expectFloat4("agent.hidden.back", agent.hidden.back());
     expectFloat4("agent.hiddenAux.front", agent.hiddenAux.front());
     expectFloat4("agent.hiddenAux.back", agent.hiddenAux.back());
+    expectFloat4("agent.hiddenOut.front", agent.hiddenOut.front());
+    expectFloat4("agent.hiddenOut.back", agent.hiddenOut.back());
 
     constexpr VkMemoryPropertyFlags hostMemory =
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
@@ -1368,9 +1374,11 @@ void runGenomeAddressingProbe(vkexp::HeadlessComputeContext& context) {
 // into the loop above because the plan changes the genome length, and a case
 // that changed two things at once would not say which one drifted.
 void runDeepPlanParity(vkexp::HeadlessComputeContext& context,
-                       const std::array<std::uint32_t, 3>& squashes, const char* what) {
+                       const std::array<std::uint32_t, 3>& squashes, const char* what,
+                       const std::uint32_t lateral = 0) {
     vkexp::SimulationStep settings =
         paritySettings(vkexp::Neighborhood::Moore, vkexp::NeuronModel::Gated);
+    settings.lateralRecurrence = lateral;
     settings.hiddenLayers = {12, 8, 8};
     settings.hiddenActivation = squashes;
     const vkexp::lattice::PopulationLayout layout{12, 10, 2};
@@ -1466,6 +1474,14 @@ int runAll() {
         {vkexp::neuro::kernel::BrainActivationReluUnit, 0U,
          vkexp::neuro::kernel::BrainActivationReluUnit},
         "relu-unit at both ends");
+    // And with every hidden layer reading itself one tick late. Worth its own
+    // case for a reason none of the squashes have: the lateral term is the only
+    // thing in the forward pass that reads a lane the pass itself writes, so a
+    // side that read this tick's emission instead of last tick's would agree
+    // for one step and then walk away.
+    runDeepPlanParity(context, {0U, 0U, 0U}, "lateral, tanh", 1U);
+    runDeepPlanParity(context, {0U, vkexp::neuro::kernel::BrainActivationReluUnit, 0U},
+                      "lateral, relu-unit in the middle", 1U);
 
     std::cout << "Lattice parity: CPU and GPU agree\n";
     return 0;
