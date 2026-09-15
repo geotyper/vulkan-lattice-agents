@@ -132,14 +132,14 @@ const uint BrainActivationTanhScaled = 2u;
 // does not all pile up at the extremes. The middle of the same axis.
 const uint BrainActivationSoftsign = 3u;
 
-// What a world means when it does not say otherwise: two layers, 35 then 15,
-// both squashed by sine. Separate from the capacity on purpose -- raising how
-// many neurons there *may* be must not quietly widen every world's brain, which
-// is exactly what sharing one constant would have done.
+// What a world means when it does not say otherwise: one hidden layer of 35,
+// squashed by sine. Separate from the capacity on purpose -- raising how many
+// neurons there *may* be must not quietly widen every world's brain, which is
+// exactly what sharing one constant would have done.
 //
-// It was one layer of twenty under tanh for the whole life of this project, and
-// it is a default and not a conclusion. Four generations of construction under
-// the reactive model, three seeds, is what moved it:
+// It was one layer of twenty under tanh for the whole life of this project. What
+// moved it is the squash and not the depth: four generations of construction
+// under the reactive model, three seeds, on a two-layer 35+15 plan,
 //
 //   35+15 squash    walk   blocks    median
 //   tanh, tanh     10.1%    37-49     45-51
@@ -147,12 +147,18 @@ const uint BrainActivationSoftsign = 3u;
 //   tanh, sin      20.9%   104-134   125-133
 //   sin,  sin      29.9%   136-144   218-234
 //
-// The order holds under the time-constant model too, at a third of the scores.
-// Sine in the first layer alone is the weakest of the three sine placements,
+// and the order holds under the time-constant model too, at a third of the
+// scores. Sine in the first layer alone is the weakest of the three placements,
 // which is worth saying because the obvious guess is the other way round: it is
 // the layer feeding the output that gains most from not being nearly binary.
+//
+// One layer and not the two those numbers were taken on, which is a deliberate
+// trade and not what was measured: the second layer doubles the genome for a
+// gain nobody has separated from sine's, and a single layer is the plan every
+// other measurement in this project was taken on. The width is the first layer's
+// from that sweep. A two-layer plan is one flag away -- `--hidden 35,15` -- and
+// still carries sine in both.
 const uint BrainDefaultHiddenWidth = 35u;
-const uint BrainDefaultSecondHiddenWidth = 15u;
 const uint BrainDefaultHiddenSquash = BrainActivationSine;
 
 // --- derived layout: never edited by hand ------------------------------------

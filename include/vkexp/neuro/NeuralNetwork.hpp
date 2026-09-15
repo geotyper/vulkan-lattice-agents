@@ -30,7 +30,6 @@ struct Topology {
     static constexpr std::size_t hiddenLayerCount = kernel::BrainHiddenLayerCapacity;
     // What a world gets when it does not ask for anything else.
     static constexpr std::size_t defaultHiddenCount = kernel::BrainDefaultHiddenWidth;
-    static constexpr std::size_t defaultSecondHiddenCount = kernel::BrainDefaultSecondHiddenWidth;
     static constexpr std::size_t turnOutputCount = kernel::BrainTurnOutputCount;
     static constexpr std::size_t actuatorOutputCount = kernel::BrainActuatorOutputCount;
     static constexpr std::size_t outputCount = kernel::BrainOutputCapacity;
@@ -156,16 +155,17 @@ inline constexpr BrainShape maximumBrainShape{Topology::inputCount, Topology::hi
                                               Topology::outputCount};
 
 // Every sensor, every actuator, and the hidden plan a world runs when it does
-// not ask for another: 35 then 15, both sine. Deliberately not the maximum --
-// widening the capacity must not widen every world's brain behind its back --
-// and see BrainDefaultHiddenWidth for the measurement that chose it.
+// not ask for another: one layer of 35, squashed by sine. Deliberately not the
+// maximum -- widening the capacity must not widen every world's brain behind its
+// back -- and see BrainDefaultHiddenWidth for the measurement that chose the
+// squash and the reasoning that chose the depth.
 inline constexpr BrainShape defaultBrainShape{
     Topology::inputCount,
     Topology::defaultHiddenCount,
     Topology::outputCount,
-    Topology::defaultSecondHiddenCount,
     0,
-    {kernel::BrainDefaultHiddenSquash, kernel::BrainDefaultHiddenSquash,
+    0,
+    {kernel::BrainDefaultHiddenSquash, kernel::BrainActivationTanh,
      kernel::BrainActivationTanh}};
 
 [[nodiscard]] constexpr std::uint32_t packBrainLayout(const BrainShape shape) {

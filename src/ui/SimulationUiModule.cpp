@@ -1051,10 +1051,10 @@ void SimulationUiModule::drawBrainWindow(const neuro::BrainShape& brain) {
         }
         ImGui::SliderInt(label, &draft[slot], 1, std::max(capacity - spentElsewhere, 1));
         // The squash beside the width, because they are one decision about one
-        // layer. Sine is the default on the first two and it is not a
-        // conclusion: it measured three times the blocks of tanh over four
-        // generations of construction, and four generations is where a run
-        // starts, not where it gets to.
+        // layer. Sine is the default on the first and it is not a conclusion: it
+        // measured three times the blocks of tanh over four generations of
+        // construction, and four generations is where a run starts, not where it
+        // gets to.
         static constexpr std::array<const char*, 4> squashNames{"tanh", "sin", "tanh / sqrt(n)",
                                                                 "softsign"};
         ImGui::SetNextItemWidth(ImGui::CalcItemWidth() * 0.6F);
@@ -1115,8 +1115,9 @@ void SimulationUiModule::drawBrainWindow(const neuro::BrainShape& brain) {
         state_.controls.resetRequested = true;
     }
     ImGui::EndDisabled();
-    ImGui::SetItemTooltip("Two hidden layers, 35 then 15, both squashed by sine -- what a fresh "
-                          "run uses and what the measurements in BrainKernel.inl chose.");
+    ImGui::SetItemTooltip("One hidden layer of 35, squashed by sine -- what a fresh run uses. "
+                          "The squash is what the measurements in BrainKernel.inl chose; the "
+                          "single layer is a trade against the genome length.");
 
     if (changed) {
         ImGui::TextColored(ImVec4{0.95F, 0.75F, 0.25F, 1.0F}, "not applied yet");

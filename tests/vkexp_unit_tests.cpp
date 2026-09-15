@@ -291,12 +291,10 @@ void testNeuralNetworkContract() {
               plan.outputCount == vkexp::neuro::Topology::outputCount,
           "The default plan uses the lattice's own input and output widths");
     check(plan.hiddenCount == vkexp::neuro::Topology::defaultHiddenCount &&
-              plan.secondHiddenCount == vkexp::neuro::Topology::defaultSecondHiddenCount &&
-              plan.hiddenLayerCount() == 2,
-          "The default plan is the two hidden layers the default names");
-    check(plan.hiddenActivation[0] == vkexp::neuro::kernel::BrainDefaultHiddenSquash &&
-              plan.hiddenActivation[1] == vkexp::neuro::kernel::BrainDefaultHiddenSquash,
-          "and both of them carry the squash it was measured with");
+              plan.hiddenLayerCount() == 1,
+          "The default plan is one hidden layer of the default width");
+    check(plan.hiddenActivation[0] == vkexp::neuro::kernel::BrainDefaultHiddenSquash,
+          "and it carries the squash the default names");
 
     vkexp::SimulationStep deep{};
     deep.hiddenLayers = {12, 8, 8};
@@ -382,7 +380,7 @@ void testBrainForwardPass() {
     // neuron layer and a widening plan are where an off-by-one in a source count
     // shows up as something other than a rounding difference.
     const std::array<Case, 8> cases{{
-        {vkexp::neuro::defaultBrainShape, "the default 78 -> 35 -> 15 -> 6"},
+        {vkexp::neuro::defaultBrainShape, "the default 78 -> 35 -> 6"},
         {{57, 20, 5}, "a trimmed 57 -> 20 -> 5"},
         // One of each squash, so the hand-computed chain walks all four rather
         // than only the one the default happens to use.
