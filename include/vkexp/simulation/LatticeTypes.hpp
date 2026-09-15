@@ -18,16 +18,18 @@ enum class NeuronModel : std::uint32_t {
     Gated = neuro::kernel::NeuronModelGated,
     Spiking = neuro::kernel::NeuronModelSpiking,
     Adaptive = neuro::kernel::NeuronModelAdaptive,
+    Oscillator = neuro::kernel::NeuronModelOscillator,
 };
 
 inline constexpr std::size_t neuronModelCount = neuro::kernel::NeuronModelCount;
 
-// Whether a model emits pulses rather than a squashed state. Both of these
-// write 1 or 0 and never reach a squash, so both must have their activation
-// bits canonicalised: a run that carried "sin" in its plan would write an
-// archive claiming a network it was never trained as.
+// Whether a model emits pulses rather than a squashed state. These write 1 or 0
+// and never reach a squash, so each must have its activation bits canonicalised:
+// a run that carried "sin" in its plan would write an archive claiming a network
+// it was never trained as.
 [[nodiscard]] constexpr bool neuronModelFires(const NeuronModel model) {
-    return model == NeuronModel::Spiking || model == NeuronModel::Adaptive;
+    return model == NeuronModel::Spiking || model == NeuronModel::Adaptive ||
+           model == NeuronModel::Oscillator;
 }
 
 // Which cells an agent may step into. Declared in LatticeKernel.inl so the

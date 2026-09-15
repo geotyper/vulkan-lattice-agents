@@ -49,7 +49,10 @@ void brainForward(inout Agent agent, float sensed[BrainInputCapacity], uint base
             // through the same mapping the gene uses.
             const uint global = stateOffset + neuron;
             float timeConstant = deltaTime;
-            if (neuronModel == NeuronModelTimeConstant || neuronModel == NeuronModelSpiking) {
+            if (neuronModel == NeuronModelTimeConstant ||
+                neuronModel == NeuronModelSpiking ||
+                neuronModel == NeuronModelAdaptive ||
+                neuronModel == NeuronModelOscillator) {
                 timeConstant = brainTimeConstant(weights[brainTimeConstantGeneIndex(
                     base, inputCount, layers, outputCount, global)]);
             } else if (neuronModel == NeuronModelGated) {
@@ -75,15 +78,26 @@ void brainForward(inout Agent agent, float sensed[BrainInputCapacity], uint base
                 float bump = 0.0;
                 float relax = deltaTime;
                 if (neuronModel == NeuronModelAdaptive) {
-                    bump = brainAdaptationBump(weights[brainAdaptationGeneIndex(
+                    bump = brainAdaptationBump(weights[brainNeuronGeneIndex(
                         base, inputCount, layers, outputCount, global,
-                        BrainAdaptationBumpGene)]);
-                    relax = brainTimeConstant(weights[brainAdaptationGeneIndex(
+                        BrainNeuronGeneBump)]);
+                    relax = brainTimeConstant(weights[brainNeuronGeneIndex(
                         base, inputCount, layers, outputCount, global,
-                        BrainAdaptationDecayGene)]);
+                        BrainNeuronGeneRelax)]);
                 }
                 hidden[neuron] = brainDischarge(state, excess, bump, relax, deltaTime);
                 agent.hiddenAux[global >> 2u][global & 3u] = excess;
+            } else if (neuronModel == NeuronModelOscillator) {
+                // The membrane is still integrated above, and here it is the
+                // drive rather than the answer: it sets how fast the phase
+                // turns, and the phase turns whether it is driven or not.
+                float phase = agentHiddenAux(agent, global);
+                const float rate = brainOscillatorRate(
+                    weights[brainNeuronGeneIndex(base, inputCount, layers, outputCount, global,
+                                                 BrainNeuronGeneRate)],
+                    state);
+                hidden[neuron] = brainOscillate(phase, rate, deltaTime);
+                agent.hiddenAux[global >> 2u][global & 3u] = phase;
             } else {
                 hidden[neuron] = brainLayerActivate(squash, state, sourceCount);
             }

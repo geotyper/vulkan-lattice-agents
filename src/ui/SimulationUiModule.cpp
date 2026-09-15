@@ -433,7 +433,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     // across a switch.
     int neuronModel = static_cast<int>(state_.settings.neuronModel);
     constexpr const char* neuronModels[] = {"Reactive", "Time constant", "Gated", "Spiking (LIF)",
-                                            "Adaptive (ALIF)"};
+                                            "Adaptive (ALIF)", "Oscillator"};
     static_assert(std::size(neuronModels) == neuronModelCount);
     if (ImGui::Combo("Neuron model", &neuronModel, neuronModels,
                      static_cast<int>(neuronModelCount))) {
@@ -460,6 +460,12 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     case NeuronModel::Spiking:
         ImGui::SetItemTooltip("Leaky Integrate-and-Fire: the state accumulates input and decays, "
                               "and a neuron emits a discrete pulse when it crosses threshold.");
+        break;
+    case NeuronModel::Oscillator:
+        ImGui::SetItemTooltip("A free-running phase: the neuron turns whether or not anything "
+                              "drives it, and what it reads sets how fast. The only model here "
+                              "that changes with no input at all -- which is what a repeated "
+                              "sequence, place and climb and place, is made of.");
         break;
     case NeuronModel::Adaptive:
         ImGui::SetItemTooltip("Adaptive LIF: the same pulse, but every discharge raises that "

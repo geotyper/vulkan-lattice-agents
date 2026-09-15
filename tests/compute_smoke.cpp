@@ -572,6 +572,8 @@ void compareAgents(const vkexp::AgentState& expected, const vkexp::AgentState& a
         return "spiking";
     case vkexp::NeuronModel::Adaptive:
         return "adaptive";
+    case vkexp::NeuronModel::Oscillator:
+        return "oscillator";
     }
     return "?";
 }
@@ -1435,7 +1437,7 @@ int runAll() {
         for (const vkexp::NeuronModel model :
              {vkexp::NeuronModel::Reactive, vkexp::NeuronModel::TimeConstant,
               vkexp::NeuronModel::Gated, vkexp::NeuronModel::Spiking,
-              vkexp::NeuronModel::Adaptive}) {
+              vkexp::NeuronModel::Adaptive, vkexp::NeuronModel::Oscillator}) {
             runLatticeTrajectoryParity(context, neighborhood, model, 120);
         }
     }

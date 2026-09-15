@@ -405,13 +405,13 @@ BrainDescription describeBrain(const BrainShape shape, const std::string_view ne
             layerName("gate", layer, "_bias"), "", target,
             bk::brainGateBiasIndex(base, inputCount, layers, outputCount, layer, 0u), width));
     }
-    // Two genes per neuron, interleaved rather than two blocks, so one neuron's
-    // pair is contiguous the way its weights are.
+    // Interleaved rather than one block per gene, so one neuron's genes are
+    // contiguous the way its weights are.
     description.weights.push_back(
-        weightBlock("adaptation", "", "hidden",
-                    bk::brainAdaptationGeneIndex(base, inputCount, layers, outputCount, 0u, 0u),
-                    bk::brainHiddenNeuronCount(layers) * bk::BrainAdaptationGeneCount,
-                    bk::brainHiddenNeuronCount(layers), bk::BrainAdaptationGeneCount));
+        weightBlock("neuron_genes", "", "hidden",
+                    bk::brainNeuronGeneIndex(base, inputCount, layers, outputCount, 0u, 0u),
+                    bk::brainHiddenNeuronCount(layers) * bk::BrainNeuronGeneCount,
+                    bk::brainHiddenNeuronCount(layers), bk::BrainNeuronGeneCount));
     return description;
 }
 

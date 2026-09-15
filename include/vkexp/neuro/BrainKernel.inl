@@ -407,6 +407,39 @@ VKEXP_BRAIN_MATH_FN float brainAdaptationBump(float gene) {
     return BrainAdaptationBumpMaximum / (1.0f + exp(-gene));
 }
 
+// Turns per second at the two ends of the gene range, and the fraction of a turn
+// a neuron spends emitting. A duty of a half would make the fastest unit a
+// square wave at thirty hertz, which at sixty ticks a second is a unit that
+// alternates every tick and carries no phase information at all; a narrower
+// pulse keeps the turn legible at every rate.
+const float BrainOscillatorSlowestHz = 0.05f; // one turn in twenty seconds
+const float BrainOscillatorFastestHz = 8.0f;
+const float BrainOscillatorDuty = 0.25f;
+
+// The rate a neuron turns at, from its own gene and what it reads. Logarithmic
+// for the same reason the time constant is: what matters about a rhythm is its
+// order of magnitude, and a linear map would spend most of the gene range
+// between four and eight turns a second.
+VKEXP_BRAIN_MATH_FN float brainOscillatorRate(float gene, float drive) {
+    const float unit = 1.0f / (1.0f + exp(-(gene + drive)));
+    return BrainOscillatorSlowestHz *
+           pow(BrainOscillatorFastestHz / BrainOscillatorSlowestHz, unit);
+}
+
+// One turn of the phase, and what the neuron emits while turning. The phase is
+// kept in [0, 1) rather than in radians so that wrapping is a subtraction and
+// cannot drift apart between two implementations the way fmod of a growing
+// number would.
+VKEXP_BRAIN_MATH_FN float brainOscillate(VKEXP_BRAIN_INOUT phase, float rate, float deltaTime) {
+    phase += rate * deltaTime;
+    // A single subtraction, not a loop: the rate is bounded above and deltaTime
+    // is a step, so the phase advances by well under one turn per tick.
+    if (phase >= 1.0f) {
+        phase -= 1.0f;
+    }
+    return phase < BrainOscillatorDuty ? 1.0f : 0.0f;
+}
+
 // One step of the continuous-time update, shared so the CPU evaluator and the
 // shader cannot integrate the neuron differently. The ratio is clamped at 1 so
 // a time constant shorter than the step cannot overshoot into oscillation --
@@ -487,7 +520,24 @@ const uint NeuronModelSpiking = 3u;
 // bump gene runs to zero, and a neuron whose bump is zero has a constant
 // threshold of one and is the spiking neuron exactly.
 const uint NeuronModelAdaptive = 4u;
-const uint NeuronModelCount = 5u;
+// A neuron whose auxiliary lane is a phase, and the phase advances every tick
+// whether or not anything is driving it. The input does not push the state
+// towards a value, it sets how fast the phase turns; the neuron emits on the
+// part of the turn where the phase is past its mark.
+//
+// The other three sources of change in this file are all reactive: reactive,
+// time-constant and gated differ only in how fast a neuron follows its input,
+// and a spiking neuron changes on its own only at the instant it discharges.
+// This one runs with no input at all, which is the property the rectified
+// measurement could not buy -- and the task the agents are failing at is a
+// repeated sequence, place and climb and place, which is what a free-running
+// phase is for.
+//
+// It reduces the same way the others do: a neuron whose rate gene is at the
+// bottom of the range turns so slowly that its phase is a constant over a
+// trial, which is a unit stuck at whatever it was emitting.
+const uint NeuronModelOscillator = 5u;
+const uint NeuronModelCount = 6u;
 
 // --- genome addressing: one dense network laid out flat ----------------------
 //
@@ -635,19 +685,23 @@ VKEXP_BRAIN_FN uint brainLastHiddenSize(uint layers) {
     return brainHiddenLayerSize(layers, count - 1u);
 }
 
-// Two genes per hidden neuron: how much a discharge raises the threshold, and
-// the time constant the raise relaxes on. Carried by every genome whatever model
-// is selected, for the same reason the gate block is -- switching a model is a
-// parameter change and not a reinterpretation of the population.
-const uint BrainAdaptationGeneCount = 2u;
-const uint BrainAdaptationBumpGene = 0u;
-const uint BrainAdaptationDecayGene = 1u;
+// The genes a neuron model needs that are not weights: three per hidden neuron,
+// carried by every genome whatever model is selected, for the same reason the
+// gate block is -- switching a model is a parameter change and not a
+// reinterpretation of the population. Each slot means one thing under every
+// model that reads it and is ignored by the rest; none is ever reused for a
+// second meaning, because a gene that means one thing here and another there is
+// a population that cannot be switched at all.
+const uint BrainNeuronGeneCount = 3u;
+const uint BrainNeuronGeneBump = 0u;  // Adaptive: threshold raise per discharge
+const uint BrainNeuronGeneRelax = 1u; // Adaptive: time constant the raise decays on
+const uint BrainNeuronGeneRate = 2u;  // Oscillator: turns per second before drive
 
 VKEXP_BRAIN_FN uint brainWeightCount(uint inputCount, uint layers, uint outputCount) {
     const uint forward = brainForwardBlockSize(inputCount, layers);
     return forward + brainLastHiddenSize(layers) * outputCount + outputCount +
            brainHiddenNeuronCount(layers) + forward +
-           brainHiddenNeuronCount(layers) * BrainAdaptationGeneCount;
+           brainHiddenNeuronCount(layers) * BrainNeuronGeneCount;
 }
 
 // Start of a layer's own weights, walking the layers before it.
@@ -708,18 +762,18 @@ VKEXP_BRAIN_FN uint brainGateWeightIndex(uint base, uint inputCount, uint layers
                                  inputCount, layers, layer, neuron, sourceIndex);
 }
 
-VKEXP_BRAIN_FN uint brainAdaptationBlockOffset(uint base, uint inputCount, uint layers,
-                                              uint outputCount) {
+VKEXP_BRAIN_FN uint brainNeuronGeneBlockOffset(uint base, uint inputCount, uint layers,
+                                               uint outputCount) {
     return brainGateBlockOffset(base, inputCount, layers, outputCount) +
            brainForwardBlockSize(inputCount, layers);
 }
 
 // Neurons numbered across all layers end to end, the same way the states and
 // the time constants are.
-VKEXP_BRAIN_FN uint brainAdaptationGeneIndex(uint base, uint inputCount, uint layers,
-                                             uint outputCount, uint neuron, uint gene) {
-    return brainAdaptationBlockOffset(base, inputCount, layers, outputCount) +
-           neuron * BrainAdaptationGeneCount + gene;
+VKEXP_BRAIN_FN uint brainNeuronGeneIndex(uint base, uint inputCount, uint layers,
+                                         uint outputCount, uint neuron, uint gene) {
+    return brainNeuronGeneBlockOffset(base, inputCount, layers, outputCount) +
+           neuron * BrainNeuronGeneCount + gene;
 }
 
 VKEXP_BRAIN_FN uint brainGateBiasIndex(uint base, uint inputCount, uint layers, uint outputCount,

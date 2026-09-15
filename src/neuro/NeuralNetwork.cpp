@@ -51,7 +51,10 @@ Outputs evaluate(const std::span<const float> weights, const Inputs& inputs,
             // gate is exactly the fixed-time-constant neuron.
             const kernel::uint global = stateOffset + neuron;
             float timeConstant = deltaTime;
-            if (model == kernel::NeuronModelTimeConstant || model == kernel::NeuronModelSpiking) {
+            if (model == kernel::NeuronModelTimeConstant ||
+                model == kernel::NeuronModelSpiking ||
+                model == kernel::NeuronModelAdaptive ||
+                model == kernel::NeuronModelOscillator) {
                 timeConstant = kernel::brainTimeConstant(weights[kernel::brainTimeConstantGeneIndex(
                     base, inputCount, layers, outputCount, global)]);
             } else if (model == kernel::NeuronModelGated) {
@@ -77,16 +80,27 @@ Outputs evaluate(const std::span<const float> weights, const Inputs& inputs,
                 float relax = deltaTime;
                 if (model == kernel::NeuronModelAdaptive) {
                     bump = kernel::brainAdaptationBump(
-                        weights[kernel::brainAdaptationGeneIndex(base, inputCount, layers,
+                        weights[kernel::brainNeuronGeneIndex(base, inputCount, layers,
                                                                  outputCount, global,
-                                                                 kernel::BrainAdaptationBumpGene)]);
-                    relax = kernel::brainTimeConstant(weights[kernel::brainAdaptationGeneIndex(
+                                                                 kernel::BrainNeuronGeneBump)]);
+                    relax = kernel::brainTimeConstant(weights[kernel::brainNeuronGeneIndex(
                         base, inputCount, layers, outputCount, global,
-                        kernel::BrainAdaptationDecayGene)]);
+                        kernel::BrainNeuronGeneRelax)]);
                 }
                 produced[neuron] =
                     kernel::brainDischarge(state[global], excess, bump, relax, deltaTime);
                 aux[global] = excess;
+            } else if (model == kernel::NeuronModelOscillator) {
+                // The membrane is still integrated above, and here it is the
+                // drive rather than the answer: it sets how fast the phase
+                // turns, and the phase turns whether it is driven or not.
+                float phase = aux[global];
+                const float rate = kernel::brainOscillatorRate(
+                    weights[kernel::brainNeuronGeneIndex(base, inputCount, layers, outputCount,
+                                                         global, kernel::BrainNeuronGeneRate)],
+                    state[global]);
+                produced[neuron] = kernel::brainOscillate(phase, rate, deltaTime);
+                aux[global] = phase;
             } else {
                 produced[neuron] = kernel::brainLayerActivate(squash, state[global], sourceCount);
             }
@@ -205,11 +219,11 @@ Weights randomWeights(const BrainShape shape, std::mt19937& random, const bool f
     for (kernel::uint neuron = 0; neuron < neurons; ++neuron) {
         weights[kernel::brainTimeConstantGeneIndex(0U, inputCount, layers, outputCount, neuron)] =
             draw(spread);
-        // The adaptation pair, always at the full spread like the time constant
-        // beside it: both enter their range through a squash, so narrowing them
+        // The model genes, always at the full spread like the time constant
+        // beside them: each enters its range through a squash, so narrowing one
         // for a fan-in policy would narrow a range and not a sum.
-        for (kernel::uint gene = 0; gene < kernel::BrainAdaptationGeneCount; ++gene) {
-            weights[kernel::brainAdaptationGeneIndex(0U, inputCount, layers, outputCount, neuron,
+        for (kernel::uint gene = 0; gene < kernel::BrainNeuronGeneCount; ++gene) {
+            weights[kernel::brainNeuronGeneIndex(0U, inputCount, layers, outputCount, neuron,
                                                      gene)] = draw(spread);
         }
     }

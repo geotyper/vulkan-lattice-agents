@@ -1345,10 +1345,10 @@ void testAdaptiveNeuron() {
         // A time constant of one step, so the membrane is the drive and the
         // only thing separating the two models is the threshold.
         weights[bk::brainTimeConstantGeneIndex(0U, inputs, layers, outputs, 0U)] = -20.0F;
-        weights[bk::brainAdaptationGeneIndex(0U, inputs, layers, outputs, 0U,
-                                             bk::BrainAdaptationBumpGene)] = 20.0F;
-        weights[bk::brainAdaptationGeneIndex(0U, inputs, layers, outputs, 0U,
-                                             bk::BrainAdaptationDecayGene)] = 20.0F;
+        weights[bk::brainNeuronGeneIndex(0U, inputs, layers, outputs, 0U,
+                                             bk::BrainNeuronGeneBump)] = 20.0F;
+        weights[bk::brainNeuronGeneIndex(0U, inputs, layers, outputs, 0U,
+                                             bk::BrainNeuronGeneRelax)] = 20.0F;
         vkexp::neuro::HiddenState state{};
         vkexp::neuro::HiddenState aux{};
         int fired = 0;
@@ -1368,6 +1368,80 @@ void testAdaptiveNeuron() {
           "and an adapting one, on the same drive and the same genome, spends most of the "
           "run recovering -- which is the whole of what this model adds");
     check(adaptive > 0, "but is not simply switched off");
+}
+
+// The oscillator, whose whole claim is that it changes with no input at all.
+void testOscillatorNeuron() {
+    namespace bk = vkexp::neuro::kernel;
+    constexpr float step = 1.0F / 60.0F;
+
+    // The phase stays in [0, 1) and wraps by subtraction, so a long run cannot
+    // walk it off into a range where the duty comparison stops meaning anything.
+    {
+        float phase = 0.0F;
+        for (int tick = 0; tick < 5000; ++tick) {
+            (void)bk::brainOscillate(phase, bk::BrainOscillatorFastestHz, step);
+            check(phase >= 0.0F && phase < 1.0F, "The phase never leaves its turn");
+        }
+    }
+    // It emits on the early part of the turn and is silent on the rest, and over
+    // a whole turn the two add up to the duty.
+    {
+        float phase = 0.0F;
+        const float rate = 1.0F; // one turn a second, so sixty ticks is a turn
+        int emitted = 0;
+        for (int tick = 0; tick < 60; ++tick) {
+            emitted += bk::brainOscillate(phase, rate, step) > 0.5F ? 1 : 0;
+        }
+        const int expected = static_cast<int>(60.0F * bk::BrainOscillatorDuty);
+        check(std::abs(emitted - expected) <= 1,
+              "and spends the duty fraction of each turn emitting");
+    }
+    // Faster drive, more turns. This is the whole of what the input does.
+    {
+        const float slow = bk::brainOscillatorRate(-4.0F, 0.0F);
+        const float fast = bk::brainOscillatorRate(4.0F, 0.0F);
+        check(slow < fast, "A higher gene turns the neuron faster");
+        check(bk::brainOscillatorRate(0.0F, -4.0F) < bk::brainOscillatorRate(0.0F, 4.0F),
+              "and so does a stronger drive, which is the only thing the input does here");
+        check(slow >= bk::BrainOscillatorSlowestHz && fast <= bk::BrainOscillatorFastestHz,
+              "and the rate stays inside its range at either end");
+    }
+
+    // Through the evaluator, with every weight zero: no input, no bias, nothing
+    // driving anything. Every other model in this file emits a constant under
+    // those conditions. This one has to move.
+    const vkexp::neuro::BrainShape shape{4, 1, vkexp::neuro::Topology::actuatorOutputCount};
+    const auto inputs = static_cast<bk::uint>(shape.inputCount);
+    const auto outputs = static_cast<bk::uint>(shape.outputCount);
+    const bk::uint layers = shape.packedLayers();
+    const auto changes = [&](const bk::uint model) {
+        vkexp::neuro::Weights weights = vkexp::neuro::makeWeights(shape);
+        weights[bk::brainOutputWeightIndex(0U, inputs, layers, 0U, 0U)] = 1.0F;
+        // The top of the rate range, so a turn fits inside the run below.
+        weights[bk::brainNeuronGeneIndex(0U, inputs, layers, outputs, 0U,
+                                         bk::BrainNeuronGeneRate)] = 20.0F;
+        vkexp::neuro::HiddenState state{};
+        vkexp::neuro::HiddenState aux{};
+        int transitions = 0;
+        float previous = -1.0F;
+        for (int tick = 0; tick < 120; ++tick) {
+            const vkexp::neuro::Outputs produced = vkexp::neuro::evaluate(
+                weights, vkexp::neuro::Inputs{}, state, aux, step, model, shape);
+            if (tick > 0 && (produced[0] > 0.5F) != (previous > 0.5F)) {
+                ++transitions;
+            }
+            previous = produced[0];
+        }
+        return transitions;
+    };
+    check(changes(bk::NeuronModelTimeConstant) == 0,
+          "With nothing driving it a leaky neuron emits one answer for the whole run");
+    check(changes(bk::NeuronModelSpiking) == 0, "and so does a spiking one, having nothing to "
+                                                "integrate");
+    check(changes(bk::NeuronModelOscillator) > 2,
+          "while the oscillator turns anyway -- the property none of the others has, and "
+          "the reason it is here");
 }
 
 void testRandomWeights() {
@@ -1681,10 +1755,10 @@ void testGatedNeurons() {
         static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity), 0u, 0u);
     constexpr auto capacityInputs = static_cast<kernel::uint>(vkexp::neuro::Topology::inputCount);
     constexpr auto capacityOutputs = static_cast<kernel::uint>(vkexp::neuro::Topology::outputCount);
-    check(kernel::brainAdaptationGeneIndex(
+    check(kernel::brainNeuronGeneIndex(
               0u, capacityInputs, widest, capacityOutputs,
               static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity) - 1u,
-              kernel::BrainAdaptationGeneCount - 1u) ==
+              kernel::BrainNeuronGeneCount - 1u) ==
               vkexp::neuro::Topology::maximumWeightCount - 1u,
           "The last block ends exactly at the end of the genome");
     // And the gate block still ends where the adaptation block begins, which is
@@ -1693,7 +1767,7 @@ void testGatedNeurons() {
               0u, capacityInputs, widest, capacityOutputs, 0u,
               static_cast<kernel::uint>(vkexp::neuro::Topology::hiddenNeuronCapacity) - 1u) +
                   1u ==
-              kernel::brainAdaptationGeneIndex(0u, capacityInputs, widest, capacityOutputs, 0u, 0u),
+              kernel::brainNeuronGeneIndex(0u, capacityInputs, widest, capacityOutputs, 0u, 0u),
           "and the gate block still ends where the adaptation block starts");
     check(kernel::brainGateWeightIndex(0u, inputCount, layers, outputCount, 0u, 0u, 0u) >
               kernel::brainTimeConstantGeneIndex(0u, inputCount, layers, outputCount,
@@ -3109,6 +3183,7 @@ int main() {
     testRunSnapshotRoundTrip();
     testLayerActivation();
     testAdaptiveNeuron();
+    testOscillatorNeuron();
     testRandomWeights();
     testPopulationReload();
     testStepParameterPacking();

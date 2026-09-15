@@ -116,7 +116,7 @@ void printHelp(const char* executable) {
                  "  --side-support           allow cardinal face-supported bridge blocks\n"
                  "  --boundary-penalty <x>   charged per agent-tick on the x/z edge (0.002)\n\n"
                  "Ablations:\n"
-                 "  --neuron-model <name>    reactive|time|gated|spiking|adaptive: where a\n"
+                 "  --neuron-model <name>    reactive|time|gated|spiking|adaptive|oscillator\n"
                  "                           neuron's time constant comes from. reactive pins\n"
                  "                           it to the step; spiking uses leaky\n"
                  "                           integrate-and-fire pulses; gated recomputes it\n"
@@ -322,8 +322,11 @@ void parseLatticeExtents(const std::string_view text, Options& options) {
     if (name == "adaptive" || name == "alif") {
         return vkexp::NeuronModel::Adaptive;
     }
+    if (name == "oscillator" || name == "cpg") {
+        return vkexp::NeuronModel::Oscillator;
+    }
     fail("Unknown neuron model '" + std::string{name} +
-         "'; expected reactive, time, gated, spiking or adaptive");
+         "'; expected reactive, time, gated, spiking, adaptive or oscillator");
 }
 
 // The short form, for files rather than for reading.
@@ -339,6 +342,8 @@ void parseLatticeExtents(const std::string_view text, Options& options) {
         return "spiking";
     case vkexp::NeuronModel::Adaptive:
         return "adaptive";
+    case vkexp::NeuronModel::Oscillator:
+        return "oscillator";
     }
     return "time";
 }
@@ -355,6 +360,8 @@ void parseLatticeExtents(const std::string_view text, Options& options) {
         return "spiking (leaky integrate-and-fire discrete pulses)";
     case vkexp::NeuronModel::Adaptive:
         return "adaptive (integrate-and-fire whose threshold rises as it fires)";
+    case vkexp::NeuronModel::Oscillator:
+        return "oscillator (a free-running phase the input sets the rate of)";
     }
     return "unknown";
 }
