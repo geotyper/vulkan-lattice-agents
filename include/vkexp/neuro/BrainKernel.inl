@@ -38,7 +38,7 @@ const uint BrainNeighborCount = 17u;
 // block and two fifths aimed out of the world, which is what being unable to
 // tell them apart costs.
 const uint BrainNeighborChannels = 4u;
-// What the world's task tells the agent. Six slots, read differently by each
+// What the world's task tells the agent. Eight slots, read differently by each
 // world and named once here rather than in three sensing functions:
 //
 //   beacon        0-2 unit vector to the beacon, 3 nearness, 4-5 unused
@@ -46,12 +46,16 @@ const uint BrainNeighborChannels = 4u;
 //                 3 standing on something, 4-5 unused
 //   harvest       0-2 unit vector to the resource, 3 nearness,
 //                 4 may build now, 5 carrying a load
+//   canopy        0-2 unit vector to the nearest live source (to the nest
+//                 while carrying), 3 nearness, 4 may build now, 5 fed last
+//                 tick (carrying, when loads are on), 6 what a block in the
+//                 cell ahead would cost, 7 the same one level down
 //
-// A world that uses fewer leaves the rest at zero. Two spare slots across two
-// modes is a cheaper price than a block whose width depends on the mode, which
+// A world that uses fewer leaves the rest at zero. Spare slots across the other
+// modes are a cheaper price than a block whose width depends on the mode, which
 // would make a population unloadable across worlds -- the same trade the
 // neighbourhood block already makes for the movement setting.
-const uint BrainBeaconInputCount = 6u;
+const uint BrainBeaconInputCount = 8u;
 // Whether the last action was refused, and how long the agent has been standing
 // still. The stillness channel is a ramp rather than a flag, and that is the
 // whole of why it is worth a slot. See LatticeStillnessSpan.

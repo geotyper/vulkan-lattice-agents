@@ -177,6 +177,30 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
             agent.memory.y = 0.0F;
         }
 
+        // The canopy's contact is decided here, against the lattice as it stood
+        // at the top of the step, and carried to the resolve loop in the lane
+        // the load lives in: bit zero is the load, the rest is which source to
+        // feed from, plus one. Decided here and not there because feeding
+        // changes a source's stock, and every agent has to have been told
+        // whether it was live before any of them is allowed to empty it.
+        if (worldForages(settings.worldMode)) {
+            const bool carrying = settings.canopyCarry != 0U && agent.memory.w > 0.5F;
+            std::int32_t feeding = -1;
+            if (!carrying) {
+                const lattice::NearestSource nearest =
+                    lattice::nearestLiveSource(settings, world, worldStructures, agent.cell);
+                if (nearest.index >= 0) {
+                    agent.metrics.x = std::max(
+                        agent.metrics.x, kern::latticeNearness(nearest.distance, maximumDistance));
+                    if (kern::latticeBeaconReached(nearest.distance,
+                                                   settings.beaconContactRadius)) {
+                        feeding = nearest.index;
+                    }
+                }
+            }
+            agent.memory.w = (carrying ? 1.0F : 0.0F) + 2.0F * static_cast<float>(feeding + 1);
+        }
+
         // Three commands and no more: turn, or spend the tick on the one thing
         // the action output asks for. Mirrors the same grammar in
         // lattice_step.comp -- a turn ends the tick, so pointing somewhere else
@@ -459,7 +483,19 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                 worldStructures[target] = static_cast<std::int32_t>(index) + 1;
                 agent.signal.z = static_cast<float>(settings.buildIntervalTicks);
                 agent.signal.w = 1.0F;
-                agent.metrics.y += 1.0F;
+                // One block, plus whatever the field charges for this cell.
+                // The canopy counts what its blocks cost rather than how many
+                // there are, in the lane the count lives in everywhere else.
+                agent.metrics.y +=
+                    1.0F + (worldForages(settings.worldMode)
+                                ? settings.fitness.fieldCostFactor *
+                                      kern::latticeFieldCost(
+                                          world, settings.beaconSeed,
+                                          std::clamp(settings.fieldPeriod, 1U,
+                                                     kern::LatticeFieldPeriodMaximum),
+                                          settings.fieldThreshold, agent.beacon.x,
+                                          agent.beacon.y, agent.beacon.z)
+                                : 0.0F);
                 placed = true;
             }
             if (!population.buildOutcomes.empty()) {
@@ -490,6 +526,34 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
                 agent.memory.w = 0.0F;
                 agent.metrics.w += 1.0F;
             }
+        } else if (worldForages(settings.worldMode)) {
+            // Mirrors the canopy block of lattice_resolve.comp. The decide loop
+            // said which source, if any; this is where it is paid for.
+            const auto packed = static_cast<std::int32_t>(agent.memory.w);
+            bool carrying = (packed & 1) != 0;
+            const std::int32_t feeding = packed / 2 - 1;
+            if (feeding >= 0 && !worldStructures.empty()) {
+                const Int4 source =
+                    lattice::canopySourceCell(settings, world, static_cast<std::uint32_t>(feeding));
+                worldStructures[kern::latticeCellIndex(source.x, source.y, source.z,
+                                                       settings.latticeWidth,
+                                                       settings.latticeHeight)] += 1;
+                if (settings.canopyCarry != 0U) {
+                    carrying = true;
+                } else {
+                    agent.metrics.w += 1.0F;
+                }
+            } else if (carrying && agent.cell.y <= 1 &&
+                       kern::latticeInNest(agent.cell.x, agent.cell.z, settings.latticeWidth,
+                                           settings.latticeDepth, settings.canopyNestRadius)) {
+                carrying = false;
+                agent.metrics.w += 1.0F;
+            }
+            // What the next step reads back: the load when loads are on, and
+            // otherwise whether this tick fed, so an agent can tell the source
+            // it is pressed against from one that has just run dry.
+            agent.memory.w =
+                settings.canopyCarry != 0U ? (carrying ? 1.0F : 0.0F) : (feeding >= 0 ? 1.0F : 0.0F);
         } else if (settings.worldMode == WorldMode::Construction) {
             const bool onHorizontalPerimeter =
                 agent.cell.x == 0 || agent.cell.z == 0 ||
@@ -519,6 +583,12 @@ float agentFitness(const AgentState& agent, const FitnessWeights& weights) {
     return kern::latticeTrialFitness(
         agent.metrics.x, agent.metrics.y, agent.metrics.z, agent.metrics.w, weights.trackingReward,
         weights.objectiveBonus, weights.motorCostWeight, weights.refusalPenalty);
+}
+
+float canopyWorldFitness(const float feedings, const float reach, const float spent,
+                         const FitnessWeights& weights) {
+    return weights.objectiveBonus * feedings + weights.trackingReward * reach -
+           weights.blockCost * spent;
 }
 
 } // namespace vkexp

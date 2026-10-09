@@ -106,9 +106,24 @@ neuro::Inputs sampleAgentInputs(const AgentState& agent, const std::span<const f
         // numbers. Where the cell is differs: a beacon is mirrored onto the
         // agent, and a resource is derived from the world it stands in.
         Int4 objective = agent.beacon;
+        // Whether there is anything to point at. Only the canopy can say no:
+        // once every source is spent the direction reads zero, which is the
+        // honest answer and a different one from "you are standing on it".
+        bool directed = true;
+        const auto world = static_cast<std::uint32_t>(agent.beacon.w);
         if (worldHarvests(settings.worldMode)) {
-            objective = lattice::resourceCell(settings,
-                                              static_cast<std::uint32_t>(agent.beacon.w));
+            objective = lattice::resourceCell(settings, world);
+        } else if (worldForages(settings.worldMode)) {
+            if (settings.canopyCarry != 0U && agent.memory.w > 0.5F) {
+                // Loaded: the way home, to the middle of the nest.
+                objective = Int4{static_cast<std::int32_t>(settings.latticeWidth / 2U), 1,
+                                 static_cast<std::int32_t>(settings.latticeDepth / 2U), 0};
+            } else {
+                const lattice::NearestSource nearest =
+                    lattice::nearestLiveSource(settings, world, structures, agent.cell);
+                directed = nearest.index >= 0;
+                objective = directed ? nearest.cell : agent.cell;
+            }
         }
         const int deltaX = objective.x - agent.cell.x;
         const int deltaY = objective.y - agent.cell.y;
@@ -129,10 +144,31 @@ neuro::Inputs sampleAgentInputs(const AgentState& agent, const std::span<const f
         inputs[brain::brainBeaconInputIndex(2)] =
             kern::latticeDirectionComponent(bodyAheadZ, length);
         inputs[brain::brainBeaconInputIndex(3)] =
-            kern::latticeNearness(distance, latticeMaximumDistance(settings));
-        if (worldHarvests(settings.worldMode)) {
+            directed ? kern::latticeNearness(distance, latticeMaximumDistance(settings)) : 0.0F;
+        if (worldHarvests(settings.worldMode) || worldForages(settings.worldMode)) {
             inputs[brain::brainBeaconInputIndex(4)] = agent.signal.z <= 0.0F ? 1.0F : 0.0F;
             inputs[brain::brainBeaconInputIndex(5)] = std::clamp(agent.memory.w, 0.0F, 1.0F);
+        }
+        if (worldForages(settings.worldMode)) {
+            // What a block would cost in the two cells a build can land in: the
+            // one ahead, and the one below it that a cantilever falls back to.
+            // The charge is otherwise invisible until it has been paid, and a
+            // cost nobody can see coming selects for luck rather than for a
+            // route.
+            const int aheadX = agent.cell.x + kern::latticeFacingX(facing);
+            const int aheadZ = agent.cell.z + kern::latticeFacingZ(facing);
+            for (int level = 0; level < 2; ++level) {
+                const int aheadY = agent.cell.y - level;
+                inputs[brain::brainBeaconInputIndex(6U + static_cast<brain::uint>(level))] =
+                    kern::latticeInBounds(aheadX, aheadY, aheadZ, settings.latticeWidth,
+                                          settings.latticeHeight, settings.latticeDepth)
+                        ? kern::latticeFieldCost(
+                              world, settings.beaconSeed,
+                              std::clamp(settings.fieldPeriod, 1U,
+                                         kern::LatticeFieldPeriodMaximum),
+                              settings.fieldThreshold, aheadX, aheadY, aheadZ)
+                        : 0.0F;
+            }
         }
     }
 

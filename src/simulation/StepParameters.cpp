@@ -34,11 +34,16 @@ GpuStepParameters packStepParameters(const SimulationStep& settings,
             // Forced on in the chasm: without a cantilever the far half cannot
             // be reached at all, and a world whose objective is unreachable is
             // worse than no world.
-            settings.worldMode == WorldMode::Chasm ? 1U : settings.allowSideSupportedBlocks,
+            settings.worldMode == WorldMode::Chasm || settings.worldMode == WorldMode::Canopy
+                ? 1U
+                : settings.allowSideSupportedBlocks,
             settings.resourceHeightLow,
             settings.resourceHeightHigh,
             latticeGroundWidth(settings),
             settings.beaconSeed,
+            packCanopySources(settings),
+            std::clamp(settings.fieldPeriod, 1U, lattice::kernel::LatticeFieldPeriodMaximum),
+            settings.fieldThreshold,
             packFitnessWeights(settings.fitness)};
 }
 

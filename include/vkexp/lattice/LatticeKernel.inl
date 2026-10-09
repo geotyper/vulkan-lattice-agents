@@ -38,18 +38,21 @@ const uint LatticeNeighborhoodFaces = 0u;
 const uint LatticeNeighborhoodMoore = 1u;
 const uint LatticeNeighborhoodCount = 2u;
 
-// Four tasks share the lattice machinery. The navigation baseline follows a
+// Five tasks share the lattice machinery. The navigation baseline follows a
 // beacon; construction replaces it with a persistent field of supported blocks
 // and constrains agents to surfaces and climbable faces; harvest keeps every one
 // of construction's rules and moves the reward off the building and onto
 // something only a building can reach; the chasm takes away half the ground and
 // hangs the resource over the missing half, so the only route to it is one the
-// group builds out of nothing.
+// group builds out of nothing; the canopy hangs several exhaustible sources over
+// one nest and prices every block by where it stands, so what pays is a trunk
+// with branches rather than a tower per source.
 const uint LatticeWorldBeacon = 0u;
 const uint LatticeWorldConstruction = 1u;
 const uint LatticeWorldHarvest = 2u;
 const uint LatticeWorldChasm = 3u;
-const uint LatticeWorldCount = 4u;
+const uint LatticeWorldCanopy = 4u;
+const uint LatticeWorldCount = 5u;
 
 // Whether a world has a block field and the movement rules that go with it.
 // Written once because it is asked in seven places across two languages, and a
@@ -57,7 +60,7 @@ const uint LatticeWorldCount = 4u;
 // six of them.
 VKEXP_LATTICE_FN bool latticeWorldBuilds(uint worldMode) {
     return worldMode == LatticeWorldConstruction || worldMode == LatticeWorldHarvest ||
-           worldMode == LatticeWorldChasm;
+           worldMode == LatticeWorldChasm || worldMode == LatticeWorldCanopy;
 }
 
 // Whether the reward is a load fetched from a resource and carried back down.
@@ -76,6 +79,16 @@ VKEXP_LATTICE_FN bool latticeWorldFrontier(uint worldMode) {
 
 VKEXP_LATTICE_FN bool latticeWorldHarvests(uint worldMode) {
     return worldMode == LatticeWorldHarvest || worldMode == LatticeWorldChasm;
+}
+
+// Whether the reward is spread over several sources that run dry. Not a kind of
+// harvest: there is one resource per world there and it never empties, so the
+// group builds one route and uses it for ever. Here the objective moves each
+// time a source is spent, which is what makes a second branch worth building.
+// The canopy asks for no foundation either -- a branch is a cantilever, and the
+// frontier rule refuses those by construction.
+VKEXP_LATTICE_FN bool latticeWorldForages(uint worldMode) {
+    return worldMode == LatticeWorldCanopy;
 }
 
 // --- the body frame ----------------------------------------------------------
@@ -156,6 +169,63 @@ VKEXP_LATTICE_FN bool latticeGroundColumn(int x, uint groundWidth) {
     return x >= 0 && uint(x) < groundWidth;
 }
 
+// --- sources -----------------------------------------------------------------
+//
+// A source is a cell of the block field, like bedrock, and for the same reason:
+// what an agent can stand against and what its sensors report must be one fact.
+// So it is solid, it shows on the structure channel, and it holds whatever is
+// built against it.
+//
+// It also carries its own stock, which is why there is no stock buffer. The
+// value is LatticeSourceEmpty minus what is left, so a full source is far below
+// the constant, each feeding adds one, and a spent source sits at the constant
+// or just above it. "Just above" because several agents may feed in the tick
+// that empties it: each is told at the top of the step that the source is live,
+// and each is honoured. That overshoot is bounded by the agents in one world,
+// which is why the test for "is this a source at all" has room to spare -- and
+// why the whole thing is an addition, which lands the same whatever order the
+// atomics arrive in.
+const int LatticeSourceEmpty = -1048576;
+const int LatticeSourceCeiling = -65536;
+const uint LatticeSourceCapacity = 16u;
+
+VKEXP_LATTICE_FN bool latticeIsSource(int cell) { return cell < LatticeSourceCeiling; }
+
+VKEXP_LATTICE_FN bool latticeSourceAlive(int cell) { return cell < LatticeSourceEmpty; }
+
+VKEXP_LATTICE_FN uint latticeSourceRemaining(int cell) {
+    return cell < LatticeSourceEmpty ? uint(LatticeSourceEmpty - cell) : 0u;
+}
+
+VKEXP_LATTICE_FN int latticeSourceCell(uint stock) { return LatticeSourceEmpty - int(stock); }
+
+// The nest: a disc on the floor about the middle of the world. A disc and not a
+// point so that growth at the base has a rim to start from rather than one
+// column everybody queues for. Measured in half cells, so an even width has its
+// centre on a corner and an odd one in a cell, and both are round.
+VKEXP_LATTICE_FN bool latticeInNest(int x, int z, uint width, uint depth, uint radius) {
+    const int offsetX = 2 * x + 1 - int(width);
+    const int offsetZ = 2 * z + 1 - int(depth);
+    const int reach = 2 * int(radius);
+    return offsetX * offsetX + offsetZ * offsetZ <= reach * reach;
+}
+
+// The canopy's per-world settings as one word: how many sources, how wide the
+// nest, and whether a feeding is a load. One word because the step block had
+// room for three and the cost field wanted two of them.
+VKEXP_LATTICE_FN uint latticeCanopyPack(uint sources, uint nestRadius, bool carry) {
+    return (sources & 0xffu) | ((nestRadius & 0xffu) << 8u) | (carry ? 0x80000000u : 0u);
+}
+
+VKEXP_LATTICE_FN uint latticeCanopySourceCount(uint packed) {
+    const uint count = packed & 0xffu;
+    return count < LatticeSourceCapacity ? count : LatticeSourceCapacity;
+}
+
+VKEXP_LATTICE_FN uint latticeCanopyNestRadius(uint packed) { return (packed >> 8u) & 0xffu; }
+
+VKEXP_LATTICE_FN bool latticeCanopyCarries(uint packed) { return (packed & 0x80000000u) != 0u; }
+
 // --- placement ---------------------------------------------------------------
 
 // The integer hash that places everything a world needs placed. Shared rather
@@ -221,6 +291,111 @@ VKEXP_LATTICE_FN int latticeResourceY(uint hash, uint lowest, uint highest, uint
     // A third mixing constant: the column already used the hash directly, and a
     // height drawn from the same bits would march with it across the worlds.
     return int(low + latticeMix(hash ^ 0x4E1A07u) % span);
+}
+
+// --- the cost field -----------------------------------------------------------
+//
+// A smooth scalar over the box that says what a block costs where it stands.
+// Value noise on a coarse grid, hashed per world like everything else, so a
+// genome is scored against several fields rather than one it could memorise.
+//
+// Integer until the last step. The corners are bytes and the interpolation
+// weights are whole cells, so the sum is exact and identical on the host and on
+// the device; only the final division is a float, and it divides two numbers
+// that are both exactly representable.
+VKEXP_LATTICE_FN uint latticeFieldCorner(uint world, uint seed, uint gridX, uint gridY,
+                                         uint gridZ) {
+    return latticeMix(latticeMix(seed ^ 0xF1E1D0u, world),
+                      gridX + (gridY << 10u) + (gridZ << 20u)) &
+           255u;
+}
+
+VKEXP_LATTICE_FN uint latticeFieldSum(uint world, uint seed, uint period, int x, int y, int z) {
+    const uint span = period > 0u ? period : 1u;
+    const uint gridX = uint(x) / span;
+    const uint gridY = uint(y) / span;
+    const uint gridZ = uint(z) / span;
+    const uint nearX = uint(x) % span;
+    const uint nearY = uint(y) % span;
+    const uint nearZ = uint(z) % span;
+    const uint farX = span - nearX;
+    const uint farY = span - nearY;
+    const uint farZ = span - nearZ;
+    const uint low =
+        (latticeFieldCorner(world, seed, gridX, gridY, gridZ) * farX +
+         latticeFieldCorner(world, seed, gridX + 1u, gridY, gridZ) * nearX) *
+            farZ +
+        (latticeFieldCorner(world, seed, gridX, gridY, gridZ + 1u) * farX +
+         latticeFieldCorner(world, seed, gridX + 1u, gridY, gridZ + 1u) * nearX) *
+            nearZ;
+    const uint high =
+        (latticeFieldCorner(world, seed, gridX, gridY + 1u, gridZ) * farX +
+         latticeFieldCorner(world, seed, gridX + 1u, gridY + 1u, gridZ) * nearX) *
+            farZ +
+        (latticeFieldCorner(world, seed, gridX, gridY + 1u, gridZ + 1u) * farX +
+         latticeFieldCorner(world, seed, gridX + 1u, gridY + 1u, gridZ + 1u) * nearX) *
+            nearZ;
+    return low * farY + high * nearY;
+}
+
+const uint LatticeFieldPeriodMaximum = 16u;
+
+// What a block in this cell is charged, 0..1. Nothing below the threshold and a
+// ramp above it, so the field reads as regions to go round rather than as a tax
+// on building anywhere at all.
+VKEXP_LATTICE_MATH_FN float latticeFieldCost(uint world, uint seed, uint period, float threshold,
+                                             int x, int y, int z) {
+    const uint span = period > 0u ? period : 1u;
+    const float value = float(latticeFieldSum(world, seed, span, x, y, z)) /
+                        float(255u * span * span * span);
+    const float cutoff = clamp(threshold, 0.0f, 0.99f);
+    return clamp((value - cutoff) / (1.0f - cutoff), 0.0f, 1.0f);
+}
+
+// Where the canopy's sources hang: anywhere on the floor plan, in a band of
+// heights, and out of the dear part of the cost field. The last is what makes
+// the field read as something to go round rather than somewhere that cannot be
+// reached cheaply at all -- a source in the middle of a dear region charges for
+// the last blocks of every branch to it, whichever way the branch came.
+//
+// Several candidates are drawn and the cheapest is kept, the first on a tie.
+// Compared on the field's integer sum, never on the cost: the sum is exact on
+// both sides, and it knows nothing of the threshold, so dragging that slider
+// mid-run cannot move a source out from under the cell that holds its stock.
+// The grid period does move them, which is why changing it restarts the run.
+const uint LatticeCanopySourceCandidates = 8u;
+
+VKEXP_LATTICE_FN uint latticeCanopySourceDraw(uint world, uint seed, uint source, uint attempt) {
+    return latticeMix(latticeMix(seed ^ 0xCA90B7u, world),
+                      source + attempt * LatticeSourceCapacity);
+}
+
+VKEXP_LATTICE_FN int latticeCanopySourceX(uint hash, uint width) { return int(hash % width); }
+
+VKEXP_LATTICE_FN int latticeCanopySourceZ(uint hash, uint width, uint depth) {
+    return int((hash / width) % depth);
+}
+
+// The hash of the candidate that won, from which the three coordinates follow
+// by the functions above and latticeResourceY. A hash and not a cell because
+// the shared source has no vector type both languages agree on.
+VKEXP_LATTICE_FN uint latticeCanopySourceHash(uint world, uint seed, uint source, uint width,
+                                              uint height, uint depth, uint lowest, uint highest,
+                                              uint period) {
+    uint chosen = latticeCanopySourceDraw(world, seed, source, 0u);
+    uint cheapest = 0xffffffffu;
+    for (uint attempt = 0u; attempt < LatticeCanopySourceCandidates; ++attempt) {
+        const uint hash = latticeCanopySourceDraw(world, seed, source, attempt);
+        const uint sum = latticeFieldSum(world, seed, period,
+                                         latticeCanopySourceX(hash, width),
+                                         latticeResourceY(hash, lowest, highest, height),
+                                         latticeCanopySourceZ(hash, width, depth));
+        if (sum < cheapest) {
+            cheapest = sum;
+            chosen = hash;
+        }
+    }
+    return chosen;
 }
 
 // Why a build attempt did or did not become a block, counted per world over a

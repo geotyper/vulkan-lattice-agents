@@ -518,7 +518,48 @@ GenerationSummary SimulationDriver::finishGeneration() {
         state_.statistics.buildOutcomes.clear();
         state_.statistics.bestWorld = 0;
     }
-    if (worldHarvests(state_.settings.worldMode)) {
+    if (worldForages(state_.settings.worldMode)) {
+        // Feedings, the best anyone got to a live source, and what the world's
+        // blocks cost. The last is the difference from harvest, where a block
+        // is charged nothing but the time it took: here every source can be
+        // reached by its own tower, and it is only the bill that makes one
+        // trunk with branches the better answer.
+        std::vector<float> feedings(state_.worlds.worldCount, 0.0F);
+        std::vector<float> reach(state_.worlds.worldCount, 0.0F);
+        std::vector<float> spent(state_.worlds.worldCount, 0.0F);
+        for (std::size_t agent = 0; agent < agents_.size(); ++agent) {
+            const std::uint32_t world =
+                logicalWorldForAgent(static_cast<std::uint32_t>(agent),
+                                     state_.worlds.agentsPerWorld, config_.trialsPerGenome);
+            feedings[world] += agents_[agent].metrics.w;
+            reach[world] = std::max(reach[world], agents_[agent].metrics.x);
+            spent[world] += agents_[agent].metrics.y;
+        }
+        for (std::size_t genome = 0; genome < fitness.size(); ++genome) {
+            const std::uint32_t group =
+                static_cast<std::uint32_t>(genome) / state_.worlds.agentsPerWorld;
+            for (std::uint32_t trial = 0; trial < config_.trialsPerGenome; ++trial) {
+                const std::uint32_t world = group * config_.trialsPerGenome + trial;
+                fitness[genome] += canopyWorldFitness(feedings[world], reach[world],
+                                                      spent[world], state_.settings.fitness);
+            }
+            fitness[genome] /= static_cast<float>(config_.trialsPerGenome);
+        }
+        arrived = static_cast<std::size_t>(
+            std::count_if(agents_.begin(), agents_.end(),
+                          [](const AgentState& agent) { return agent.metrics.w > 0.0F; }));
+        // How much of everything on offer was actually taken. Against the stock
+        // rather than against the agents, because twelve agents camped on one
+        // source and twelve spread over eight are the same headcount.
+        const float offered =
+            static_cast<float>(state_.worlds.worldCount) *
+            static_cast<float>(std::min(state_.settings.canopySourceCount,
+                                        lattice::kernel::LatticeSourceCapacity)) *
+            static_cast<float>(std::max(state_.settings.canopySourceStock, 1U));
+        objectiveRatio = std::min(
+            std::accumulate(feedings.begin(), feedings.end(), 0.0F) / std::max(offered, 1.0F),
+            1.0F);
+    } else if (worldHarvests(state_.settings.worldMode)) {
         // Deliveries, and the best anyone got to the resource. Blocks score
         // nothing at all here: a block is time spent, and whether it was spent
         // well is exactly the question the world asks. The nearness term is

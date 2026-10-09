@@ -25,6 +25,9 @@ const uint LatticeViewModeTrail = 3u;
 const uint LatticeViewModeStructure = 4u;
 const uint LatticeViewModeGoal = 5u;
 const uint LatticeViewModeTerrain = 6u;
+// The canopy's cost field. It borrows the beacon lanes, as the trail does: the
+// seed, the grid period and the threshold's bits, with the world in the fourth.
+const uint LatticeViewModeField = 7u;
 
 uint latticeViewMode() { return uint(view.lattice.w) & 0xffu; }
 uint latticeViewSliceAxis() { return (uint(view.lattice.w) >> 8u) & 0xffu; }

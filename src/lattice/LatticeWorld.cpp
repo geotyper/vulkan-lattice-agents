@@ -70,6 +70,44 @@ Int4 resourceCell(const SimulationStep& settings, const std::uint32_t world) {
                 static_cast<std::int32_t>(world)};
 }
 
+Int4 canopySourceCell(const SimulationStep& settings, const std::uint32_t world,
+                      const std::uint32_t source) {
+    const std::uint32_t hash = kern::latticeCanopySourceHash(
+        world, settings.beaconSeed, source, settings.latticeWidth, settings.latticeHeight,
+        settings.latticeDepth, settings.resourceHeightLow, settings.resourceHeightHigh,
+        std::clamp(settings.fieldPeriod, 1U, kern::LatticeFieldPeriodMaximum));
+    return Int4{kern::latticeCanopySourceX(hash, settings.latticeWidth),
+                kern::latticeResourceY(hash, settings.resourceHeightLow,
+                                       settings.resourceHeightHigh, settings.latticeHeight),
+                kern::latticeCanopySourceZ(hash, settings.latticeWidth, settings.latticeDepth),
+                static_cast<std::int32_t>(world)};
+}
+
+NearestSource nearestLiveSource(const SimulationStep& settings, const std::uint32_t world,
+                                const std::span<const std::int32_t> worldStructures,
+                                const Int4& cell) {
+    NearestSource nearest{};
+    const std::uint32_t count =
+        std::min(settings.canopySourceCount, kern::LatticeSourceCapacity);
+    for (std::uint32_t source = 0; source < count; ++source) {
+        const Int4 candidate = canopySourceCell(settings, world, source);
+        const std::uint32_t index = cellIndex(settings, candidate);
+        if (index >= worldStructures.size() || !kern::latticeSourceAlive(worldStructures[index])) {
+            continue;
+        }
+        const std::uint32_t distance = kern::latticeStepDistance(
+            static_cast<std::uint32_t>(settings.neighborhood), candidate.x - cell.x,
+            candidate.y - cell.y, candidate.z - cell.z);
+        // Strictly nearer, so a tie goes to the lower index: the same answer the
+        // shader's loop gives, and one that does not flicker between two
+        // sources an agent happens to stand midway between.
+        if (nearest.index < 0 || distance < nearest.distance) {
+            nearest = {static_cast<std::int32_t>(source), candidate, distance};
+        }
+    }
+    return nearest;
+}
+
 std::vector<std::int32_t> makeTerrain(const SimulationStep& settings,
                                       const std::uint32_t worldCount) {
     const std::uint32_t cells = latticeCellsPerWorld(settings);
@@ -93,6 +131,17 @@ std::vector<std::int32_t> makeTerrain(const SimulationStep& settings,
                 field[base + kern::latticeCellIndex(static_cast<int>(x), 0, static_cast<int>(z),
                                                     settings.latticeWidth,
                                                     settings.latticeHeight)] = kern::LatticeBedrock;
+            }
+        }
+        if (worldForages(settings.worldMode)) {
+            // Two sources hashed onto one cell are one source with one stock:
+            // the second write lands on the first, and both indices then name
+            // the same cell, which is all a feeding ever addresses.
+            const std::uint32_t count =
+                std::min(settings.canopySourceCount, kern::LatticeSourceCapacity);
+            for (std::uint32_t source = 0; source < count; ++source) {
+                field[base + cellIndex(settings, canopySourceCell(settings, world, source))] =
+                    kern::latticeSourceCell(settings.canopySourceStock);
             }
         }
     }
@@ -143,6 +192,7 @@ std::vector<AgentState> makeInitialAgents(const SimulationStep& settings,
         // nearly full is exactly the configuration worth being able to run.
         const std::uint32_t start = mix(settings.beaconSeed ^ 0x5CA1EDU, world * 1021U + slot);
         const bool construction = worldBuilds(settings.worldMode);
+        const bool nested = worldForages(settings.worldMode);
         const std::uint32_t groundWidth = latticeGroundWidth(settings);
         const std::uint32_t candidateCount =
             construction ? groundWidth * settings.latticeDepth : cells;
@@ -159,6 +209,13 @@ std::vector<AgentState> makeInitialAgents(const SimulationStep& settings,
             // solved the world before the first step, which would make the
             // shaping unreadable for the whole group it is scored beside.
             if (!construction && cell.x == beacon.x && cell.y == beacon.y && cell.z == beacon.z) {
+                continue;
+            }
+            // The canopy's group starts inside the nest. Probed over the whole
+            // floor and filtered, rather than indexed over the disc, so the
+            // start still costs one hash and the disc needs no table.
+            if (nested && !kern::latticeInNest(cell.x, cell.z, settings.latticeWidth,
+                                               settings.latticeDepth, settings.canopyNestRadius)) {
                 continue;
             }
             if (occupancy[worldBase + candidateCell] != kern::LatticeNoOccupant) {

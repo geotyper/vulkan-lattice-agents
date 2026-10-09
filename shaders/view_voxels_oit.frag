@@ -29,9 +29,12 @@ layout(location = 1) out float outRevealage;
 
 void main() {
     const vec3 shaded = latticeShade(fragColour.rgb, fragNormal, fragWorld);
-    const float alpha = clamp(latticeViewMode() == LatticeViewModeTrail ? fragColour.a
-                                                                        : view.tint.x,
-                              0.0, 1.0);
+    // The trail fades with age and the cost field with how little it costs, so
+    // both carry their own alpha; everything else is one opacity for the pass.
+    const uint mode = latticeViewMode();
+    const float alpha = clamp(
+        mode == LatticeViewModeTrail || mode == LatticeViewModeField ? fragColour.a : view.tint.x,
+        0.0, 1.0);
 
     // Nearer fragments weigh more, so a voxel at the front of the box is not
     // washed out by the ones behind it. The distance is measured in

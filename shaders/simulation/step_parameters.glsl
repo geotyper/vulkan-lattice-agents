@@ -17,11 +17,12 @@
 struct FitnessWeights {
     // tracking reward, objective bonus, motor cost, refusal penalty
     vec4 shaping;
-    // signal cost factor, three spare lanes
+    // signal cost factor, field cost factor, two spare lanes
     vec4 costs;
 };
 
 float fitnessSignalCostFactor(FitnessWeights weights) { return weights.costs.x; }
+float fitnessFieldCostFactor(FitnessWeights weights) { return weights.costs.y; }
 
 struct StepParameters {
     float deltaTime;
@@ -55,6 +56,10 @@ struct StepParameters {
     uint resourceHeightHigh;
     uint groundWidth;
     uint beaconSeed;
+    // Source count, nest radius and the carry switch; see latticeCanopyPack.
+    uint canopySources;
+    uint fieldPeriod;
+    float fieldThreshold;
     FitnessWeights fitness;
 };
 
