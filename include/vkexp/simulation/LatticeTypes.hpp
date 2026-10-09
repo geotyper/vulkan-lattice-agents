@@ -36,6 +36,7 @@ enum class WorldMode : std::uint32_t {
     Construction = lattice::kernel::LatticeWorldConstruction,
     Harvest = lattice::kernel::LatticeWorldHarvest,
     Chasm = lattice::kernel::LatticeWorldChasm,
+    Canopy = lattice::kernel::LatticeWorldCanopy,
 };
 
 // Whether this world has a block field and the movement rules that go with it.
@@ -46,6 +47,11 @@ enum class WorldMode : std::uint32_t {
 // Whether its reward is a load fetched and carried back.
 [[nodiscard]] constexpr bool worldHarvests(const WorldMode mode) {
     return lattice::kernel::latticeWorldHarvests(static_cast<std::uint32_t>(mode));
+}
+
+// Whether its reward is spread over several sources that run dry.
+[[nodiscard]] constexpr bool worldForages(const WorldMode mode) {
+    return lattice::kernel::latticeWorldForages(static_cast<std::uint32_t>(mode));
 }
 
 inline constexpr std::size_t worldModeCount = lattice::kernel::LatticeWorldCount;
@@ -292,6 +298,20 @@ struct FitnessWeights {
     // upward is the objective, while camping at x/z edges is not.
     // Scoring-time only; the shader merely accumulates perimeter ticks.
     float boundaryPenalty{0.002F};
+
+    // Canopy: what one block costs the world it was placed in, whatever it was
+    // placed for. This is the whole of the pressure toward a shared trunk -- a
+    // tower per source and a trunk with branches reach the same sources, and
+    // only the second is cheap. Scoring-time only, like the two above.
+    //
+    // Small against a feeding on purpose. A fresh population places thousands
+    // of blocks per world, and at a hundredth each the first thing selection
+    // found was not building at all -- which is cheaper than any trunk.
+    float blockCost{0.002F};
+    // Canopy: how many blocks' worth a block in the worst of the cost field is
+    // charged on top of its own. Read by the shader, because the charge is made
+    // where the block lands and the field is a function of the cell.
+    float fieldCostFactor{2.0F};
 };
 
 // Seconds are still the unit the neuron time constants are expressed in, so the
@@ -377,6 +397,26 @@ struct SimulationStep {
     // and corner contact remain insufficient.
     std::uint32_t allowSideSupportedBlocks{};
 
+    // Canopy: how many sources hang in one world, and how many feedings each
+    // holds before it is spent. Several and finite, because one inexhaustible
+    // source is the harvest world: a single route, built once.
+    std::uint32_t canopySourceCount{8};
+    std::uint32_t canopySourceStock{240};
+    // Canopy: the nest is a disc of this radius about the middle of the floor.
+    // The group starts inside it, and a load -- when loads are on -- is scored
+    // there.
+    std::uint32_t canopyNestRadius{5};
+    // Canopy: whether a feeding is a load that has to be walked back to the nest
+    // before it counts. Off, a feeding scores where it happens. The switch is
+    // here so the rule can be turned on without touching the record layout.
+    std::uint32_t canopyCarry{};
+    // Canopy: the cost field. The period is the spacing of the noise grid in
+    // cells, so it sets how large a bad region is; the threshold is how much of
+    // the field is free -- at 0.6 well over half the box charges nothing, and
+    // what does charge is separate regions rather than one connected mass.
+    std::uint32_t fieldPeriod{8};
+    float fieldThreshold{0.6F};
+
     Neighborhood neighborhood{Neighborhood::Moore};
 
     // The hidden layers to run, widest question first: how many, and how wide.
@@ -424,6 +464,11 @@ struct SimulationStep {
 // sixteen-cell reach a matter of thousands of ticks that pay nothing until the
 // last one lands -- so it builds four times as fast. Only defaults: every one of
 // them stays a slider afterwards.
+// How long a canopy generation runs unless somebody says otherwise. Not a field
+// of SimulationStep, because the generation length belongs to the run and not to
+// the step; named here so the window and the batch tool agree on it.
+inline constexpr std::uint32_t canopyDefaultStepsPerGeneration = 3000;
+
 constexpr void applyWorldDefaults(SimulationStep& settings) {
     if (settings.worldMode == WorldMode::Chasm) {
         settings.buildIntervalTicks = 3;
@@ -436,6 +481,30 @@ constexpr void applyWorldDefaults(SimulationStep& settings) {
         settings.latticeHeight = 32;
         settings.latticeDepth = 32;
     }
+    if (settings.worldMode == WorldMode::Canopy) {
+        // Branches are cantilevers, and a branch laid at twelve ticks a block
+        // does not reach a second source inside a generation.
+        settings.buildIntervalTicks = 3;
+        settings.allowSideSupportedBlocks = 1;
+        // Room for several sources to be genuinely apart, which is the whole
+        // difference from one tower: 64x40x64 is ten times the default box.
+        settings.latticeWidth = 64;
+        settings.latticeHeight = 40;
+        settings.latticeDepth = 64;
+        settings.resourceHeightLow = 5;
+        settings.resourceHeightHigh = 30;
+        // The model that has learned fastest in every building world so far.
+        // A default like the rest: the Brain window still offers the others.
+        settings.neuronModel = NeuronModel::Spiking;
+    }
+}
+
+// The source count, the nest radius and the carry switch in one word. See
+// GpuStepParameters::canopySources and the three readers in LatticeKernel.inl.
+[[nodiscard]] constexpr std::uint32_t packCanopySources(const SimulationStep& settings) {
+    return lattice::kernel::latticeCanopyPack(
+        std::min(settings.canopySourceCount, lattice::kernel::LatticeSourceCapacity),
+        settings.canopyNestRadius, settings.canopyCarry != 0U);
 }
 
 // How many columns of floor are solid ground, counted from x=0. Only the chasm
@@ -453,7 +522,26 @@ constexpr void applyWorldDefaults(SimulationStep& settings) {
     return std::clamp(settings.chasmGroundWidth, 1U, width);
 }
 
+// How many floor cells the nest disc covers: the canopy's group starts inside
+// it, so this is how many agents one such world can hold.
+[[nodiscard]] constexpr std::uint32_t latticeNestCellCount(const SimulationStep& settings) {
+    std::uint32_t count = 0;
+    for (std::uint32_t z = 0; z < settings.latticeDepth; ++z) {
+        for (std::uint32_t x = 0; x < settings.latticeWidth; ++x) {
+            count += lattice::kernel::latticeInNest(static_cast<int>(x), static_cast<int>(z),
+                                                    settings.latticeWidth, settings.latticeDepth,
+                                                    settings.canopyNestRadius)
+                         ? 1U
+                         : 0U;
+        }
+    }
+    return count;
+}
+
 [[nodiscard]] constexpr std::uint32_t latticeSpawnCapacity(const SimulationStep& settings) {
+    if (worldForages(settings.worldMode)) {
+        return std::max(latticeNestCellCount(settings), 1U);
+    }
     if (worldBuilds(settings.worldMode)) {
         // Only the columns that have ground under them: a building world stands
         // its group on the bedrock course, and over a chasm there is none.
@@ -482,7 +570,7 @@ struct alignas(16) GpuFitnessWeights {
     float motorCostWeight{};
     float refusalPenalty{};
     float signalCostFactor{};
-    float reserved0{};
+    float fieldCostFactor{};
     float reserved1{};
     float reserved2{};
 };
@@ -536,6 +624,14 @@ struct alignas(16) GpuStepParameters {
     // the world, and the lanes that would carry it are the per-step build
     // intent.
     std::uint32_t beaconSeed{};
+    // The canopy's three words, which fill what was padding in front of the
+    // fitness block: twenty-nine scalars came to 116 bytes and the block starts
+    // at 128. The source count carries the carry switch in its top bit and the
+    // nest radius in the byte below it, so that turning loads on later costs no
+    // layout change.
+    std::uint32_t canopySources{};
+    std::uint32_t fieldPeriod{};
+    float fieldThreshold{};
     GpuFitnessWeights fitness;
 };
 
@@ -589,7 +685,7 @@ static_assert(offsetof(GpuStepParameters, neuronModel) == 56);
             weights.motorCostWeight,
             weights.refusalPenalty,
             weights.signalCostFactor,
-            0.0F,
+            weights.fieldCostFactor,
             0.0F,
             0.0F};
 }

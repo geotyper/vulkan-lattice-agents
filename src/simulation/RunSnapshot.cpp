@@ -53,15 +53,18 @@ template <typename Visit> void visitSettings(SimulationStep& settings, Visit&& v
     visit(settings.fitness.boundaryPenalty);
     visit(settings.buildThreshold);
     visit(settings.constructionCourseFill);
+    visit(settings.fitness.blockCost);
+    visit(settings.fitness.fieldCostFactor);
+    visit(settings.fieldThreshold);
 }
 
-constexpr std::uint32_t settingsFloatCount = 11;
+constexpr std::uint32_t settingsFloatCount = 14;
 
 // visitSettings and SettingsIntegers together have to name every field of
 // SimulationStep, and this is what notices when a new tunable is added and
 // quietly not saved. If it fires: add the field to one of the two lists above,
 // bump runSnapshotVersion, then update this number.
-static_assert(sizeof(SimulationStep) == 132,
+static_assert(sizeof(SimulationStep) == 164,
               "SimulationStep changed shape -- update the run snapshot field lists");
 
 // The fields that are not floats, kept apart so the float list above stays a
@@ -89,9 +92,14 @@ struct SettingsIntegers {
     std::uint32_t resourceHeightLow{};
     std::uint32_t resourceHeightHigh{};
     std::uint32_t chasmGroundWidth{};
+    std::uint32_t canopySourceCount{};
+    std::uint32_t canopySourceStock{};
+    std::uint32_t canopyNestRadius{};
+    std::uint32_t canopyCarry{};
+    std::uint32_t fieldPeriod{};
 };
 
-static_assert(sizeof(SettingsIntegers) == 88);
+static_assert(sizeof(SettingsIntegers) == 108);
 
 void readExactly(std::ifstream& stream, void* destination, const std::size_t bytes,
                  const std::filesystem::path& path) {
@@ -163,7 +171,12 @@ void saveRunSnapshot(const std::filesystem::path& path, const RunSnapshot& snaps
                                     settings.allowSideSupportedBlocks,
                                     settings.resourceHeightLow,
                                     settings.resourceHeightHigh,
-                                    settings.chasmGroundWidth};
+                                    settings.chasmGroundWidth,
+                                    settings.canopySourceCount,
+                                    settings.canopySourceStock,
+                                    settings.canopyNestRadius,
+                                    settings.canopyCarry,
+                                    settings.fieldPeriod};
     stream.write(reinterpret_cast<const char*>(&integers), sizeof(integers));
 
     for (const Genome& genome : snapshot.genomes) {
@@ -296,6 +309,11 @@ RunSnapshot loadRunSnapshot(const std::filesystem::path& path) {
     snapshot.settings.resourceHeightHigh = integers.resourceHeightHigh;
     snapshot.settings.chasmGroundWidth = integers.chasmGroundWidth;
     snapshot.settings.allowSideSupportedBlocks = integers.allowSideSupportedBlocks;
+    snapshot.settings.canopySourceCount = integers.canopySourceCount;
+    snapshot.settings.canopySourceStock = integers.canopySourceStock;
+    snapshot.settings.canopyNestRadius = integers.canopyNestRadius;
+    snapshot.settings.canopyCarry = integers.canopyCarry;
+    snapshot.settings.fieldPeriod = integers.fieldPeriod;
 
     snapshot.genomes.assign(header.genomeCount, Genome{neuro::Weights(header.weightCount, 0.0F)});
     for (Genome& genome : snapshot.genomes) {
@@ -303,8 +321,13 @@ RunSnapshot loadRunSnapshot(const std::filesystem::path& path) {
     }
     snapshot.agents.resize(header.agentCount);
     readExactly(stream, snapshot.agents.data(), snapshot.agents.size() * sizeof(AgentState), path);
+    // The canopy starts its group inside the nest, so its capacity is the disc
+    // and not the floor; asked of the one function that knows, as the save
+    // path does, or the two would size the block field differently.
     const std::uint32_t floorCapacity =
-        snapshot.settings.latticeWidth * snapshot.settings.latticeDepth;
+        worldForages(snapshot.settings.worldMode)
+            ? latticeSpawnCapacity(snapshot.settings)
+            : snapshot.settings.latticeWidth * snapshot.settings.latticeDepth;
     const std::uint32_t requestedAgents =
         worldBuilds(snapshot.settings.worldMode)
             ? std::min(snapshot.requestedAgentsPerWorld, floorCapacity)

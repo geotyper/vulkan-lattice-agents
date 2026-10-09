@@ -52,7 +52,8 @@ void main() {
     }
 
     Agent agent = agents[id];
-    const uint worldBase = uint(agent.beacon.w) * params.cellsPerWorld;
+    const uint world = uint(agent.beacon.w);
+    const uint worldBase = world * params.cellsPerWorld;
 
     bool refused = agent.intent.w != 0;
     bool moved = false;
@@ -97,10 +98,19 @@ void main() {
             structures[worldBase + target] = int(id) + 1;
             agent.signal.z = float(params.buildIntervalTicks);
             agent.signal.w = 1.0;
-            agent.metrics.y += 1.0;
+            // One block, plus whatever the field charges for this cell. The
+            // canopy counts what its blocks cost rather than how many there
+            // are, in the lane the count lives in everywhere else.
+            agent.metrics.y +=
+                1.0 + (latticeWorldForages(params.worldMode)
+                           ? fitnessFieldCostFactor(params.fitness) *
+                                 latticeFieldCost(world, params.beaconSeed, params.fieldPeriod,
+                                                  params.fieldThreshold, agent.beacon.x,
+                                                  agent.beacon.y, agent.beacon.z)
+                           : 0.0);
             placed = true;
         }
-        atomicAdd(buildOutcomes[uint(agent.beacon.w) * LatticeBuildOutcomeCount +
+        atomicAdd(buildOutcomes[world * LatticeBuildOutcomeCount +
                                 (placed ? LatticeBuildPlaced : LatticeBuildContested)],
                   1u);
     }
@@ -111,7 +121,7 @@ void main() {
         // touching: a load that has to come back down makes a route pay off
         // every time it is used, so what is selected for is a path rather than
         // one lucky scramble. See PLAN.md.
-        const uint hash = latticeResourceHash(uint(agent.beacon.w), params.beaconSeed);
+        const uint hash = latticeResourceHash(world, params.beaconSeed);
         const int resourceX = latticeResourceX(hash, params.latticeWidth, params.groundWidth);
         const int resourceY = latticeResourceY(hash, params.resourceHeightLow,
                                                params.resourceHeightHigh, params.latticeHeight);
@@ -136,6 +146,41 @@ void main() {
             agent.memory.w = 0.0;
             agent.metrics.w += 1.0;
         }
+    } else if (latticeWorldForages(params.worldMode)) {
+        // The decide pass said which source, if any; this is where it is paid
+        // for. An addition and nothing else, so it lands the same whatever
+        // order the invocations arrive in: nobody here asks what the stock is.
+        const int packed = int(agent.memory.w);
+        bool carrying = (packed & 1) != 0;
+        const int feeding = packed / 2 - 1;
+        const bool carries = latticeCanopyCarries(params.canopySources);
+        if (feeding >= 0) {
+            const uint hash = latticeCanopySourceHash(
+                world, params.beaconSeed, uint(feeding), params.latticeWidth,
+                params.latticeHeight, params.latticeDepth, params.resourceHeightLow,
+                params.resourceHeightHigh, params.fieldPeriod);
+            const uint source = latticeCellIndex(
+                latticeCanopySourceX(hash, params.latticeWidth),
+                latticeResourceY(hash, params.resourceHeightLow, params.resourceHeightHigh,
+                                 params.latticeHeight),
+                latticeCanopySourceZ(hash, params.latticeWidth, params.latticeDepth),
+                params.latticeWidth, params.latticeHeight);
+            atomicAdd(structures[worldBase + source], 1);
+            if (carries) {
+                carrying = true;
+            } else {
+                agent.metrics.w += 1.0;
+            }
+        } else if (carrying && agent.cell.y <= 1 &&
+                   latticeInNest(agent.cell.x, agent.cell.z, params.latticeWidth,
+                                 params.latticeDepth,
+                                 latticeCanopyNestRadius(params.canopySources))) {
+            carrying = false;
+            agent.metrics.w += 1.0;
+        }
+        // What the next step reads back: the load when loads are on, and
+        // otherwise whether this tick fed.
+        agent.memory.w = carries ? (carrying ? 1.0 : 0.0) : (feeding >= 0 ? 1.0 : 0.0);
     } else if (params.worldMode == LatticeWorldConstruction) {
         const bool onHorizontalPerimeter =
             agent.cell.x == 0 || agent.cell.z == 0 ||

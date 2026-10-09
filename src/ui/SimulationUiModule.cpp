@@ -122,7 +122,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                           "a run goes, never what it computes: a step is the unit of "
                           "reproducibility and nothing here is a function of wall-clock time.");
     int stepsPerGeneration = static_cast<int>(state_.controls.stepsPerGeneration);
-    if (ImGui::SliderInt("Steps / generation", &stepsPerGeneration, 60, 3000, "%d",
+    if (ImGui::SliderInt("Steps / generation", &stepsPerGeneration, 60, 8000, "%d",
                          ImGuiSliderFlags_Logarithmic)) {
         state_.controls.stepsPerGeneration = static_cast<std::uint32_t>(stepsPerGeneration);
     }
@@ -134,18 +134,27 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
 
     ImGui::SeparatorText("The lattice");
     int worldMode = static_cast<int>(state_.settings.worldMode);
-    constexpr const char* worldModes[] = {"Beacon", "Construction", "Harvest", "Chasm"};
+    constexpr const char* worldModes[] = {"Beacon", "Construction", "Harvest", "Chasm", "Canopy"};
     static_assert(std::size(worldModes) == worldModeCount);
     if (ImGui::Combo("World", &worldMode, worldModes, static_cast<int>(worldModeCount))) {
         state_.settings.worldMode = static_cast<WorldMode>(worldMode);
         applyWorldDefaults(state_.settings);
+        if (state_.settings.worldMode == WorldMode::Canopy) {
+            // A box four times as wide takes four times as long to cross, and
+            // the second source is only reached after the first is spent.
+            state_.controls.stepsPerGeneration =
+                std::max(state_.controls.stepsPerGeneration, canopyDefaultStepsPerGeneration);
+        }
         state_.controls.resetRequested = true;
     }
-    ImGui::SetItemTooltip("Beacon is the navigation task. The other three build: every agent "
+    ImGui::SetItemTooltip("Beacon is the navigation task. The other four build: every agent "
                           "starts on the bedrock course, climbs, falls and places supported "
                           "blocks. Construction scores height alone; harvest scores loads fetched "
                           "from a hanging resource; the chasm takes half the floor away, so the "
-                          "resource can only be reached across something the group builds.");
+                          "resource can only be reached across something the group builds. "
+                          "The canopy hangs several sources that run dry over one nest and "
+                          "charges for every block by where it stands, so what pays is a trunk "
+                          "with branches.");
 
     int requestedAgentsPerWorld = static_cast<int>(state_.worlds.requestedAgentsPerWorld);
     // The ceiling is whichever runs out first: genomes, or cells to stand them
@@ -226,7 +235,7 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                           "whole tick.");
 
     if (worldBuilds(state_.settings.worldMode)) {
-        if (worldHarvests(state_.settings.worldMode)) {
+        if (worldHarvests(state_.settings.worldMode) || worldForages(state_.settings.worldMode)) {
             const int ceiling = std::max(static_cast<int>(state_.settings.latticeHeight), 2) - 1;
             std::array<int, 2> band{static_cast<int>(state_.settings.resourceHeightLow),
                                     static_cast<int>(state_.settings.resourceHeightHigh)};
@@ -240,6 +249,70 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
             ImGui::SetItemTooltip("The band of heights the resource hangs in, drawn per world. A "
                                   "band and not a height: a fixed height is a number a genome can "
                                   "learn to count to rather than a place it has to find.");
+        }
+        if (worldForages(state_.settings.worldMode)) {
+            // Where things are and how much they hold are written into the
+            // block field when a generation starts, so these four restart the
+            // run; what a block costs is read every step and does not.
+            int sources = static_cast<int>(state_.settings.canopySourceCount);
+            if (ImGui::SliderInt("Sources", &sources, 1,
+                                 static_cast<int>(lattice::kernel::LatticeSourceCapacity))) {
+                state_.settings.canopySourceCount = static_cast<std::uint32_t>(sources);
+                state_.controls.resetRequested = true;
+            }
+            ImGui::SetItemTooltip("How many sources hang in each world, hashed over the floor "
+                                  "plan and the band of heights above. An agent is pointed at "
+                                  "the nearest one that still holds something.");
+            int stock = static_cast<int>(state_.settings.canopySourceStock);
+            if (ImGui::SliderInt("Source stock", &stock, 10, 4000, "%d feedings",
+                                 ImGuiSliderFlags_Logarithmic)) {
+                state_.settings.canopySourceStock = static_cast<std::uint32_t>(stock);
+                state_.controls.resetRequested = true;
+            }
+            ImGui::SetItemTooltip("How many agent-ticks of contact a source holds before it is "
+                                  "spent. Small, and the group has to keep moving on; large, "
+                                  "and one tower is enough for the whole generation.");
+            int nest = static_cast<int>(state_.settings.canopyNestRadius);
+            if (ImGui::SliderInt("Nest radius", &nest, 2, 24, "%d cells")) {
+                state_.settings.canopyNestRadius = static_cast<std::uint32_t>(nest);
+                state_.controls.resetRequested = true;
+            }
+            ImGui::SetItemTooltip("The disc on the floor the group starts in. A disc and not a "
+                                  "point, so growth at the base has a rim to start from.");
+            bool carry = state_.settings.canopyCarry != 0U;
+            if (ImGui::Checkbox("Carry loads to the nest", &carry)) {
+                state_.settings.canopyCarry = carry ? 1U : 0U;
+                state_.controls.resetRequested = true;
+            }
+            ImGui::SetItemTooltip("Off, a feeding scores where it happens. On, it is a load "
+                                  "that scores only once it has been walked back into the "
+                                  "nest, which makes a route pay every time it is used.");
+            int period = static_cast<int>(state_.settings.fieldPeriod);
+            if (ImGui::SliderInt("Field scale", &period, 2,
+                                 static_cast<int>(lattice::kernel::LatticeFieldPeriodMaximum),
+                                 "%d cells")) {
+                state_.settings.fieldPeriod = static_cast<std::uint32_t>(period);
+                // The sources are hung where this field is cheapest, so a
+                // different field is a different set of places for them.
+                state_.controls.resetRequested = true;
+            }
+            ImGui::SetItemTooltip("The spacing of the cost field's noise grid, which sets how "
+                                  "large one expensive region is. Sources are hung clear of the "
+                                  "dear regions, so changing it restarts the run.");
+            ImGui::SliderFloat("Field threshold", &state_.settings.fieldThreshold, 0.0F, 0.9F,
+                               "%.2f");
+            ImGui::SetItemTooltip("How much of the field is free. Higher, and the expensive "
+                                  "regions shrink to islands; lower, and they grow and join.");
+            ImGui::SliderFloat("Field cost", &state_.settings.fitness.fieldCostFactor, 0.0F,
+                               20.0F, "%.1f blocks");
+            ImGui::SetItemTooltip("How many blocks' worth a block in the worst of the field "
+                                  "costs on top of its own. Zero switches the field off.");
+            ImGui::SliderFloat("Block cost", &state_.settings.fitness.blockCost, 0.0F, 0.1F,
+                               "%.4f");
+            ImGui::SetItemTooltip("Charged to the whole world for every block placed. This is "
+                                  "what makes a shared trunk cheaper than a tower per source.");
+            ImGui::TextDisabled("Side support is forced on and the foundation rule is off: a "
+                                "branch is a cantilever.");
         }
         if (state_.settings.worldMode == WorldMode::Chasm) {
             int ground = static_cast<int>(latticeGroundWidth(state_.settings));
@@ -299,9 +372,11 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
             ImGui::TextDisabled("The foundation rule is off here: a bridge block has nothing "
                                 "under it, so the test would refuse every one of them.");
         }
-        bool allowSideSupport = state_.settings.allowSideSupportedBlocks != 0U ||
-                                state_.settings.worldMode == WorldMode::Chasm;
-        ImGui::BeginDisabled(state_.settings.worldMode == WorldMode::Chasm);
+        const bool sideSupportForced = state_.settings.worldMode == WorldMode::Chasm ||
+                                       state_.settings.worldMode == WorldMode::Canopy;
+        bool allowSideSupport =
+            state_.settings.allowSideSupportedBlocks != 0U || sideSupportForced;
+        ImGui::BeginDisabled(sideSupportForced);
         if (ImGui::Checkbox("Side-supported bridges", &allowSideSupport)) {
             state_.settings.allowSideSupportedBlocks = allowSideSupport ? 1U : 0U;
         }
@@ -312,7 +387,12 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
                            0.05F, "%.4f");
         ImGui::SetItemTooltip("Group charge per agent and tick spent on the x/z perimeter. The "
                               "height ceiling is not penalised.");
-        if (worldHarvests(state_.settings.worldMode)) {
+        if (worldForages(state_.settings.worldMode)) {
+            ImGui::TextWrapped(
+                "Fitness is feedings, plus how near anyone got to a live source, minus what the "
+                "world's blocks cost: one each, and more where the field is dear. Every genome "
+                "in the world receives the same total.");
+        } else if (worldHarvests(state_.settings.worldMode)) {
             ImGui::TextWrapped(
                 "Fitness is loads delivered, plus how near anyone got to the resource. Blocks "
                 "score nothing: a block is time spent, and spending it well is the problem. A "
@@ -512,7 +592,12 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     ImGui::Text("Median fitness: %.4f", state_.statistics.medianFitness);
     ImGui::Text("Mean fitness:   %.4f", state_.statistics.meanFitness);
     drawBestWorld();
-    if (worldHarvests(state_.settings.worldMode)) {
+    if (worldForages(state_.settings.worldMode)) {
+        ImGui::Text("Stock consumed: %.1f%% of every source",
+                    state_.statistics.arrivalRatio * 100.0F);
+        drawStructureShapes();
+        drawBuildOutcomes();
+    } else if (worldHarvests(state_.settings.worldMode)) {
         ImGui::Text("Delivered a load: %.1f%% of agents", state_.statistics.arrivalRatio * 100.0F);
         drawStructureShapes();
         drawBuildOutcomes();
@@ -539,8 +624,10 @@ void SimulationUiModule::onUpdate(AppContext& context, const FrameInfo& frame) {
     // filling three per cent of its lattice draws as a flat line on the bottom
     // edge whatever it is doing, and the headline number above says the level
     // anyway.
-    plotHistory(state_.settings.worldMode == WorldMode::Beacon ? "Reached the beacon"
-                                                               : "Weighted block fill",
+    plotHistory(state_.settings.worldMode == WorldMode::Beacon
+                    ? "Reached the beacon"
+                    : (worldForages(state_.settings.worldMode) ? "Stock consumed"
+                                                               : "Weighted block fill"),
                 state_.history.arrivalRatio, 0.0F);
     ImGui::SeparatorText("Evolution parameters");
     ImGui::Text("Population: %zu", state_.evolution.populationSize);
@@ -898,6 +985,19 @@ void SimulationUiModule::drawViewControls() {
     }
     ImGui::SameLine();
     ImGui::Checkbox("Box", &display.bounds);
+    if (worldForages(state_.settings.worldMode)) {
+        // Three things only this world has. The sources are part of the block
+        // field, so "Blocks" is offered here as well as the plumb lines.
+        ImGui::Checkbox("Blocks", &display.structures);
+        ImGui::SameLine();
+        ImGui::Checkbox("Cost field", &display.costField);
+        ImGui::BeginDisabled(!display.costField);
+        ImGui::SliderFloat("Field opacity", &display.costFieldOpacity, 0.02F, 0.6F, "%.2f");
+        ImGui::SetItemTooltip("The cells where a block costs extra, drawn as haze: the denser "
+                              "it is, the dearer the cell. The slab below cuts it like anything "
+                              "else, which is the way to read one layer of it.");
+        ImGui::EndDisabled();
+    }
     ImGui::SliderFloat("Background", &display.backgroundBrightness, 0.0F, 1.0F, "%.2f");
 
     ImGui::BeginDisabled(!display.trails);
@@ -989,7 +1089,10 @@ void SimulationUiModule::drawViewControls() {
     ImGui::SameLine();
     ImGui::TextDisabled("drag to orbit, right-drag to slide, wheel to zoom");
     // The colours carry the three things a still frame cannot say by itself.
-    if (state_.settings.worldMode == WorldMode::Construction) {
+    if (worldForages(state_.settings.worldMode)) {
+        ImGui::TextDisabled("sources: green live / grey spent; haze: where a block costs extra; "
+                            "floor: the nest is the pale disc");
+    } else if (state_.settings.worldMode == WorldMode::Construction) {
         ImGui::TextDisabled("blocks: clay low / sunlit high; trails: colour per genome");
     } else {
         ImGui::TextDisabled(

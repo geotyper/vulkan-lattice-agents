@@ -3,6 +3,7 @@
 
 #include "neuro/brain_kernel.glsl"
 #include "simulation/agent_layout.glsl"
+#include "lattice/lattice_kernel.glsl"
 #include "lattice/lattice_view.glsl"
 
 layout(std430, set = 0, binding = 0) readonly buffer Agents {
@@ -106,6 +107,13 @@ void main() {
             return;
         }
         colour = vec4(0.30, 0.31, 0.33, 1.0);
+        // The canopy's nest, marked on the ground it is part of. The radius
+        // rides in the first beacon lane, which this pass otherwise leaves
+        // unused, and is zero in every other world.
+        if (view.beacon.x > 0 &&
+            latticeInNest(cell.x, cell.z, width, uint(view.lattice.z), uint(view.beacon.x))) {
+            colour = vec4(0.56, 0.50, 0.38, 1.0);
+        }
     } else if (mode == LatticeViewModeBeacon) {
         cell = view.beacon.xyz;
         // Not on the nearness ramp: the beacon is what nearness is measured
@@ -116,8 +124,11 @@ void main() {
         const uint cellsPerWorld = uint(view.lattice.x * view.lattice.y * view.lattice.z);
         const int builder = structures[uint(view.beacon.w) * cellsPerWorld + local];
         // Empty, or terrain: the ground has its own pass, so skipping it here is
-        // what keeps it out of the transparent one.
-        if (builder <= 0) {
+        // what keeps it out of the transparent one. A source is neither -- it is
+        // the one piece of terrain whose state changes, so it is drawn here,
+        // where the field is already being read.
+        const bool source = latticeIsSource(builder);
+        if (builder <= 0 && !source) {
             hide();
             return;
         }
@@ -125,7 +136,16 @@ void main() {
         const uint height = uint(view.lattice.y);
         cell = ivec3(int(local % width), int((local / width) % height),
                      int(local / (width * height)));
-        {
+        if (source) {
+            // Bright while it holds anything and dimming as it empties, on a
+            // curve that saturates: the stock a run starts with is a setting
+            // this stage is not told, and "plenty" does not need a scale.
+            const float left = float(latticeSourceRemaining(builder));
+            const float fullness = left / (left + 48.0);
+            const vec3 spent = vec3(0.24, 0.25, 0.27);
+            const vec3 live = vec3(0.30, 1.00, 0.46);
+            colour = vec4(left > 0.0 ? mix(live * 0.45, live, fullness) : spent, 1.0);
+        } else {
             const float elevation = float(cell.y + 1) / float(max(view.lattice.y, 1));
             const float maker = fract(float(builder) * 0.61803398875);
             const vec3 clay = vec3(0.46, 0.16, 0.07);
@@ -134,6 +154,31 @@ void main() {
             block *= 0.90 + 0.16 * maker;
             colour = vec4(block, 1.0);
         }
+    } else if (mode == LatticeViewModeField) {
+        const uint local = uint(gl_InstanceIndex);
+        const uint width = uint(view.lattice.x);
+        const uint height = uint(view.lattice.y);
+        cell = ivec3(int(local % width), int((local / width) % height),
+                     int(local / (width * height)));
+        // The bedrock course is not somewhere a block can go, so it has no
+        // price worth drawing.
+        if (cell.y == 0) {
+            hide();
+            return;
+        }
+        const float cost = latticeFieldCost(uint(view.beacon.w), uint(view.beacon.x),
+                                            uint(view.beacon.y), intBitsToFloat(view.beacon.z),
+                                            cell.x, cell.y, cell.z);
+        if (cost < 0.04) {
+            hide();
+            return;
+        }
+        // Violet where it is merely dear and hot where it is ruinous, and
+        // thinner where it is cheaper, so the edge of a region fades out
+        // rather than ending at a wall the simulation does not have.
+        const vec3 dear = vec3(0.42, 0.24, 0.86);
+        const vec3 ruinous = vec3(1.00, 0.22, 0.34);
+        colour = vec4(mix(dear, ruinous, cost), view.tint.x * (0.25 + 0.75 * cost));
     } else {
         const uint agentIndex =
             uint(view.beacon.w) + uint(gl_InstanceIndex) * latticeViewAgentStride();

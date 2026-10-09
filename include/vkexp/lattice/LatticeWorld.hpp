@@ -54,6 +54,25 @@ struct PopulationLayout {
 // The block field a run starts from: a course of bedrock under every column that
 // has ground, and nothing at all in a beacon world. Terrain is stored as blocks
 // because support stopped assuming a floor -- see LatticeBedrock.
+// Where one of the canopy's sources hangs. Pure, like the two above, and the
+// same arithmetic the shader does: the stock is state and lives in the block
+// field, but the place is a function of the world.
+[[nodiscard]] Int4 canopySourceCell(const SimulationStep& settings, std::uint32_t world,
+                                    std::uint32_t source);
+
+// The nearest source that still holds something, as the agent standing in `cell`
+// would count the steps to it. `index` is negative when every source in the
+// world is spent, and the rest is then meaningless.
+struct NearestSource {
+    std::int32_t index{-1};
+    Int4 cell{};
+    std::uint32_t distance{};
+};
+
+[[nodiscard]] NearestSource nearestLiveSource(const SimulationStep& settings, std::uint32_t world,
+                                              std::span<const std::int32_t> worldStructures,
+                                              const Int4& cell);
+
 [[nodiscard]] std::vector<std::int32_t> makeTerrain(const SimulationStep& settings,
                                                     std::uint32_t worldCount);
 

@@ -26,7 +26,7 @@ logical world.
 
 ```
 Lattice:    32x32x16 = 16384 cells per world, Moore (26)
-Brain:      78 -> 35 -> 6
+Brain:      80 -> 35 -> 6
 Trial:      900 steps = 15.0 s at 60.0 Hz
 Population: 512 genomes x 4 trials = 2048 agents in 172 lattices
 Movement:   turn threshold 0.25, beacon reached within 1 cell(s)
@@ -42,13 +42,13 @@ Movement:   turn threshold 0.25, beacon reached within 1 cell(s)
   whichever way it is facing. Seventeen and not twenty six because the nine
   cells behind it are nine it cannot walk into, build in, or reach without a
   turn -- and a turn brings them round to the side, where they are sensed;
-- six task inputs: beacon direction/nearness, or height, build readiness,
+- eight task inputs, read differently by each world: beacon direction/nearness, or height, build readiness,
   previous build success and physical support;
 - two inputs about itself: whether its last move was refused and how long it has
   been standing still. No heading channel -- in a body frame the agent faces
   forward by definition;
 - two recurrent memory cells fed back, 2 inputs;
-- `78 inputs -> 35 sine neurons -> 6 outputs` by default. The plan is editable
+- `80 inputs -> 35 sine neurons -> 6 outputs` by default. The plan is editable
   in the Brain window and by flag: up to three layers, 52 neurons in total, each
   choosing `tanh`, `sin`, `tanh-scaled` or `softsign` (`--hidden
   --hidden-squash`). Outputs are always tanh, because every threshold in the
@@ -139,6 +139,50 @@ and draws a configurable newest span as smaller translucent voxels. Colour is
 stable per genome, making paths separable when agents cross. This history is a
 picture only: it is not an input to the brain, does not affect fitness, and is
 cleared at a generation boundary or snapshot restore.
+
+### Canopy world
+
+`--world canopy` (or `Canopy` in the World list) is an anthill turned upside
+down: one nest on the floor, several sources hanging above it, and a price on
+every block.
+
+- **The nest** is a disc about the middle of the floor. The group starts inside
+  it. A disc and not a point, so growth at the base has a rim to start from.
+- **Sources** -- eight by default, up to sixteen -- are hashed per world over the
+  floor plan and a band of heights, and hung clear of the dear part of the cost
+  field: of eight candidate cells the cheapest is kept. Each is a solid cell of the block field that
+  carries its own stock, so it is visible on the structure channel and nothing
+  about it needs a buffer of its own. An agent within the contact radius of the
+  nearest live source feeds from it once a tick; when the stock is gone the
+  source is spent, and everybody is pointed at the next nearest one.
+- **The cost field** is smooth 3D value noise, hashed per world like everything
+  else. A block placed where the field is above the threshold is charged up to
+  `--field-cost` blocks' worth on top of its own, and every block costs the world
+  `--block-cost`. The agent is told what a block would cost in the cell ahead
+  and the one below it, so the charge can be seen coming.
+- **Support** is as in the chasm: cantilevers are on and the foundation rule is
+  off, because a branch has nothing underneath it.
+
+Fitness is shared by the world: feedings, plus the best approach anyone made to
+a live source, minus what the world's blocks cost. A tower per source and one
+trunk with branches reach the same sources, and only the second is cheap.
+
+`--canopy-carry` (`Carry loads to the nest`) turns a feeding into a load that
+scores only once it is walked back into the nest. It is off by default and
+changes no record layout.
+
+The view draws the field as haze where a block costs extra (`Cost field`, with
+its own opacity), the nest as a pale disc on the floor, live sources green and
+spent ones grey, and a plumb line under each source.
+
+The box defaults to 64x40x64, a generation to 3000 steps and the neuron model to
+spiking. All of it stays adjustable:
+
+```bash
+./build/release/vklat_headless --world canopy --generations 100 \
+    --sources 6 --source-stock 300 --field-cost 6 --block-cost 0.005
+./build/release/vulkan_lattice_agents --world canopy
+```
 
 ## The lattice
 

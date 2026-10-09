@@ -64,4 +64,12 @@ void stepLatticeCpu(const LatticePopulation& population, const SimulationStep& s
 
 [[nodiscard]] float agentFitness(const AgentState& agent, const FitnessWeights& weights = {});
 
+// What one canopy world is worth to every genome in it: what was fed, the best
+// anyone got to a live source, and what its blocks cost. `spent` is the summed
+// block lane, which in the canopy counts each block as one plus its field
+// charge. Here rather than in the driver so the reference and a test can score
+// a world without a device.
+[[nodiscard]] float canopyWorldFitness(float feedings, float reach, float spent,
+                                       const FitnessWeights& weights);
+
 } // namespace vkexp

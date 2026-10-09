@@ -27,6 +27,7 @@
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <tuple>
 #include <iostream>
 #include <iterator>
 #include <numeric>
@@ -380,7 +381,7 @@ void testBrainForwardPass() {
     // neuron layer and a widening plan are where an off-by-one in a source count
     // shows up as something other than a rounding difference.
     const std::array<Case, 8> cases{{
-        {vkexp::neuro::defaultBrainShape, "the default 78 -> 35 -> 6"},
+        {vkexp::neuro::defaultBrainShape, "the default 80 -> 35 -> 6"},
         {{57, 20, 5}, "a trimmed 57 -> 20 -> 5"},
         // One of each squash, so the hand-computed chain walks all four rather
         // than only the one the default happens to use.
@@ -746,8 +747,8 @@ void testBrainDescription() {
             inside("neighbourhood", bk::brainNeighborChannelIndex(bk::BrainNeighborCount - 1u,
                                                                   bk::BrainNeighborChannels - 1u)),
         "The neighbourhood block covers every cell channel");
-    check(inside("task", bk::brainBeaconInputIndex(0u)) &&
-              inside("task", bk::brainBeaconInputIndex(bk::BrainBeaconInputCount - 1u)),
+    check(inside("task", vkexp::neuro::kernel::brainBeaconInputIndex(0u)) &&
+              inside("task", vkexp::neuro::kernel::brainBeaconInputIndex(bk::BrainBeaconInputCount - 1u)),
           "The task block covers every task-specific channel");
     check(inside("turn", bk::BrainTurnOutput) && inside("action", bk::BrainActionOutput) &&
               inside("signal", bk::BrainSignalIntensityOutput) &&
@@ -1028,6 +1029,14 @@ void testRunSnapshotRoundTrip() {
     snapshot.settings.fitness.refusalPenalty = 0.017F;
     snapshot.settings.fitness.signalCostFactor = 0.31F;
     snapshot.settings.fitness.groupSharing = 0.7F;
+    snapshot.settings.fitness.blockCost = 0.004F;
+    snapshot.settings.fitness.fieldCostFactor = 6.5F;
+    snapshot.settings.canopySourceCount = 5;
+    snapshot.settings.canopySourceStock = 77;
+    snapshot.settings.canopyNestRadius = 9;
+    snapshot.settings.canopyCarry = 1;
+    snapshot.settings.fieldPeriod = 6;
+    snapshot.settings.fieldThreshold = 0.35F;
     snapshot.generation = 91;
     snapshot.step = 37;
     snapshot.stepsPerGeneration = 600;
@@ -1066,6 +1075,12 @@ void testRunSnapshotRoundTrip() {
           "A run snapshot round-trips its integer settings");
     check(loaded.settings.hiddenLayers == snapshot.settings.hiddenLayers,
           "A run snapshot round-trips the brain plan");
+    check(loaded.settings.canopySourceCount == 5 && loaded.settings.canopySourceStock == 77 &&
+              loaded.settings.canopyNestRadius == 9 && loaded.settings.canopyCarry == 1 &&
+              loaded.settings.fieldPeriod == 6 && closeTo(loaded.settings.fieldThreshold, 0.35F) &&
+              closeTo(loaded.settings.fitness.blockCost, 0.004F) &&
+              closeTo(loaded.settings.fitness.fieldCostFactor, 6.5F),
+          "A run snapshot round-trips the canopy's sources, nest and cost field");
     check(closeTo(loaded.settings.fitness.trackingReward, 0.9F) &&
               closeTo(loaded.settings.fitness.objectiveBonus, 0.11F) &&
               closeTo(loaded.settings.fitness.motorCostWeight, 0.013F) &&
@@ -1325,6 +1340,12 @@ void testStepParameterPacking() {
     settings.neuronModel = vkexp::NeuronModel::Spiking;
     settings.hiddenLayers = {12, 8, 0};
     settings.fitness.signalCostFactor = 0.31F;
+    settings.fitness.fieldCostFactor = 5.0F;
+    settings.canopySourceCount = 7;
+    settings.canopyNestRadius = 6;
+    settings.canopyCarry = 1;
+    settings.fieldPeriod = 400; // past the maximum, on purpose
+    settings.fieldThreshold = 0.4F;
 
     const vkexp::StepParameterLayout layout{
         .agentCount = 96, .trialsPerGenome = 4, .agentsPerWorld = 12, .worldCount = 32};
@@ -1333,6 +1354,13 @@ void testStepParameterPacking() {
     check(packed.agentCount == 96 && packed.trialsPerGenome == 4 && packed.agentsPerWorld == 12 &&
               packed.worldCount == 32,
           "The population layout reaches the shader");
+    check(vkexp::lattice::kernel::latticeCanopySourceCount(packed.canopySources) == 7 &&
+              vkexp::lattice::kernel::latticeCanopyNestRadius(packed.canopySources) == 6 &&
+              vkexp::lattice::kernel::latticeCanopyCarries(packed.canopySources) &&
+              closeTo(packed.fieldThreshold, 0.4F) && closeTo(packed.fitness.fieldCostFactor, 5.0F),
+          "The canopy's sources, nest, carry switch and cost field reach the shader");
+    check(packed.fieldPeriod == vkexp::lattice::kernel::LatticeFieldPeriodMaximum,
+          "and a field grid wider than the hash was laid out for is clamped on the way");
     check(packed.latticeWidth == 20 && packed.latticeHeight == 16 && packed.latticeDepth == 8 &&
               packed.cellsPerWorld == 20 * 16 * 8,
           "The lattice extents and their product reach the shader");
@@ -2407,10 +2435,10 @@ void testLatticeSensing() {
     // The direction to the beacon is a unit vector, and the nearness is what the
     // shaping banks. Two cells along +x in a 5-wide box under Moore is 2 of a
     // longest journey of 4.
-    check(closeTo(middle[bk::brainBeaconInputIndex(0)], 1.0F) &&
-              closeTo(middle[bk::brainBeaconInputIndex(1)], 0.0F) &&
-              closeTo(middle[bk::brainBeaconInputIndex(2)], 0.0F) &&
-              closeTo(middle[bk::brainBeaconInputIndex(3)], 0.5F),
+    check(closeTo(middle[vkexp::neuro::kernel::brainBeaconInputIndex(0)], 1.0F) &&
+              closeTo(middle[vkexp::neuro::kernel::brainBeaconInputIndex(1)], 0.0F) &&
+              closeTo(middle[vkexp::neuro::kernel::brainBeaconInputIndex(2)], 0.0F) &&
+              closeTo(middle[vkexp::neuro::kernel::brainBeaconInputIndex(3)], 0.5F),
           "The beacon reads as a unit direction and a nearness");
 
     // The edge of the lattice reads as a wall. There is no boundary geometry and
@@ -2452,8 +2480,8 @@ void testLatticeSensing() {
                                                            lk::LatticeNeighborOccupied)],
                       1.0F),
           "Turning moves the neighbour from the slot in front to the slot beside");
-    check(closeTo(turned[bk::brainBeaconInputIndex(0)], 0.0F) &&
-              closeTo(turned[bk::brainBeaconInputIndex(2)], -1.0F),
+    check(closeTo(turned[vkexp::neuro::kernel::brainBeaconInputIndex(0)], 0.0F) &&
+              closeTo(turned[vkexp::neuro::kernel::brainBeaconInputIndex(2)], -1.0F),
           "The task direction turns with the agent rather than with the world");
 }
 
@@ -2784,6 +2812,366 @@ void testChasmEdge() {
 // The two turning views, and the difference between them. Both are tested from
 // a dragged-off-centre view, because with the view centred they are the same
 // motion and a test taken there would pass on either implementation.
+void testCanopyWorld() {
+    // --- what a source is ---------------------------------------------------
+    //
+    // A cell of the block field that carries its own stock. Everything else in
+    // the world reads that field, so the encoding has to stay out of the way of
+    // the two meanings already in it: bedrock below zero, a builder above.
+    check(lk::latticeWorldBuilds(lk::LatticeWorldCanopy) &&
+              lk::latticeWorldForages(lk::LatticeWorldCanopy) &&
+              !lk::latticeWorldHarvests(lk::LatticeWorldCanopy) &&
+              !lk::latticeWorldFrontier(lk::LatticeWorldCanopy),
+          "The canopy builds and forages, and asks for neither a load nor a foundation");
+    check(!lk::latticeWorldForages(lk::LatticeWorldHarvest) &&
+              !lk::latticeWorldForages(lk::LatticeWorldChasm),
+          "and no other world forages");
+
+    const int full = lk::latticeSourceCell(240);
+    check(lk::latticeIsSource(full) && lk::latticeSourceAlive(full) &&
+              lk::latticeSourceRemaining(full) == 240,
+          "A full source is a live source holding what it was given");
+    check(lk::latticeIsBedrock(full) && full != lk::LatticeNoStructure,
+          "and it is solid terrain to everything that only asks whether a cell is empty");
+    check(!lk::latticeIsSource(lk::LatticeBedrock) && !lk::latticeIsSource(0) &&
+              !lk::latticeIsSource(7),
+          "Bedrock, an empty cell and a placed block are not sources");
+    check(lk::latticeSourceAlive(full + 239) && !lk::latticeSourceAlive(full + 240),
+          "The feeding that takes the last of it is the one that empties it");
+    // Several agents may be told a source is live in the tick that empties it,
+    // and every one of them is honoured. The cell has to stay recognisable.
+    const int overshot = full + 240 + 4096;
+    check(lk::latticeIsSource(overshot) && !lk::latticeSourceAlive(overshot) &&
+              lk::latticeSourceRemaining(overshot) == 0,
+          "A source fed past empty by a whole world at once is still a spent source");
+
+    // --- the nest -----------------------------------------------------------
+    check(lk::latticeInNest(15, 15, 32, 32, 1) && lk::latticeInNest(16, 16, 32, 32, 1) &&
+              !lk::latticeInNest(13, 15, 32, 32, 1),
+          "The nest is centred on the floor, on the corner four cells share when it is even");
+    check(lk::latticeInNest(10, 16, 32, 32, 6) && !lk::latticeInNest(9, 9, 32, 32, 6),
+          "and it is a disc: its radius along an axis, and not out to the corner of that square");
+
+    const std::uint32_t packed = lk::latticeCanopyPack(8, 5, true);
+    check(lk::latticeCanopySourceCount(packed) == 8 && lk::latticeCanopyNestRadius(packed) == 5 &&
+              lk::latticeCanopyCarries(packed) &&
+              !lk::latticeCanopyCarries(lk::latticeCanopyPack(8, 5, false)),
+          "The canopy's three settings survive the one word they travel to the device in");
+    check(lk::latticeCanopySourceCount(lk::latticeCanopyPack(200, 5, false)) ==
+              lk::LatticeSourceCapacity,
+          "and a count past the capacity is the capacity, not a loop off the end of it");
+
+    // --- the cost field -----------------------------------------------------
+    {
+        std::size_t free = 0;
+        std::size_t dear = 0;
+        float steepest = 0.0F;
+        for (int z = 0; z < 32; ++z) {
+            for (int y = 0; y < 16; ++y) {
+                for (int x = 0; x < 32; ++x) {
+                    const float cost = lk::latticeFieldCost(3, 0x5EEDU, 8, 0.5F, x, y, z);
+                    check(cost >= 0.0F && cost <= 1.0F, "A field cost is a fraction");
+                    free += cost == 0.0F ? 1 : 0;
+                    dear += cost > 0.25F ? 1 : 0;
+                    if (x > 0) {
+                        steepest = std::max(
+                            steepest,
+                            std::abs(cost - lk::latticeFieldCost(3, 0x5EEDU, 8, 0.5F, x - 1, y, z)));
+                    }
+                }
+            }
+        }
+        check(free > 2000 && dear > 500,
+              "A threshold of a half leaves real room to build for nothing and real regions "
+              "that charge");
+        // One cell is an eighth of a grid step, and the ramp above the threshold
+        // doubles the slope: a quarter is the most two neighbours can differ by.
+        check(steepest < 0.26F, "The field is smooth: next door costs nearly the same");
+        check(lk::latticeFieldSum(3, 0x5EEDU, 8, 5, 6, 7) ==
+                      lk::latticeFieldSum(3, 0x5EEDU, 8, 5, 6, 7) &&
+                  lk::latticeFieldSum(3, 0x5EEDU, 8, 8, 8, 8) ==
+                      lk::latticeFieldCorner(3, 0x5EEDU, 1, 1, 1) * 512U,
+              "and on a grid point it is exactly that point's value, with no rounding in it");
+        std::size_t different = 0;
+        for (int x = 0; x < 32; ++x) {
+            different += lk::latticeFieldSum(3, 0x5EEDU, 8, x, 5, 9) !=
+                                 lk::latticeFieldSum(4, 0x5EEDU, 8, x, 5, 9)
+                             ? 1
+                             : 0;
+        }
+        check(different > 24, "Each world has a field of its own");
+    }
+
+    // --- the world as it starts ---------------------------------------------
+    vkexp::SimulationStep settings{};
+    settings.worldMode = vkexp::WorldMode::Canopy;
+    vkexp::applyWorldDefaults(settings);
+    check(settings.allowSideSupportedBlocks == 1 && settings.latticeWidth == 64,
+          "Choosing the canopy asks for cantilevers and a box with room to branch in");
+    settings.latticeWidth = 24;
+    settings.latticeHeight = 12;
+    settings.latticeDepth = 24;
+    settings.resourceHeightLow = 3;
+    settings.resourceHeightHigh = 9;
+    settings.canopySourceCount = 6;
+    settings.canopySourceStock = 5;
+    settings.canopyNestRadius = 4;
+    settings.neuronModel = vkexp::NeuronModel::Reactive;
+
+    const vkexp::lattice::PopulationLayout layout{12, 12, 2};
+    const std::vector<std::int32_t> terrain =
+        vkexp::lattice::makeTerrain(settings, layout.worldCount());
+    const std::uint32_t cells = vkexp::latticeCellsPerWorld(settings);
+    for (std::uint32_t world = 0; world < layout.worldCount(); ++world) {
+        std::set<std::uint32_t> placed;
+        for (std::uint32_t source = 0; source < settings.canopySourceCount; ++source) {
+            const vkexp::Int4 cell = vkexp::lattice::canopySourceCell(settings, world, source);
+            check(cell.y >= 3 && cell.y <= 9 && cell.x >= 0 && cell.x < 24 && cell.z >= 0 &&
+                      cell.z < 24,
+                  "A source hangs inside the box, in the band it was given");
+            const std::uint32_t index = lk::latticeCellIndex(cell.x, cell.y, cell.z,
+                                                             settings.latticeWidth,
+                                                             settings.latticeHeight);
+            placed.insert(index);
+            check(lk::latticeSourceRemaining(terrain[static_cast<std::size_t>(world) * cells +
+                                                     index]) == settings.canopySourceStock,
+                  "and the terrain holds it there, full");
+        }
+        std::size_t sources = 0;
+        for (std::uint32_t cell = 0; cell < cells; ++cell) {
+            sources += lk::latticeIsSource(terrain[static_cast<std::size_t>(world) * cells + cell])
+                           ? 1
+                           : 0;
+        }
+        check(sources == placed.size(), "The terrain holds those sources and no others");
+    }
+    check(vkexp::lattice::canopySourceCell(settings, 0, 0).x !=
+                  vkexp::lattice::canopySourceCell(settings, 1, 0).x ||
+              vkexp::lattice::canopySourceCell(settings, 0, 0).z !=
+                  vkexp::lattice::canopySourceCell(settings, 1, 0).z,
+          "Two worlds do not hang their first source in the same column");
+
+    // Sources are hung clear of the dear part of the field: the cheapest of
+    // several candidate cells, so never dearer than the first one drawn, and
+    // at the default threshold almost never anywhere that charges at all.
+    {
+        std::size_t charged = 0;
+        std::size_t hung = 0;
+        for (std::uint32_t world = 0; world < 64; ++world) {
+            for (std::uint32_t source = 0; source < settings.canopySourceCount; ++source) {
+                const vkexp::Int4 cell = vkexp::lattice::canopySourceCell(settings, world, source);
+                const std::uint32_t first =
+                    lk::latticeCanopySourceDraw(world, settings.beaconSeed, source, 0);
+                check(lk::latticeFieldSum(world, settings.beaconSeed, settings.fieldPeriod, cell.x,
+                                          cell.y, cell.z) <=
+                          lk::latticeFieldSum(
+                              world, settings.beaconSeed, settings.fieldPeriod,
+                              lk::latticeCanopySourceX(first, settings.latticeWidth),
+                              lk::latticeResourceY(first, settings.resourceHeightLow,
+                                                   settings.resourceHeightHigh,
+                                                   settings.latticeHeight),
+                              lk::latticeCanopySourceZ(first, settings.latticeWidth,
+                                                       settings.latticeDepth)),
+                      "A source is never hung anywhere dearer than its first candidate");
+                charged += lk::latticeFieldCost(world, settings.beaconSeed, settings.fieldPeriod,
+                                                settings.fieldThreshold, cell.x, cell.y,
+                                                cell.z) > 0.0F
+                               ? 1
+                               : 0;
+                ++hung;
+            }
+        }
+        check(charged * 20 < hung,
+              "and at the default threshold a source inside a dear region is a rarity");
+    }
+
+    check(vkexp::latticeSpawnCapacity(settings) == vkexp::latticeNestCellCount(settings) &&
+              vkexp::latticeNestCellCount(settings) >= 12 &&
+              vkexp::latticeNestCellCount(settings) < 24U * 24U,
+          "A canopy world holds as many agents as its nest has floor");
+    const std::vector<vkexp::AgentState> spawned =
+        vkexp::lattice::makeInitialAgents(settings, layout);
+    std::set<std::tuple<std::int32_t, std::int32_t, std::int32_t, std::int32_t>> stood;
+    for (const vkexp::AgentState& agent : spawned) {
+        check(agent.cell.y == 1 &&
+                  lk::latticeInNest(agent.cell.x, agent.cell.z, settings.latticeWidth,
+                                    settings.latticeDepth, settings.canopyNestRadius),
+              "The group starts on the floor, inside the nest");
+        stood.insert({agent.beacon.w, agent.cell.x, agent.cell.y, agent.cell.z});
+    }
+    check(stood.size() == spawned.size(), "and no two of them in one cell");
+
+    // --- feeding, and a source running dry ----------------------------------
+    //
+    // One agent, weights of zero, so it walks straight ahead and never builds.
+    // The contact radius spans the box: what is under test is the bookkeeping,
+    // and an agent that had to climb to a source first would be testing the
+    // climb.
+    const vkexp::lattice::PopulationLayout solo{1, 1, 1};
+    const vkexp::neuro::BrainShape brain = vkexp::resolvedBrain(settings);
+    const auto stride = static_cast<std::uint32_t>(brain.weightCount());
+    const std::vector<float> weights(stride, 0.0F);
+    settings.beaconContactRadius = 64;
+    settings.canopySourceCount = 2;
+
+    const auto makeWorld = [&](std::vector<vkexp::AgentState>& agents,
+                               std::vector<std::int32_t>& structures,
+                               std::vector<std::int32_t>& occupancy,
+                               std::vector<std::int32_t>& claims) {
+        agents.assign(1, vkexp::AgentState{});
+        agents[0].cell = {12, 1, 12, 0};
+        agents[0].beacon = {-1, -1, -1, 0};
+        agents[0].intent = {12, 1, 12, 0};
+        structures = vkexp::lattice::makeTerrain(settings, solo.worldCount());
+        occupancy.assign(cells, lk::LatticeNoOccupant);
+        vkexp::lattice::buildOccupancy(agents, settings, solo, occupancy);
+        claims.assign(cells, lk::LatticeNoClaim);
+    };
+    std::vector<vkexp::AgentState> agents;
+    std::vector<std::int32_t> structures;
+    std::vector<std::int32_t> occupancy;
+    std::vector<std::int32_t> claims;
+    std::vector<std::uint32_t> outcomes(lk::LatticeBuildOutcomeCount);
+    const auto step = [&] {
+        vkexp::stepLatticeCpu({agents, occupancy, claims, weights, stride, solo.groupSize(),
+                               solo.trialsPerGenome, structures, outcomes},
+                              settings);
+    };
+    const auto remaining = [&](const std::uint32_t source) {
+        const vkexp::Int4 cell = vkexp::lattice::canopySourceCell(settings, 0, source);
+        return lk::latticeSourceRemaining(structures[lk::latticeCellIndex(
+            cell.x, cell.y, cell.z, settings.latticeWidth, settings.latticeHeight)]);
+    };
+
+    makeWorld(agents, structures, occupancy, claims);
+    const vkexp::lattice::NearestSource first =
+        vkexp::lattice::nearestLiveSource(settings, 0, structures, agents[0].cell);
+    check(first.index >= 0, "A fresh world has a nearest live source");
+    {
+        const vkexp::neuro::Inputs inputs = vkexp::sampleAgentInputs(
+            agents[0], std::vector<float>(1, 0.0F), occupancy, settings, structures);
+        const float length = std::sqrt(inputs[vkexp::neuro::kernel::brainBeaconInputIndex(0)] *
+                                           inputs[vkexp::neuro::kernel::brainBeaconInputIndex(0)] +
+                                       inputs[vkexp::neuro::kernel::brainBeaconInputIndex(1)] *
+                                           inputs[vkexp::neuro::kernel::brainBeaconInputIndex(1)] +
+                                       inputs[vkexp::neuro::kernel::brainBeaconInputIndex(2)] *
+                                           inputs[vkexp::neuro::kernel::brainBeaconInputIndex(2)]);
+        check(closeTo(length, 1.0F) && inputs[vkexp::neuro::kernel::brainBeaconInputIndex(1)] > 0.0F,
+              "The agent is pointed at it: a unit vector, and upward, since it hangs");
+        check(inputs[vkexp::neuro::kernel::brainBeaconInputIndex(5)] == 0.0F,
+              "and has not fed yet, so the fed input is still zero");
+    }
+    for (std::uint32_t tick = 0; tick < settings.canopySourceStock; ++tick) {
+        step();
+    }
+    check(closeTo(agents[0].metrics.w, static_cast<float>(settings.canopySourceStock)) &&
+              remaining(static_cast<std::uint32_t>(first.index)) == 0 &&
+              remaining(1U - static_cast<std::uint32_t>(first.index)) ==
+                  settings.canopySourceStock,
+          "Five ticks in contact take the five feedings the nearer source held, and leave the "
+          "other alone");
+    check(agents[0].memory.w == 1.0F, "The tick that fed says so to the next one");
+    check(vkexp::lattice::nearestLiveSource(settings, 0, structures, agents[0].cell).index ==
+              1 - first.index,
+          "With that one spent, the agent is pointed at the other");
+    for (std::uint32_t tick = 0; tick < settings.canopySourceStock + 3; ++tick) {
+        step();
+    }
+    check(closeTo(agents[0].metrics.w, 2.0F * static_cast<float>(settings.canopySourceStock)) &&
+              remaining(0) == 0 && remaining(1) == 0,
+          "Then that one empties too, and standing there afterwards feeds nobody");
+    check(agents[0].memory.w == 0.0F, "A tick that did not feed says that as well");
+    {
+        const vkexp::neuro::Inputs inputs = vkexp::sampleAgentInputs(
+            agents[0], std::vector<float>(1, 0.0F), occupancy, settings, structures);
+        check(inputs[vkexp::neuro::kernel::brainBeaconInputIndex(0)] == 0.0F &&
+                  inputs[vkexp::neuro::kernel::brainBeaconInputIndex(1)] == 0.0F &&
+                  inputs[vkexp::neuro::kernel::brainBeaconInputIndex(2)] == 0.0F &&
+                  inputs[vkexp::neuro::kernel::brainBeaconInputIndex(3)] == 0.0F,
+              "A spent world points nowhere and is near nothing");
+    }
+
+    // --- carrying -----------------------------------------------------------
+    //
+    // The same world with loads on. A feeding is now something held, it is not
+    // scored until it is inside the nest, and nothing more is taken while it is
+    // held -- so the stock goes down by one per trip rather than one per tick.
+    settings.canopyCarry = 1;
+    makeWorld(agents, structures, occupancy, claims);
+    agents[0].cell = {20, 1, 12, 0}; // outside the nest, walking away from it
+    agents[0].intent = {20, 1, 12, 0};
+    vkexp::lattice::buildOccupancy(agents, settings, solo, occupancy);
+    step();
+    step();
+    step();
+    check(agents[0].memory.w == 1.0F && agents[0].metrics.w == 0.0F &&
+              remaining(0) + remaining(1) == 2U * settings.canopySourceStock - 1U,
+          "With loads on, contact takes one feeding, holds it, and scores nothing yet");
+    {
+        const vkexp::neuro::Inputs inputs = vkexp::sampleAgentInputs(
+            agents[0], std::vector<float>(1, 0.0F), occupancy, settings, structures);
+        check(inputs[vkexp::neuro::kernel::brainBeaconInputIndex(0)] < -0.9F &&
+                  inputs[vkexp::neuro::kernel::brainBeaconInputIndex(5)] == 1.0F,
+              "A loaded agent is pointed home -- behind it, here -- and knows it is loaded");
+    }
+    // Put it down inside the nest, as a walk home would.
+    occupancy.assign(cells, lk::LatticeNoOccupant);
+    agents[0].cell = {12, 1, 12, 0};
+    agents[0].intent = {12, 1, 12, 0};
+    vkexp::lattice::buildOccupancy(agents, settings, solo, occupancy);
+    step();
+    check(agents[0].metrics.w == 1.0F && agents[0].memory.w == 0.0F,
+          "Inside the nest the load is put down and scored, once");
+    settings.canopyCarry = 0;
+
+    // --- what a block costs -------------------------------------------------
+    //
+    // A negative build threshold, so the untrained output of zero is a request
+    // to build: the agent places the block in front of it on the first tick.
+    settings.buildThreshold = -0.5F;
+    settings.fieldPeriod = 2;
+    settings.fieldThreshold = 0.0F;
+    settings.fitness.fieldCostFactor = 3.0F;
+    makeWorld(agents, structures, occupancy, claims);
+    step();
+    const float charged =
+        lk::latticeFieldCost(0, settings.beaconSeed, settings.fieldPeriod,
+                             settings.fieldThreshold, 13, 1, 12);
+    check(structures[lk::latticeCellIndex(13, 1, 12, settings.latticeWidth,
+                                          settings.latticeHeight)] == 1,
+          "The agent placed the block in front of it");
+    check(closeTo(agents[0].metrics.y, 1.0F + 3.0F * charged),
+          "and was charged one block plus the field's price for that cell");
+    settings.fitness.fieldCostFactor = 0.0F;
+    makeWorld(agents, structures, occupancy, claims);
+    step();
+    check(closeTo(agents[0].metrics.y, 1.0F), "With the field switched off a block is a block");
+
+    // And what the cost input reports is that same price, before it is paid.
+    settings.fitness.fieldCostFactor = 3.0F;
+    makeWorld(agents, structures, occupancy, claims);
+    {
+        const vkexp::neuro::Inputs inputs = vkexp::sampleAgentInputs(
+            agents[0], std::vector<float>(1, 0.0F), occupancy, settings, structures);
+        check(closeTo(inputs[vkexp::neuro::kernel::brainBeaconInputIndex(6)], charged) &&
+                  closeTo(inputs[vkexp::neuro::kernel::brainBeaconInputIndex(7)],
+                          lk::latticeFieldCost(0, settings.beaconSeed, settings.fieldPeriod,
+                                               settings.fieldThreshold, 13, 0, 12)),
+              "The agent is told what a block would cost in the cell ahead and the one below it");
+    }
+
+    // --- what the world is worth --------------------------------------------
+    vkexp::FitnessWeights worth{};
+    worth.objectiveBonus = 0.02F;
+    worth.trackingReward = 1.0F;
+    worth.blockCost = 0.01F;
+    check(closeTo(vkexp::canopyWorldFitness(100.0F, 0.5F, 30.0F, worth), 2.0F + 0.5F - 0.3F),
+          "A world scores its feedings and its best approach, less what its blocks cost");
+    check(vkexp::canopyWorldFitness(100.0F, 0.5F, 30.0F, worth) >
+              vkexp::canopyWorldFitness(100.0F, 0.5F, 90.0F, worth),
+          "so the same harvest from fewer blocks is the better world");
+}
+
 void testCameraSpin() {
     constexpr float radius = 10.0F;
     constexpr float turn = 0.37F;
@@ -2907,6 +3295,7 @@ int main() {
     testConstructionLocalFoundation();
     testBuildCooldown();
     testChasmEdge();
+    testCanopyWorld();
     testLatticeSpawn();
     testLatticeSensing();
     testLatticeContention();

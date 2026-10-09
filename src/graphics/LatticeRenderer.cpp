@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -113,6 +114,7 @@ constexpr std::uint32_t modeTrail = 3;
 constexpr std::uint32_t modeStructure = 4;
 constexpr std::uint32_t modeGoal = 5;
 constexpr std::uint32_t modeTerrain = 6;
+constexpr std::uint32_t modeField = 7;
 
 // Mirrors the push constant block in shaders/lattice/lattice_view.glsl. Exactly
 // the 128 bytes Vulkan guarantees, with nothing spare: the mode, the slice axis
@@ -632,7 +634,11 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
     // Both are line lists, so they share one pipeline and one bind. The guide is
     // drawn wherever the objective is drawn, and for the same reason: it is the
     // one thing in the box whose position is the question.
+    const bool foraging = worldForages(settings.worldMode);
     const bool drawObjective = display.beacons && settings.worldMode != WorldMode::Construction;
+    // The canopy's price list, as haze. Blended whatever the voxel style is: a
+    // solid field would hide the structure it is there to explain.
+    const bool drawField = foraging && display.costField && settings.fitness.fieldCostFactor > 0.0F;
     if (display.bounds || drawObjective) {
         vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, boundsPipeline_.get());
         if (display.bounds) {
@@ -640,14 +646,30 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
             push();
             vkCmdDraw(commands, boxEdgeVertexCount, 1, 0, 0);
         }
-        if (drawObjective) {
+        if (drawObjective && foraging) {
+            // One plumb line per source, live or spent: where they hang is the
+            // shape of the problem, and which of them are left is what the
+            // block field's own pass colours.
+            const std::array<std::int32_t, 4> savedBeacon = parameters.beacon;
+            const std::uint32_t sources =
+                std::min(settings.canopySourceCount, lattice::kernel::LatticeSourceCapacity);
+            pushWord(modeGoal);
+            for (std::uint32_t source = 0; source < sources; ++source) {
+                const Int4 cell =
+                    lattice::canopySourceCell(settings, state_.worlds.selectedWorld, source);
+                parameters.beacon = {cell.x, cell.y, cell.z, savedBeacon[3]};
+                push();
+                vkCmdDraw(commands, goalGuideVertexCount, 1, 0, 0);
+            }
+            parameters.beacon = savedBeacon;
+        } else if (drawObjective) {
             pushWord(modeGoal);
             push();
             vkCmdDraw(commands, goalGuideVertexCount, 1, 0, 0);
         }
     }
     vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, voxelPipeline_.get());
-    if (drawObjective) {
+    if (drawObjective && !foraging) {
         // Always opaque, and a little larger than a cell. It is the one thing in
         // the box whose position is the question rather than the answer, so it
         // should not be the thing that disappears when transparency is on. In
@@ -675,6 +697,10 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
         const std::array<std::int32_t, 4> savedBeacon = parameters.beacon;
         const float savedScale = parameters.camera[3];
         parameters.beacon[3] = static_cast<std::int32_t>(state_.worlds.selectedWorld);
+        // The nest radius, in a lane this pass has no other use for. Zero means
+        // there is no nest to mark.
+        parameters.beacon[0] =
+            foraging ? static_cast<std::int32_t>(settings.canopyNestRadius) : 0;
         parameters.camera[3] = 1.0F;
         pushWord(modeTerrain);
         push();
@@ -708,7 +734,7 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
     }
     vkCmdEndRendering(commands);
 
-    if (drawTrails || (transparent && (drawAgents || drawStructures))) {
+    if (drawTrails || drawField || (transparent && (drawAgents || drawStructures))) {
         // The opaque pass clears and then writes depth for the beacon and box;
         // the transparent pass tests every agent against that result. Ending a
         // dynamic-rendering instance supplies no memory dependency of its own.
@@ -790,6 +816,28 @@ void LatticeRenderer::onRender(AppContext& context, const FrameInfo&) {
             pushWord(modeTrail);
             push();
             vkCmdDraw(commands, cubeVertexCount, visibleAgents * trailSamples, 0, 0);
+            parameters.beacon = savedBeacon;
+            parameters.camera[3] = savedScale;
+            parameters.tint[0] = savedOpacity;
+        }
+        if (drawField) {
+            // One small instance per cell, and the ones that cost nothing
+            // collapse in the vertex stage. Small on purpose: a haze of full
+            // cells is a wall of overdraw that hides what stands inside it.
+            const std::array<std::int32_t, 4> savedBeacon = parameters.beacon;
+            const float savedScale = parameters.camera[3];
+            const float savedOpacity = parameters.tint[0];
+            parameters.beacon = {
+                static_cast<std::int32_t>(settings.beaconSeed),
+                static_cast<std::int32_t>(std::clamp(
+                    settings.fieldPeriod, 1U, lattice::kernel::LatticeFieldPeriodMaximum)),
+                std::bit_cast<std::int32_t>(settings.fieldThreshold),
+                static_cast<std::int32_t>(state_.worlds.selectedWorld)};
+            parameters.camera[3] = 0.42F;
+            parameters.tint[0] = std::clamp(display.costFieldOpacity, 0.01F, 1.0F);
+            pushWord(modeField);
+            push();
+            vkCmdDraw(commands, cubeVertexCount, state_.lattice.cellsPerWorld, 0, 0);
             parameters.beacon = savedBeacon;
             parameters.camera[3] = savedScale;
             parameters.tint[0] = savedOpacity;

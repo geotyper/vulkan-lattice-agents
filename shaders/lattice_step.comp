@@ -155,6 +155,52 @@ ivec3 harvestResourceCell(uint world) {
                  latticeResourceZ(hash, params.latticeWidth, params.latticeDepth));
 }
 
+// Mirrors vkexp::lattice::canopySourceCell.
+ivec3 canopySourceCell(uint world, uint source) {
+    const uint hash = latticeCanopySourceHash(
+        world, params.beaconSeed, source, params.latticeWidth, params.latticeHeight,
+        params.latticeDepth, params.resourceHeightLow, params.resourceHeightHigh,
+        params.fieldPeriod);
+    return ivec3(latticeCanopySourceX(hash, params.latticeWidth),
+                 latticeResourceY(hash, params.resourceHeightLow, params.resourceHeightHigh,
+                                  params.latticeHeight),
+                 latticeCanopySourceZ(hash, params.latticeWidth, params.latticeDepth));
+}
+
+// The nearest source that still holds something, or -1 when the world is spent.
+// Strictly nearer, so a tie goes to the lower index. Reads the block field as it
+// stands at the top of the step, which nothing in this pass writes.
+//
+// Mirrors vkexp::lattice::nearestLiveSource.
+int canopyNearestSource(uint world, uint worldBase, ivec3 cell, out ivec3 nearestCell,
+                        out uint nearestDistance) {
+    int nearest = -1;
+    nearestCell = cell;
+    nearestDistance = 0u;
+    const uint count = latticeCanopySourceCount(params.canopySources);
+    for (uint source = 0u; source < count; ++source) {
+        const ivec3 candidate = canopySourceCell(world, source);
+        const uint index = latticeCellIndex(candidate.x, candidate.y, candidate.z,
+                                            params.latticeWidth, params.latticeHeight);
+        if (!latticeSourceAlive(structures[worldBase + index])) {
+            continue;
+        }
+        const uint distance =
+            latticeStepDistance(params.neighborhood, candidate.x - cell.x, candidate.y - cell.y,
+                                candidate.z - cell.z);
+        if (nearest < 0 || distance < nearestDistance) {
+            nearest = int(source);
+            nearestCell = candidate;
+            nearestDistance = distance;
+        }
+    }
+    return nearest;
+}
+
+bool canopyCarrying(Agent agent) {
+    return latticeCanopyCarries(params.canopySources) && agent.memory.w > 0.5;
+}
+
 void senseLattice(Agent agent, uint world, uint worldBase, out float sensed[BrainInputCapacity]) {
     for (uint index = 0; index < BrainInputCapacity; ++index) {
         sensed[index] = 0.0;
@@ -217,8 +263,23 @@ void senseLattice(Agent agent, uint world, uint worldBase, out float sensed[Brai
         // numbers. Where the cell is differs: a beacon is mirrored onto the
         // agent, and a resource is derived from the world.
         ivec3 objective = agent.beacon.xyz;
+        // Whether there is anything to point at. Only the canopy can say no:
+        // once every source is spent the direction reads zero.
+        bool directed = true;
         if (latticeWorldHarvests(params.worldMode)) {
             objective = harvestResourceCell(world);
+        } else if (latticeWorldForages(params.worldMode)) {
+            if (canopyCarrying(agent)) {
+                // Loaded: the way home, to the middle of the nest.
+                objective =
+                    ivec3(int(params.latticeWidth / 2u), 1, int(params.latticeDepth / 2u));
+            } else {
+                ivec3 nearestCell;
+                uint nearestDistance;
+                directed = canopyNearestSource(world, worldBase, agent.cell.xyz, nearestCell,
+                                               nearestDistance) >= 0;
+                objective = nearestCell;
+            }
         }
         const int deltaX = objective.x - agent.cell.x;
         const int deltaY = objective.y - agent.cell.y;
@@ -237,10 +298,26 @@ void senseLattice(Agent agent, uint world, uint worldBase, out float sensed[Brai
         sensed[brainBeaconInputIndex(1u)] = latticeDirectionComponent(deltaY, distanceToObjective);
         sensed[brainBeaconInputIndex(2u)] =
             latticeDirectionComponent(bodyAheadZ, distanceToObjective);
-        sensed[brainBeaconInputIndex(3u)] = latticeNearness(steps, params.maximumDistance);
-        if (latticeWorldHarvests(params.worldMode)) {
+        sensed[brainBeaconInputIndex(3u)] =
+            directed ? latticeNearness(steps, params.maximumDistance) : 0.0;
+        if (latticeWorldHarvests(params.worldMode) || latticeWorldForages(params.worldMode)) {
             sensed[brainBeaconInputIndex(4u)] = agent.signal.z <= 0.0 ? 1.0 : 0.0;
             sensed[brainBeaconInputIndex(5u)] = clamp(agent.memory.w, 0.0, 1.0);
+        }
+        if (latticeWorldForages(params.worldMode)) {
+            // What a block would cost in the two cells a build can land in: the
+            // one ahead, and the one below it that a cantilever falls back to.
+            const int aheadX = agent.cell.x + latticeFacingX(facing);
+            const int aheadZ = agent.cell.z + latticeFacingZ(facing);
+            for (int level = 0; level < 2; ++level) {
+                const int aheadY = agent.cell.y - level;
+                sensed[brainBeaconInputIndex(6u + uint(level))] =
+                    latticeInBounds(aheadX, aheadY, aheadZ, params.latticeWidth,
+                                    params.latticeHeight, params.latticeDepth)
+                        ? latticeFieldCost(world, params.beaconSeed, params.fieldPeriod,
+                                           params.fieldThreshold, aheadX, aheadY, aheadZ)
+                        : 0.0;
+            }
         }
     }
 
@@ -288,6 +365,32 @@ void main() {
     } else {
         agent.memory.x = 0.0;
         agent.memory.y = 0.0;
+    }
+
+    // The canopy's contact is decided here, against the lattice as it stood at
+    // the top of the step, and carried to the resolve pass in the lane the load
+    // lives in: bit zero is the load, the rest is which source to feed from,
+    // plus one. Decided here and not there because feeding changes a source's
+    // stock, and the resolve pass would otherwise read a value its neighbours
+    // were in the middle of changing -- so who was fed in the tick a source ran
+    // dry would depend on which invocation got there first.
+    if (latticeWorldForages(params.worldMode)) {
+        const bool carrying = canopyCarrying(agent);
+        int feeding = -1;
+        if (!carrying) {
+            ivec3 nearestCell;
+            uint nearestDistance;
+            const int nearest =
+                canopyNearestSource(world, worldBase, agent.cell.xyz, nearestCell, nearestDistance);
+            if (nearest >= 0) {
+                agent.metrics.x = max(agent.metrics.x,
+                                      latticeNearness(nearestDistance, params.maximumDistance));
+                if (latticeBeaconReached(nearestDistance, params.beaconContactRadius)) {
+                    feeding = nearest;
+                }
+            }
+        }
+        agent.memory.w = (carrying ? 1.0 : 0.0) + 2.0 * float(feeding + 1);
     }
 
     // Three commands and no more: turn, or spend the tick on the one thing the

@@ -721,16 +721,34 @@ void runContentionProbe(vkexp::HeadlessComputeContext& context) {
 // twice, once in C++ and once in GLSL, and nothing else in this file would
 // notice the two answers drifting apart.
 void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
-                                const vkexp::WorldMode worldMode) {
+                                const vkexp::WorldMode worldMode, const bool carry = false) {
     vkexp::SimulationStep settings =
         paritySettings(vkexp::Neighborhood::Moore, vkexp::NeuronModel::TimeConstant);
     settings.worldMode = worldMode;
+    // The canopy's own settings, chosen like the resource's below: so that the
+    // rules run rather than merely agree. Four sources of ten feedings in a box
+    // everybody is in contact with all of, which empties one every three ticks
+    // and overshoots it on the last -- the one tick where the order feedings
+    // land in could matter, and so the one this probe most needs to see. The
+    // field is made dear everywhere it can be, so a block placed is a block
+    // charged.
+    settings.canopySourceCount = 4;
+    settings.canopySourceStock = 10;
+    settings.canopyNestRadius = 2;
+    settings.canopyCarry = carry ? 1U : 0U;
+    settings.fieldPeriod = 2;
+    settings.fieldThreshold = 0.05F;
+    settings.fitness.fieldCostFactor = 3.0F;
+    const bool canopy = vkexp::worldForages(worldMode);
     // The resource sits one level up and counts as reached from anywhere in a
     // 4x4x4 box. Both are deliberate: a probe where nobody ever picks up a load
     // compares the harvest rules without running them, and where the resource
     // lands is a hash this fixture does not get to choose.
-    settings.resourceHeightLow = 1;
-    settings.resourceHeightHigh = 1;
+    // The canopy hangs its sources one level higher than that, clear of the
+    // course its group stands on: a source is a solid cell, and one hashed onto
+    // an agent's own cell would be a fixture no world could start from.
+    settings.resourceHeightLow = canopy ? 2 : 1;
+    settings.resourceHeightHigh = canopy ? 2 : 1;
     settings.beaconContactRadius = 4;
     // Build often and on almost any signal: what is being compared is placement,
     // and a probe where nobody happens to build compares nothing. The final
@@ -799,6 +817,16 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
                                                                 settings.latticeHeight)] = 1;
         }
     }
+    // After the platform, so a source hashed onto one of its cells is still a
+    // source: this fixture does not get to choose where they land.
+    if (canopy) {
+        for (std::uint32_t source = 0; source < settings.canopySourceCount; ++source) {
+            const vkexp::Int4 cell = vkexp::lattice::canopySourceCell(settings, 0, source);
+            structures[vkexp::lattice::kernel::latticeCellIndex(
+                cell.x, cell.y, cell.z, settings.latticeWidth, settings.latticeHeight)] =
+                vkexp::lattice::kernel::latticeSourceCell(settings.canopySourceStock);
+        }
+    }
     // Where the group can actually stand. In a chasm only the first half of the
     // columns has bedrock, so the group goes there and the platform sits beside
     // it along z; everywhere else the floor is whole and it sits beside it
@@ -809,14 +837,17 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
         vkexp::AgentState& agent = expected[index];
         const std::int32_t row = static_cast<std::int32_t>(index) % platform;
         const std::int32_t column = static_cast<std::int32_t>(index) / platform;
+        // The canopy's group stands on the ground beside the platform as well:
+        // it has no frontier to meet, and four agents packed onto a 2x2 roof
+        // spend the probe in each other's way and place nothing.
         agent.cell.x = chasm ? row : row;
-        agent.cell.z = chasm ? column + platform : column;
+        agent.cell.z = chasm || canopy ? column + platform : column;
         // On top of the platform in the worlds that have a frontier, beside the
         // ground in the one that does not. Height is the point: bedrock fills
         // the bottom course, so the foundation is never lower than one, and in a
         // box four high a group standing at height one can never build far
         // enough above it to meet the rule at all.
-        agent.cell.y = chasm ? 1 : platform;
+        agent.cell.y = chasm || canopy ? 1 : platform;
         agent.intent = {agent.cell.x, agent.cell.y, agent.cell.z, 0};
     }
     std::vector<std::int32_t> occupancy(claims.size());
@@ -850,7 +881,8 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
         const std::vector<vkexp::AgentState> actual = harness.readAgents();
         const char* worldName = worldMode == vkexp::WorldMode::Harvest  ? "Harvest step "
                                 : chasm                                 ? "Chasm step "
-                                                                        : "Construction step ";
+                                : canopy ? (carry ? "Canopy (carrying) step " : "Canopy step ")
+                                         : "Construction step ";
         const std::string where = std::string{worldName} + std::to_string(step);
         for (std::size_t index = 0; index < expected.size(); ++index) {
             compareAgents(expected[index], actual[index], where + " agent " + std::to_string(index),
@@ -939,6 +971,40 @@ void runConstructionParityProbe(vkexp::HeadlessComputeContext& context,
         }
         require(carrying > 0 || delivered > 0.0F,
                 "A fetching parity probe never picked up a load, so it compared nothing new");
+    }
+
+    if (canopy) {
+        // What only this world does: feed, empty a source, and charge a block
+        // by where it stands. Each is required to have happened, or the probe
+        // compared two implementations of rules neither of them ran.
+        float fed = 0.0F;
+        float spent = 0.0F;
+        std::size_t loaded = 0;
+        for (const vkexp::AgentState& agent : expected) {
+            fed += agent.metrics.w;
+            spent += agent.metrics.y;
+            loaded += agent.memory.w > 0.0F ? 1 : 0;
+        }
+        require(fed > 0.0F || (carry && loaded > 0),
+                "The canopy parity probe never fed from a source, so it compared nothing new");
+        std::size_t emptied = 0;
+        std::size_t blocks = 0;
+        for (const std::int32_t cell : structures) {
+            emptied += vkexp::lattice::kernel::latticeIsSource(cell) &&
+                               !vkexp::lattice::kernel::latticeSourceAlive(cell)
+                           ? 1
+                           : 0;
+            blocks += cell > vkexp::lattice::kernel::LatticeNoStructure ? 1 : 0;
+        }
+        // With loads on, a source is only drawn on once per trip, so what is
+        // required there is a trip: something picked up and something scored.
+        require(carry ? fed > 0.0F : emptied > 0,
+                carry ? "The canopy parity probe never carried a load home"
+                      : "The canopy parity probe never emptied a source");
+        // The platform's four blocks were there before anybody built, and are
+        // in nobody's bill.
+        require(spent > static_cast<float>(blocks) - 4.0F + 0.01F,
+                "The canopy parity probe never charged a block for the field it stands in");
     }
 
     const auto placed = std::count_if(structures.begin(), structures.end(), [](const std::int32_t v) {
@@ -1112,12 +1178,15 @@ void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
     packed.resourceHeightHigh = nextUint();
     packed.groundWidth = nextUint();
     packed.beaconSeed = nextUint();
+    packed.canopySources = nextUint();
+    packed.fieldPeriod = nextUint();
+    packed.fieldThreshold = nextFloat();
     packed.fitness.trackingReward = nextFloat();
     packed.fitness.objectiveBonus = nextFloat();
     packed.fitness.motorCostWeight = nextFloat();
     packed.fitness.refusalPenalty = nextFloat();
     packed.fitness.signalCostFactor = nextFloat();
-    packed.fitness.reserved0 = nextFloat();
+    packed.fitness.fieldCostFactor = nextFloat();
     packed.fitness.reserved1 = nextFloat();
     packed.fitness.reserved2 = nextFloat();
 
@@ -1150,12 +1219,15 @@ void runLayoutEchoProbe(vkexp::HeadlessComputeContext& context) {
     expectUint("resourceHeightHigh", packed.resourceHeightHigh);
     expectUint("groundWidth", packed.groundWidth);
     expectUint("beaconSeed", packed.beaconSeed);
+    expectUint("canopySources", packed.canopySources);
+    expectUint("fieldPeriod", packed.fieldPeriod);
+    expectFloat("fieldThreshold", packed.fieldThreshold);
     expectFloat("fitness.trackingReward", packed.fitness.trackingReward);
     expectFloat("fitness.objectiveBonus", packed.fitness.objectiveBonus);
     expectFloat("fitness.motorCostWeight", packed.fitness.motorCostWeight);
     expectFloat("fitness.refusalPenalty", packed.fitness.refusalPenalty);
     expectFloat("fitness.signalCostFactor", packed.fitness.signalCostFactor);
-    expectFloat("fitness.reserved0", packed.fitness.reserved0);
+    expectFloat("fitness.fieldCostFactor", packed.fitness.fieldCostFactor);
     expectFloat("fitness.reserved1", packed.fitness.reserved1);
     expectFloat("fitness.reserved2", packed.fitness.reserved2);
 
@@ -1411,6 +1483,8 @@ int runAll() {
     runConstructionParityProbe(context, vkexp::WorldMode::Construction);
     runConstructionParityProbe(context, vkexp::WorldMode::Harvest);
     runConstructionParityProbe(context, vkexp::WorldMode::Chasm);
+    runConstructionParityProbe(context, vkexp::WorldMode::Canopy);
+    runConstructionParityProbe(context, vkexp::WorldMode::Canopy, true);
 
     // Both neighbourhoods, because the face-only reduction is a branch the Moore
     // case never takes, and all four neuron models, because each decides the

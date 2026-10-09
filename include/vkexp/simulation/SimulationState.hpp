@@ -234,6 +234,11 @@ struct SimulationDisplay {
     // The lattice as a wireframe box, so a sparse world still reads as a volume
     // rather than as points floating in nothing.
     bool bounds{true};
+    // The canopy's cost field, drawn as haze where a block costs extra. Always
+    // through the blended pass, whatever the voxel style: a solid field would
+    // hide the very structure it is there to explain.
+    bool costField{true};
+    float costFieldOpacity{0.16F};
     float backgroundBrightness{1.0F};
 
     VoxelStyle voxelStyle{VoxelStyle::Solid};

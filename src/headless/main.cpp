@@ -28,7 +28,9 @@ constexpr int skipExitCode = 77;
 
 struct Options {
     std::uint64_t generations{20};
-    std::uint32_t stepsPerGeneration{900};
+    // Absent means the world's own length: 900 everywhere but the canopy, whose
+    // box takes four times as long to cross.
+    std::optional<std::uint32_t> stepsPerGeneration;
     std::uint32_t stepsPerBatch{128};
     std::uint32_t agentsPerWorld{12};
     std::size_t populationSize{512};
@@ -47,16 +49,24 @@ struct Options {
     std::optional<std::uint32_t> buildIntervalTicks;
     std::uint32_t wastedBuildTicks{4};
     float buildThreshold{0.55F};
-    std::uint32_t resourceHeightLow{4};
-    std::uint32_t resourceHeightHigh{8};
+    std::optional<std::uint32_t> resourceHeightLow;
+    std::optional<std::uint32_t> resourceHeightHigh;
     std::uint32_t chasmGroundWidth{};
+    std::optional<std::uint32_t> canopySourceCount;
+    std::optional<std::uint32_t> canopySourceStock;
+    std::optional<std::uint32_t> canopyNestRadius;
+    bool canopyCarry{};
+    std::optional<std::uint32_t> fieldPeriod;
+    std::optional<float> fieldThreshold;
     float constructionCourseFill{0.5F};
     std::uint32_t constructionHeightLead{5};
     std::uint32_t constructionSupportRadius{2};
     bool allowSideSupportedBlocks{};
 
     vkexp::FitnessWeights fitness{};
-    vkexp::NeuronModel neuronModel{vkexp::NeuronModel::TimeConstant};
+    // Absent means the world's own: time constants everywhere but the canopy,
+    // which opens on the spiking model.
+    std::optional<vkexp::NeuronModel> neuronModel;
     bool quiet{};
     std::string savePopulation;
     std::string saveChampion;
@@ -77,7 +87,8 @@ void printHelp(const char* executable) {
                  "per-generation fitness.\n\n"
                  "Experiment:\n"
                  "  --generations <n>        generations to run (default 20)\n"
-                 "  --steps <n>              steps per generation (default 900 = 15.0 s)\n"
+                 "  --steps <n>              steps per generation (default 900 = 15.0 s;\n"
+                 "                           3000 in the canopy)\n"
                  "  --population <n>         genomes (default 512)\n"
                  "  --weight-init <name>     saturating|fan-in: how a fresh genome is drawn\n"
                  "                           (default saturating). fan-in scales each block by\n"
@@ -87,7 +98,8 @@ void printHelp(const char* executable) {
                  "  --seed <n>               genetic algorithm seed (default 12648430)\n"
                  "  --steps-per-batch <n>    steps recorded per submission (default 128)\n\n"
                  "The lattice:\n"
-                 "  --world <name>          beacon|construction|harvest|chasm (default beacon)\n"
+                 "  --world <name>          beacon|construction|harvest|chasm|canopy\n"
+                 "                           (default beacon)\n"
                  "  --lattice <WxHxD>        cells per world (default 32x32x16). Each world\n"
                  "                           costs W*H*D*4 bytes twice over, and there is one\n"
                  "                           world per group per trial, so a large box and a\n"
@@ -107,6 +119,16 @@ void printHelp(const char* executable) {
                  "                           hangs in, inclusive (4-8), hashed per world\n"
                  "  --ground-width <n>       chasm: columns of solid floor from x=0.\n"
                  "                           0 means half the lattice\n"
+                 "  --sources <n>            canopy: sources hanging in each world (8)\n"
+                 "  --source-stock <n>       canopy: feedings one source holds (240)\n"
+                 "  --nest-radius <n>        canopy: radius of the disc the group starts in (5)\n"
+                 "  --canopy-carry           canopy: a feeding is a load, scored in the nest\n"
+                 "  --field-scale <n>        canopy: spacing of the cost field's grid (8).\n"
+                 "                           Sources are hung clear of the dear regions\n"
+                 "  --field-threshold <x>    canopy: how much of the field is free (0.6)\n"
+                 "  --field-cost <x>         canopy: blocks' worth charged in the worst of\n"
+                 "                           the field (2). 0 switches the field off\n"
+                 "  --block-cost <x>         canopy: charged per block placed (0.002)\n"
                  "  --wasted-swing <n>       cooldown for a build aimed at an occupied cell\n"
                  "                           or past a wall (4). 0 charges nothing\n"
                  "  --course-fill <x>        fill a level needs, locally, to be stood on (0.5)\n"
@@ -120,7 +142,8 @@ void printHelp(const char* executable) {
                  "                           neuron's time constant comes from. reactive pins\n"
                  "                           it to the step; spiking uses leaky\n"
                  "                           integrate-and-fire pulses; gated recomputes it\n"
-                 "                           from inputs (default time)\n"
+                 "                           from inputs (default time; spiking in the\n"
+                 "                           canopy)\n"
                  "  --hidden <a[,b[,c]]>     hidden layer widths, front to back\n"
                  "  --hidden-squash <a[,b[,c]]>\n"
                  "                           tanh|sin|tanh-scaled|softsign per hidden layer\n"
@@ -282,8 +305,11 @@ void parseLatticeExtents(const std::string_view text, Options& options) {
     if (name == "chasm") {
         return vkexp::WorldMode::Chasm;
     }
+    if (name == "canopy") {
+        return vkexp::WorldMode::Canopy;
+    }
     fail("Unknown world '" + std::string{name} +
-         "'; expected beacon, construction, harvest or chasm");
+         "'; expected beacon, construction, harvest, chasm or canopy");
 }
 
 [[nodiscard]] const char* worldModeName(const vkexp::WorldMode mode) {
@@ -292,6 +318,9 @@ void parseLatticeExtents(const std::string_view text, Options& options) {
     }
     if (mode == vkexp::WorldMode::Chasm) {
         return "chasm";
+    }
+    if (mode == vkexp::WorldMode::Canopy) {
+        return "canopy";
     }
     return mode == vkexp::WorldMode::Harvest ? "harvest" : "beacon";
 }
@@ -406,6 +435,22 @@ Options parseOptions(const int argc, char** argv, bool& helpRequested) {
             options.resourceHeightLow = parseNumber<std::uint32_t>(band.substr(0, dash), argument);
             options.resourceHeightHigh =
                 parseNumber<std::uint32_t>(band.substr(dash + 1), argument);
+        } else if (argument == "--sources") {
+            options.canopySourceCount = parseNumber<std::uint32_t>(next(index, argument), argument);
+        } else if (argument == "--source-stock") {
+            options.canopySourceStock = parseNumber<std::uint32_t>(next(index, argument), argument);
+        } else if (argument == "--nest-radius") {
+            options.canopyNestRadius = parseNumber<std::uint32_t>(next(index, argument), argument);
+        } else if (argument == "--canopy-carry") {
+            options.canopyCarry = true;
+        } else if (argument == "--field-scale") {
+            options.fieldPeriod = parseNumber<std::uint32_t>(next(index, argument), argument);
+        } else if (argument == "--field-threshold") {
+            options.fieldThreshold = parseNumber<float>(next(index, argument), argument);
+        } else if (argument == "--field-cost") {
+            options.fitness.fieldCostFactor = parseNumber<float>(next(index, argument), argument);
+        } else if (argument == "--block-cost") {
+            options.fitness.blockCost = parseNumber<float>(next(index, argument), argument);
         } else if (argument == "--wasted-swing") {
             options.wastedBuildTicks = parseNumber<std::uint32_t>(next(index, argument), argument);
         } else if (argument == "--course-fill") {
@@ -480,7 +525,7 @@ void describeBrainAndExit(const Options& options) {
         settings.hiddenLayers[layer] = options.hiddenLayers[layer];
     }
     const vkexp::neuro::BrainDescription description = vkexp::neuro::describeBrain(
-        vkexp::resolvedBrain(settings), neuronModelKey(options.neuronModel));
+        vkexp::resolvedBrain(settings), neuronModelKey(options.neuronModel.value_or(vkexp::NeuronModel::TimeConstant)));
     std::ofstream stream{options.describeBrain, std::ios::trunc};
     if (!stream) {
         fail("Unable to write the brain description to " + options.describeBrain);
@@ -498,16 +543,20 @@ int run(const Options& options) {
     vkexp::HeadlessComputeContext context{{"vklat headless evolution"}};
 
     vkexp::SimulationState state;
-    state.controls.stepsPerGeneration = options.stepsPerGeneration;
+    state.controls.stepsPerGeneration = options.stepsPerGeneration.value_or(
+        options.worldMode == vkexp::WorldMode::Canopy ? vkexp::canopyDefaultStepsPerGeneration
+                                                      : 900U);
     state.worlds.requestedAgentsPerWorld = options.agentsPerWorld;
+    state.settings.neighborhood = options.neighborhood;
+    state.settings.worldMode = options.worldMode;
+    applyWorldDefaults(state.settings);
+    // After the world's defaults, like every other flag: a world that names its
+    // own box must not silently win over a box that was asked for.
     if (options.latticeWidth) {
         state.settings.latticeWidth = *options.latticeWidth;
         state.settings.latticeHeight = *options.latticeHeight;
         state.settings.latticeDepth = *options.latticeDepth;
     }
-    state.settings.neighborhood = options.neighborhood;
-    state.settings.worldMode = options.worldMode;
-    applyWorldDefaults(state.settings);
     // After the world's own defaults, and only when it was actually asked for:
     // a chasm builds four times as fast as the other worlds unless the command
     // line says otherwise, and a flag left off must not read as a request for
@@ -517,9 +566,25 @@ int run(const Options& options) {
     }
     state.settings.buildThreshold = std::clamp(options.buildThreshold, 0.0F, 1.0F);
     const std::uint32_t ceiling = std::max(state.settings.latticeHeight, 2U) - 1U;
-    state.settings.resourceHeightLow = std::clamp(options.resourceHeightLow, 1U, ceiling);
+    state.settings.resourceHeightLow = std::clamp(
+        options.resourceHeightLow.value_or(state.settings.resourceHeightLow), 1U, ceiling);
     state.settings.resourceHeightHigh =
-        std::clamp(options.resourceHeightHigh, state.settings.resourceHeightLow, ceiling);
+        std::clamp(options.resourceHeightHigh.value_or(state.settings.resourceHeightHigh),
+                   state.settings.resourceHeightLow, ceiling);
+    state.settings.canopySourceCount =
+        std::clamp(options.canopySourceCount.value_or(state.settings.canopySourceCount), 1U,
+                   vkexp::lattice::kernel::LatticeSourceCapacity);
+    state.settings.canopySourceStock =
+        std::clamp(options.canopySourceStock.value_or(state.settings.canopySourceStock), 1U,
+                   1U << 19U);
+    state.settings.canopyNestRadius =
+        std::clamp(options.canopyNestRadius.value_or(state.settings.canopyNestRadius), 1U, 255U);
+    state.settings.canopyCarry = options.canopyCarry ? 1U : 0U;
+    state.settings.fieldPeriod =
+        std::clamp(options.fieldPeriod.value_or(state.settings.fieldPeriod), 1U,
+                   vkexp::lattice::kernel::LatticeFieldPeriodMaximum);
+    state.settings.fieldThreshold =
+        std::clamp(options.fieldThreshold.value_or(state.settings.fieldThreshold), 0.0F, 0.99F);
     state.settings.chasmGroundWidth = options.chasmGroundWidth;
     state.settings.wastedBuildTicks = options.wastedBuildTicks;
     state.settings.constructionCourseFill = std::clamp(options.constructionCourseFill, 0.0F, 1.0F);
@@ -543,7 +608,9 @@ int run(const Options& options) {
     for (std::size_t layer = 0; layer < options.hiddenLayers.size(); ++layer) {
         state.settings.hiddenLayers[layer] = options.hiddenLayers[layer];
     }
-    state.settings.neuronModel = options.neuronModel;
+    if (options.neuronModel) {
+        state.settings.neuronModel = *options.neuronModel;
+    }
 
     vkexp::EvolutionSettings evolution;
     evolution.populationSize = options.populationSize;
@@ -669,6 +736,22 @@ int run(const Options& options) {
                           << state.settings.beaconContactRadius
                           << " cell(s) and carried back to the ground\n";
             }
+            if (vkexp::worldForages(state.settings.worldMode)) {
+                std::cout << "Sources:    " << state.settings.canopySourceCount << " per world, "
+                          << state.settings.canopySourceStock << " feedings each, between "
+                          << state.settings.resourceHeightLow << " and "
+                          << state.settings.resourceHeightHigh << " levels up; "
+                          << (state.settings.canopyCarry != 0U
+                                  ? "a feeding is a load scored in the nest\n"
+                                  : "a feeding scores where it happens\n")
+                          << "Nest:       a disc of radius " << state.settings.canopyNestRadius
+                          << " about the middle of the floor\n"
+                          << "Cost field: grid of " << state.settings.fieldPeriod
+                          << " cells, free below " << state.settings.fieldThreshold << ", up to "
+                          << state.settings.fitness.fieldCostFactor
+                          << " blocks' worth on top of a block cost of "
+                          << state.settings.fitness.blockCost << '\n';
+            }
             if (state.settings.worldMode == vkexp::WorldMode::Chasm) {
                 std::cout << "Ground:     " << vkexp::latticeGroundWidth(state.settings) << " of "
                           << state.settings.latticeWidth
@@ -709,7 +792,10 @@ int run(const Options& options) {
                       << std::setw(12) << state.statistics.bestFitness << std::setw(12)
                       << state.statistics.medianFitness << std::setw(12)
                       << state.statistics.meanFitness << std::setw(10)
-                      << state.statistics.arrivalRatio << '\n';
+                      << state.statistics.arrivalRatio << '\n'
+                      // Flushed, so a run sent to a file can be read while it
+                      // is still going and loses nothing if it is stopped.
+                      << std::flush;
         }
         if (csv) {
             *csv << generation << ',' << latticeText << ',' << options.seed << ','
